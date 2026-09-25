@@ -463,8 +463,8 @@ These return JSON with status information useful for diagnostics.
 
 If you can't resolve an issue:
 
-1. **Search existing issues**: [GitHub Issues](https://github.com/mstrhakr/printmaster/issues)
+1. **Search existing issues**: [GitHub Issues](https://github.com/printmaster-org/printmaster/issues)
 
-2. **Ask the community**: [GitHub Discussions](https://github.com/mstrhakr/printmaster/discussions)
+2. **Ask the community**: [GitHub Discussions](https://github.com/printmaster-org/printmaster/discussions)
 
 3. **Report a bug**: Create a new GitHub issue with diagnostics

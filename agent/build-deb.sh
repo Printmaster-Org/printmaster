@@ -90,7 +90,7 @@ chmod 440 "$PKG_DIR/etc/sudoers.d/printmaster-agent"
 sed 's|/usr/local/bin/printmaster-agent|/usr/bin/printmaster-agent|g' \
     "$AGENT_DIR/printmaster-agent.service" > "$PKG_DIR/lib/systemd/system/printmaster-agent.service"
 # Update documentation URL
-sed -i 's|github.com/yourorg/printmaster|github.com/mstrhakr/printmaster|g' \
+sed -i 's|github.com/yourorg/printmaster|github.com/printmaster-org/printmaster|g' \
     "$PKG_DIR/lib/systemd/system/printmaster-agent.service"
 chmod 644 "$PKG_DIR/lib/systemd/system/printmaster-agent.service"
 
@@ -111,7 +111,7 @@ Installed-Size: $INSTALLED_SIZE
 Depends: libc6
 Section: admin
 Priority: optional
-Homepage: https://github.com/mstrhakr/printmaster
+Homepage: https://github.com/printmaster-org/printmaster
 Description: PrintMaster Agent - Network printer fleet management
  PrintMaster Agent discovers and monitors network printers via SNMP,
  collects metrics (page counts, toner levels, status), and optionally

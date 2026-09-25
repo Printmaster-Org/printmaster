@@ -62,7 +62,7 @@ The proxy worker receives diagnostic reports from PrintMaster agents, creates a 
 {
   "success": true,
   "gist_url": "https://gist.github.com/printmaster-bot/abc123def456",
-  "issue_url": "https://github.com/mstrhakr/printmaster/issues/new?template=device-report.yml&title=%5BDevice+Report%5D+wrong_manufacturer+%E2%80%93+HP+LaserJet+Pro+M404dn&gist_url=https%3A%2F%2Fgist.github.com%2Fprintmaster-bot%2Fabc123def456&issue_type=Wrong+manufacturer+detection&expected_value=HP+LaserJet+Pro+M404dn&device_model=HP+LaserJet+Pro+M404dn&device_manufacturer=Unknown"
+  "issue_url": "https://github.com/printmaster-org/printmaster/issues/new?template=device-report.yml&title=%5BDevice+Report%5D+wrong_manufacturer+%E2%80%93+HP+LaserJet+Pro+M404dn&gist_url=https%3A%2F%2Fgist.github.com%2Fprintmaster-bot%2Fabc123def456&issue_type=Wrong+manufacturer+detection&expected_value=HP+LaserJet+Pro+M404dn&device_model=HP+LaserJet+Pro+M404dn&device_manufacturer=Unknown"
 }
 ```
 
@@ -86,7 +86,7 @@ Create a new Cloudflare Worker with the following code:
 // compatibility_date = "2024-01-01"
 // 
 // [vars]
-// GITHUB_REPO = "mstrhakr/printmaster"
+// GITHUB_REPO = "printmaster-org/printmaster"
 //
 // [secrets]
 // GITHUB_PAT = "ghp_..." (set via wrangler secret put)
@@ -298,7 +298,7 @@ function buildIssueUrl(repo, report, gistUrl) {
    compatibility_date = "2024-01-01"
    
    [vars]
-   GITHUB_REPO = "mstrhakr/printmaster"
+   GITHUB_REPO = "printmaster-org/printmaster"
    ```
 
 4. **Set the GitHub PAT secret**

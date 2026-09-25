@@ -76,7 +76,7 @@ docker run -d \
   -p 9090:9090 \
   -v printmaster-data:/var/lib/printmaster/server \
   -e ADMIN_PASSWORD=your-secure-password \
-  ghcr.io/mstrhakr/printmaster-server:latest
+  ghcr.io/printmaster-org/printmaster-server:latest
 ```
 
 ### Step 2: Log Into the Server

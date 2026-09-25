@@ -19,7 +19,7 @@ Instead, please report them privately via one of these methods:
 
 ### Option 1: GitHub Security Advisories (Preferred)
 
-1. Go to the [Security tab](https://github.com/mstrhakr/printmaster/security)
+1. Go to the [Security tab](https://github.com/printmaster-org/printmaster/security)
 2. Click "Report a vulnerability"
 3. Fill out the form with details
 

@@ -10,7 +10,9 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  # Hardcoded lowercase: GHCR/Docker require lowercase image paths, but the
+  # GitHub org name (Printmaster-Org) contains uppercase letters.
+  IMAGE_NAME: printmaster-org/printmaster
 
 permissions:
   contents: read
@@ -410,7 +412,7 @@ jobs:
         
         # For major releases, add a note about checking full changelog
         if [ "$RELEASE_TYPE" = "major" ]; then
-          CHANGELOG="**🎉 Major Release**\n\nThis is a major version update. Please review the [full changelog](https://github.com/mstrhakr/printmaster/compare/${LAST_TAG}...${TAG_NAME}) for breaking changes.\n\n${CHANGELOG}"
+          CHANGELOG="**🎉 Major Release**\n\nThis is a major version update. Please review the [full changelog](https://github.com/printmaster-org/printmaster/compare/${LAST_TAG}...${TAG_NAME}) for breaking changes.\n\n${CHANGELOG}"
         fi
         
         {
@@ -438,15 +440,15 @@ jobs:
           #### Docker (Recommended)
           ```bash
           # Pull the latest image (supports amd64, arm64, arm/v7)
-          docker pull ghcr.io/mstrhakr/printmaster-server:${{ steps.version.outputs.version }}
-          docker pull ghcr.io/mstrhakr/printmaster-server:latest
+          docker pull ghcr.io/printmaster-org/printmaster-server:${{ steps.version.outputs.version }}
+          docker pull ghcr.io/printmaster-org/printmaster-server:latest
           
           # Run the container
           docker run -d \
             --name printmaster-server \
             -p 9090:9090 \
             -v printmaster-data:/var/lib/printmaster/server \
-            ghcr.io/mstrhakr/printmaster-server:latest
+            ghcr.io/printmaster-org/printmaster-server:latest
           ```
           
           #### Binary Installation
@@ -465,17 +467,17 @@ jobs:
           
           You'll need the PrintMaster Agent to discover and monitor printers. Download the latest agent:
           
-          **Latest Agent: v${{ steps.version.outputs.agent_version }}** — [View Release](https://github.com/mstrhakr/printmaster/releases/tag/${{ steps.version.outputs.agent_tag }})
+          **Latest Agent: v${{ steps.version.outputs.agent_version }}** — [View Release](https://github.com/printmaster-org/printmaster/releases/tag/${{ steps.version.outputs.agent_tag }})
           
           | Platform | Download |
           |----------|----------|
-          | Windows (MSI) | [printmaster-agent-v${{ steps.version.outputs.agent_version }}-windows-amd64.msi](https://github.com/mstrhakr/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent-v${{ steps.version.outputs.agent_version }}-windows-amd64.msi) |
-          | Linux (amd64) | [printmaster-agent-v${{ steps.version.outputs.agent_version }}-linux-amd64](https://github.com/mstrhakr/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent-v${{ steps.version.outputs.agent_version }}-linux-amd64) |
-          | Linux (arm64) | [printmaster-agent-v${{ steps.version.outputs.agent_version }}-linux-arm64](https://github.com/mstrhakr/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent-v${{ steps.version.outputs.agent_version }}-linux-arm64) |
-          | Debian/Ubuntu | [printmaster-agent_${{ steps.version.outputs.agent_version }}_amd64.deb](https://github.com/mstrhakr/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent_${{ steps.version.outputs.agent_version }}_amd64.deb) |
-          | Fedora/RHEL | [printmaster-agent-${{ steps.version.outputs.agent_version }}.x86_64.rpm](https://github.com/mstrhakr/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent-${{ steps.version.outputs.agent_version }}.x86_64.rpm) |
-          | macOS (Intel) | [printmaster-agent-v${{ steps.version.outputs.agent_version }}-darwin-amd64](https://github.com/mstrhakr/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent-v${{ steps.version.outputs.agent_version }}-darwin-amd64) |
-          | macOS (Apple Silicon) | [printmaster-agent-v${{ steps.version.outputs.agent_version }}-darwin-arm64](https://github.com/mstrhakr/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent-v${{ steps.version.outputs.agent_version }}-darwin-arm64) |
+          | Windows (MSI) | [printmaster-agent-v${{ steps.version.outputs.agent_version }}-windows-amd64.msi](https://github.com/printmaster-org/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent-v${{ steps.version.outputs.agent_version }}-windows-amd64.msi) |
+          | Linux (amd64) | [printmaster-agent-v${{ steps.version.outputs.agent_version }}-linux-amd64](https://github.com/printmaster-org/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent-v${{ steps.version.outputs.agent_version }}-linux-amd64) |
+          | Linux (arm64) | [printmaster-agent-v${{ steps.version.outputs.agent_version }}-linux-arm64](https://github.com/printmaster-org/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent-v${{ steps.version.outputs.agent_version }}-linux-arm64) |
+          | Debian/Ubuntu | [printmaster-agent_${{ steps.version.outputs.agent_version }}_amd64.deb](https://github.com/printmaster-org/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent_${{ steps.version.outputs.agent_version }}_amd64.deb) |
+          | Fedora/RHEL | [printmaster-agent-${{ steps.version.outputs.agent_version }}.x86_64.rpm](https://github.com/printmaster-org/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent-${{ steps.version.outputs.agent_version }}.x86_64.rpm) |
+          | macOS (Intel) | [printmaster-agent-v${{ steps.version.outputs.agent_version }}-darwin-amd64](https://github.com/printmaster-org/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent-v${{ steps.version.outputs.agent_version }}-darwin-amd64) |
+          | macOS (Apple Silicon) | [printmaster-agent-v${{ steps.version.outputs.agent_version }}-darwin-arm64](https://github.com/printmaster-org/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent-v${{ steps.version.outputs.agent_version }}-darwin-arm64) |
           
           ---
           
@@ -484,9 +486,9 @@ jobs:
           - **Commit:** ${{ github.sha }}
           
           ### 🔗 Links
-          - [Documentation](https://github.com/mstrhakr/printmaster/tree/main/docs)
-          - [Docker Images](https://github.com/mstrhakr/printmaster/pkgs/container/printmaster-server)
-          - [Issue Tracker](https://github.com/mstrhakr/printmaster/issues)
+          - [Documentation](https://github.com/printmaster-org/printmaster/tree/main/docs)
+          - [Docker Images](https://github.com/printmaster-org/printmaster/pkgs/container/printmaster-server)
+          - [Issue Tracker](https://github.com/printmaster-org/printmaster/issues)
         files: artifacts/printmaster-*
         fail_on_unmatched_files: false
         draft: false
@@ -572,14 +574,14 @@ jobs:
           #### Docker
           ```bash
           # Pull the dev image
-          docker pull ghcr.io/mstrhakr/printmaster-server:main
+          docker pull ghcr.io/printmaster-org/printmaster-server:main
           
           # Run the container
           docker run -d \
             --name printmaster-server \
             -p 9090:9090 \
             -v printmaster-data:/var/lib/printmaster/server \
-            ghcr.io/mstrhakr/printmaster-server:main
+            ghcr.io/printmaster-org/printmaster-server:main
           ```
           
           ---
@@ -591,9 +593,9 @@ jobs:
           - **Workflow run:** ${{ github.run_id }}
           
           ### 🔗 Links
-          - [Documentation](https://github.com/mstrhakr/printmaster/tree/main/docs)
-          - [Docker Images](https://github.com/mstrhakr/printmaster/pkgs/container/printmaster-server)
-          - [Issue Tracker](https://github.com/mstrhakr/printmaster/issues)
+          - [Documentation](https://github.com/printmaster-org/printmaster/tree/main/docs)
+          - [Docker Images](https://github.com/printmaster-org/printmaster/pkgs/container/printmaster-server)
+          - [Issue Tracker](https://github.com/printmaster-org/printmaster/issues)
         files: artifacts/printmaster-*
         fail_on_unmatched_files: false
         draft: false

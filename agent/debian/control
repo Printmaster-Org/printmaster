@@ -4,9 +4,9 @@ Priority: optional
 Maintainer: PrintMaster Team <printmaster@example.com>
 Build-Depends: debhelper-compat (= 13), golang-go (>= 1.21)
 Standards-Version: 4.6.2
-Homepage: https://github.com/mstrhakr/printmaster
-Vcs-Git: https://github.com/mstrhakr/printmaster.git
-Vcs-Browser: https://github.com/mstrhakr/printmaster
+Homepage: https://github.com/printmaster-org/printmaster
+Vcs-Git: https://github.com/printmaster-org/printmaster.git
+Vcs-Browser: https://github.com/printmaster-org/printmaster
 Rules-Requires-Root: no
 
 Package: printmaster-agent

@@ -9,7 +9,7 @@
     'use strict';
 
     const PROXY_ENDPOINT = 'https://api.printmaster.work/diagnostic';
-    const GITHUB_ISSUE_BASE = 'https://github.com/mstrhakr/printmaster/issues/new';
+    const GITHUB_ISSUE_BASE = 'https://github.com/printmaster-org/printmaster/issues/new';
 
     // Issue type options
     const ISSUE_TYPES = [

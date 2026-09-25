@@ -5,7 +5,7 @@
 .DESCRIPTION
   Stops running PrintMaster services/processes, downloads the latest Windows
   release binaries for agent and/or server from the GitHub releases for
-  mstrhakr/printmaster, backs up the existing installation in
+  printmaster-org/printmaster, backs up the existing installation in
   C:\ProgramData\PrintMaster, replaces the executables, then runs
   --service update for each component to finish the update.
 
@@ -13,7 +13,7 @@
   Which components to update: Agent, Server, or Both (default Both).
 
 .PARAMETER RepoOwner
-  GitHub repo owner (default: mstrhakr).
+  GitHub repo owner (default: printmaster-org).
 
 .PARAMETER RepoName
   GitHub repo name (default: printmaster).
@@ -31,7 +31,7 @@ param(
     [ValidateSet('Agent','Server','Both')]
     [string]$Components = 'Both',
 
-    [string]$RepoOwner = 'mstrhakr',
+    [string]$RepoOwner = 'printmaster-org',
     [string]$RepoName  = 'printmaster',
 
     [string]$DestPath = 'C:\ProgramData\PrintMaster'

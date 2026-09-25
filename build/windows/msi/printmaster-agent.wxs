@@ -19,8 +19,8 @@
 
     <Property Id="ARPNOMODIFY" Value="1" />
     <Property Id="ARPNOREPAIR" Value="1" />
-    <Property Id="ARPHELPLINK" Value="https://github.com/mstrhakr/printmaster" />
-    <Property Id="ARPURLINFOABOUT" Value="https://github.com/mstrhakr/printmaster" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/printmaster-org/printmaster" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/printmaster-org/printmaster" />
 
     <CustomAction Id="InstallService"
                   FileKey="AgentBinaryFile"

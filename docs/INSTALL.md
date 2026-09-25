@@ -29,23 +29,23 @@ docker run -d \
   -p 9090:9090 \
   -v printmaster-data:/var/lib/printmaster/server \
   -e ADMIN_PASSWORD=your-secure-password \
-  ghcr.io/mstrhakr/printmaster-server:latest
+  ghcr.io/printmaster-org/printmaster-server:latest
 ```
 
 Access at `http://localhost:9090` with username `admin` and your chosen password.
 
 ### Agent (Windows)
 
-Download and run the MSI installer from [GitHub Releases](https://github.com/mstrhakr/printmaster/releases).
+Download and run the MSI installer from [GitHub Releases](https://github.com/printmaster-org/printmaster/releases).
 
 ### Agent (Linux)
 
 ```bash
 # Debian/Ubuntu
-curl -fsSL https://mstrhakr.github.io/printmaster/install.sh | sudo bash
+curl -fsSL https://packages.printmaster.work/install.sh | sudo bash
 
 # Or manual apt install
-echo "deb [trusted=yes] https://mstrhakr.github.io/printmaster stable main" | \
+echo "deb [trusted=yes] https://packages.printmaster.work stable main" | \
   sudo tee /etc/apt/sources.list.d/printmaster.list
 sudo apt-get update && sudo apt-get install -y printmaster-agent
 ```
@@ -74,7 +74,7 @@ docker run -d \
   -v printmaster-data:/var/lib/printmaster/server \
   -v printmaster-logs:/var/log/printmaster/server \
   -e ADMIN_PASSWORD=your-secure-password \
-  ghcr.io/mstrhakr/printmaster-server:latest
+  ghcr.io/printmaster-org/printmaster-server:latest
 ```
 
 #### Using Docker Compose
@@ -85,7 +85,7 @@ Create a `docker-compose.yml` file:
 version: '3.8'
 services:
   printmaster-server:
-    image: ghcr.io/mstrhakr/printmaster-server:latest
+    image: ghcr.io/printmaster-org/printmaster-server:latest
     container_name: printmaster-server
     ports:
       - "9090:9090"
@@ -145,7 +145,7 @@ Configure your proxy to:
 
 2. **Manual Docker Setup**:
    - Go to Docker tab → Add Container
-   - Repository: `ghcr.io/mstrhakr/printmaster-server:latest`
+   - Repository: `ghcr.io/printmaster-org/printmaster-server:latest`
    - Port: 9090 → 9090
    - Path: `/mnt/user/appdata/printmaster-server/data` → `/var/lib/printmaster/server`
    - Path: `/mnt/user/appdata/printmaster-server/logs` → `/var/log/printmaster/server`
@@ -154,7 +154,7 @@ See [Unraid Deployment Guide](dev/UNRAID_DEPLOYMENT.md) for detailed instruction
 
 ### Manual Server Installation
 
-Download the server binary from [GitHub Releases](https://github.com/mstrhakr/printmaster/releases) and run:
+Download the server binary from [GitHub Releases](https://github.com/printmaster-org/printmaster/releases) and run:
 
 ```bash
 # Linux/macOS
@@ -172,7 +172,7 @@ Download the server binary from [GitHub Releases](https://github.com/mstrhakr/pr
 
 #### MSI Installer (Recommended)
 
-1. Download the latest MSI from [GitHub Releases](https://github.com/mstrhakr/printmaster/releases)
+1. Download the latest MSI from [GitHub Releases](https://github.com/printmaster-org/printmaster/releases)
 2. Run the installer
 3. The agent will be installed as a Windows service and start automatically
 4. Access the web UI at `http://localhost:8080`
@@ -181,7 +181,7 @@ Download the server binary from [GitHub Releases](https://github.com/mstrhakr/pr
 
 ```powershell
 # Download the binary
-Invoke-WebRequest -Uri "https://github.com/mstrhakr/printmaster/releases/latest/download/printmaster-agent-windows-amd64.exe" -OutFile "printmaster-agent.exe"
+Invoke-WebRequest -Uri "https://github.com/printmaster-org/printmaster/releases/latest/download/printmaster-agent-windows-amd64.exe" -OutFile "printmaster-agent.exe"
 
 # Install as service (requires Administrator)
 .\printmaster-agent.exe --service install
@@ -209,7 +209,7 @@ Get-Service PrintMasterAgent
 
 ```bash
 # Add repository
-echo "deb [trusted=yes] https://mstrhakr.github.io/printmaster stable main" | \
+echo "deb [trusted=yes] https://packages.printmaster.work stable main" | \
   sudo tee /etc/apt/sources.list.d/printmaster.list
 
 # Install
@@ -224,11 +224,11 @@ systemctl status printmaster-agent
 
 ```bash
 # Import GPG key
-curl -fsSL https://mstrhakr.github.io/printmaster/gpg.key | \
+curl -fsSL https://packages.printmaster.work/gpg.key | \
   sudo gpg --dearmor -o /usr/share/keyrings/printmaster.gpg
 
 # Add repository with signature verification
-echo "deb [signed-by=/usr/share/keyrings/printmaster.gpg] https://mstrhakr.github.io/printmaster stable main" | \
+echo "deb [signed-by=/usr/share/keyrings/printmaster.gpg] https://packages.printmaster.work stable main" | \
   sudo tee /etc/apt/sources.list.d/printmaster.list
 
 # Install
@@ -240,7 +240,7 @@ sudo apt-get install -y printmaster-agent
 
 ```bash
 # Download
-wget https://github.com/mstrhakr/printmaster/releases/latest/download/printmaster-agent-linux-amd64
+wget https://github.com/printmaster-org/printmaster/releases/latest/download/printmaster-agent-linux-amd64
 
 # Make executable
 chmod +x printmaster-agent-linux-amd64
@@ -257,10 +257,10 @@ sudo systemctl start PrintMasterAgent
 
 ```bash
 # Import GPG key (recommended)
-sudo rpm --import https://mstrhakr.github.io/printmaster/gpg.key
+sudo rpm --import https://packages.printmaster.work/gpg.key
 
 # Add repository
-sudo dnf config-manager addrepo --from-repofile=https://mstrhakr.github.io/printmaster/printmaster.repo
+sudo dnf config-manager addrepo --from-repofile=https://packages.printmaster.work/printmaster.repo
 
 # Install
 sudo dnf install -y printmaster-agent
@@ -282,7 +282,7 @@ systemctl status printmaster-agent
 
 ```bash
 # Download
-curl -LO https://github.com/mstrhakr/printmaster/releases/latest/download/printmaster-agent-darwin-amd64
+curl -LO https://github.com/printmaster-org/printmaster/releases/latest/download/printmaster-agent-darwin-amd64
 
 # Make executable
 chmod +x printmaster-agent-darwin-amd64
@@ -304,7 +304,7 @@ docker run -d \
   --name printmaster-agent \
   --network host \
   -v printmaster-agent-data:/var/lib/printmaster/agent \
-  ghcr.io/mstrhakr/printmaster-agent:latest
+  ghcr.io/printmaster-org/printmaster-agent:latest
 ```
 
 > **Note**: `--network host` is required for SNMP discovery to work properly.
@@ -356,7 +356,7 @@ url = "http://your-server:9090"
 ### Docker
 
 ```bash
-docker pull ghcr.io/mstrhakr/printmaster-server:latest
+docker pull ghcr.io/printmaster-org/printmaster-server:latest
 docker compose down
 docker compose up -d
 ```

@@ -369,7 +369,7 @@ docker run -d \
   -e USE_HTTPS=true \
   -e HTTPS_PORT=9443 \
   -v /path/to/certs:/certs \
-  ghcr.io/mstrhakr/printmaster-server:latest
+  ghcr.io/printmaster-org/printmaster-server:latest
 ```
 
 **Agent:**

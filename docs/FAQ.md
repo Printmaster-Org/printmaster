@@ -51,7 +51,7 @@ These brands work via standard Printer-MIB queries. Basic metrics are collected 
 
 **Legend:** ✅ Full support | ⚠️ Basic/partial support | ❌ Not supported
 
-> **Want better support for your brand?** We're actively adding vendor modules. Check [GitHub Issues](https://github.com/mstrhakr/printmaster/issues) or contribute a vendor profile!
+> **Want better support for your brand?** We're actively adding vendor modules. Check [GitHub Issues](https://github.com/printmaster-org/printmaster/issues) or contribute a vendor profile!
 
 ---
 
@@ -185,7 +185,7 @@ See [Connection Issues](TROUBLESHOOTING.md#connection-issues) for more help.
 
 **Docker:**
 ```bash
-docker pull ghcr.io/mstrhakr/printmaster-server:latest
+docker pull ghcr.io/printmaster-org/printmaster-server:latest
 docker compose down && docker compose up -d
 ```
 
@@ -239,7 +239,7 @@ We welcome contributions! See [CONTRIBUTING.md](../CONTRIBUTING.md) for guidelin
 
 ### Where do I report bugs?
 
-Create an issue on [GitHub Issues](https://github.com/mstrhakr/printmaster/issues) with:
+Create an issue on [GitHub Issues](https://github.com/printmaster-org/printmaster/issues) with:
 - Steps to reproduce
 - Expected vs actual behavior
 - Version information
@@ -248,5 +248,5 @@ Create an issue on [GitHub Issues](https://github.com/mstrhakr/printmaster/issue
 ### Where can I get help?
 
 - Documentation: You're reading it!
-- Discussions: [GitHub Discussions](https://github.com/mstrhakr/printmaster/discussions)
-- Issues: [GitHub Issues](https://github.com/mstrhakr/printmaster/issues)
+- Discussions: [GitHub Discussions](https://github.com/printmaster-org/printmaster/discussions)
+- Issues: [GitHub Issues](https://github.com/printmaster-org/printmaster/issues)

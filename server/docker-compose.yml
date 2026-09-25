@@ -9,7 +9,7 @@ services:
         VERSION: ${VERSION:-dev}
         BUILD_TIME: ${BUILD_TIME}
         GIT_COMMIT: ${GIT_COMMIT}
-    image: ghcr.io/mstrhakr/printmaster-server:${VERSION:-latest}
+    image: ghcr.io/printmaster-org/printmaster-server:${VERSION:-latest}
     container_name: printmaster-server
     restart: unless-stopped
     

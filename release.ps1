@@ -628,7 +628,7 @@ function New-GitHubRelease {
         $compatibilityNote = @"
 
 ### 🔄 Compatibility
-- **Compatible with $otherComponentTitle**: [v$otherVersion](https://github.com/mstrhakr/printmaster/releases/tag/$otherComponent-v$otherVersion) ([latest-$otherComponent](https://github.com/mstrhakr/printmaster/releases/tag/latest-$otherComponent))
+- **Compatible with $otherComponentTitle**: [v$otherVersion](https://github.com/printmaster-org/printmaster/releases/tag/$otherComponent-v$otherVersion) ([latest-$otherComponent](https://github.com/printmaster-org/printmaster/releases/tag/latest-$otherComponent))
 - Use matching versions for best compatibility
 
 "@
@@ -648,15 +648,15 @@ $compatibilityNote
 #### Docker (Recommended)
 ``````bash
 # Pull the latest image (supports amd64, arm64, arm/v7)
-docker pull ghcr.io/mstrhakr/printmaster-${Component}:${Version}
-docker pull ghcr.io/mstrhakr/printmaster-${Component}:latest
+docker pull ghcr.io/printmaster-org/printmaster-${Component}:${Version}
+docker pull ghcr.io/printmaster-org/printmaster-${Component}:latest
 
 # Run the container
 docker run -d \
   --name printmaster-${Component} \
   -p 9090:9090 \
   -v printmaster-data:/var/lib/printmaster/${Component} \
-  ghcr.io/mstrhakr/printmaster-${Component}:latest
+  ghcr.io/printmaster-org/printmaster-${Component}:latest
 ``````
 
 #### Binary Installation
@@ -670,9 +670,9 @@ docker run -d \
 - macOS (amd64, arm64)
 
 ### 🔗 Links
-- [Documentation](https://github.com/mstrhakr/printmaster/tree/main/docs)
-- [Docker Hub](https://github.com/mstrhakr/printmaster/pkgs/container/printmaster-${Component})
-- [Issue Tracker](https://github.com/mstrhakr/printmaster/issues)
+- [Documentation](https://github.com/printmaster-org/printmaster/tree/main/docs)
+- [Docker Hub](https://github.com/printmaster-org/printmaster/pkgs/container/printmaster-${Component})
+- [Issue Tracker](https://github.com/printmaster-org/printmaster/issues)
 "@
     
     # Create release with gh CLI
@@ -687,7 +687,7 @@ docker run -d \
         }
         
         Write-Status "GitHub Release created: $Title" "INFO"
-        Write-Status "View at: https://github.com/mstrhakr/printmaster/releases/tag/$Tag" "INFO"
+        Write-Status "View at: https://github.com/printmaster-org/printmaster/releases/tag/$Tag" "INFO"
     }
     catch {
         $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"

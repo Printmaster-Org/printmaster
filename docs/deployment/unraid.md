@@ -23,7 +23,7 @@ Deploy PrintMaster Server on Unraid using the Docker container.
 | Setting | Value |
 |---------|-------|
 | Name | `PrintMaster-Server` |
-| Repository | `ghcr.io/mstrhakr/printmaster-server:latest` |
+| Repository | `ghcr.io/printmaster-org/printmaster-server:latest` |
 | Network Type | `Bridge` |
 | Port | `9090` → `9090` (TCP) |
 | Volume | `/mnt/user/appdata/printmaster-server/data` → `/var/lib/printmaster/server` |
@@ -224,7 +224,7 @@ Monitor PrintMaster availability:
 
 ```
 Container Name: PrintMaster-Server
-Repository: ghcr.io/mstrhakr/printmaster-server:latest
+Repository: ghcr.io/printmaster-org/printmaster-server:latest
 Network Type: bridge
 
 Ports:

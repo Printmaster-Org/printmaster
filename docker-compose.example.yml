@@ -67,7 +67,7 @@ services:
   # PrintMaster Server
   # Central hub for multi-agent management and device aggregation.
   server:
-    image: 'ghcr.io/mstrhakr/printmaster-server:latest'
+    image: 'ghcr.io/printmaster-org/printmaster-server:latest'
     restart: on-failure:5
     container_name: printmaster-server
     depends_on:
@@ -125,7 +125,7 @@ services:
   # Local agent for printer discovery and monitoring. Can be run on separate hosts.
   # Comment out if you only need the server.
   agent:
-    image: 'ghcr.io/mstrhakr/printmaster-agent:latest'
+    image: 'ghcr.io/printmaster-org/printmaster-agent:latest'
     restart: on-failure:5
     container_name: printmaster-agent
     depends_on:

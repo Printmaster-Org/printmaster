@@ -10,7 +10,9 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  # Hardcoded lowercase: GHCR/Docker require lowercase image paths, but the
+  # GitHub org name (Printmaster-Org) contains uppercase letters.
+  IMAGE_NAME: printmaster-org/printmaster
 
 permissions:
   contents: read
@@ -544,7 +546,7 @@ jobs:
         
         # For major releases, add a note about checking full changelog
         if [ "$RELEASE_TYPE" = "major" ]; then
-          CHANGELOG="**🎉 Major Release**\n\nThis is a major version update. Please review the [full changelog](https://github.com/mstrhakr/printmaster/compare/${LAST_TAG}...${TAG_NAME}) for breaking changes.\n\n${CHANGELOG}"
+          CHANGELOG="**🎉 Major Release**\n\nThis is a major version update. Please review the [full changelog](https://github.com/printmaster-org/printmaster/compare/${LAST_TAG}...${TAG_NAME}) for breaking changes.\n\n${CHANGELOG}"
         fi
         
         {
@@ -571,19 +573,19 @@ jobs:
           
           **Debian/Ubuntu (APT repo):**
           ```bash
-          echo "deb [trusted=yes] https://mstrhakr.github.io/printmaster stable main" | sudo tee /etc/apt/sources.list.d/printmaster.list && sudo apt-get update && sudo apt-get install -y printmaster-agent
+          echo "deb [trusted=yes] https://packages.printmaster.work stable main" | sudo tee /etc/apt/sources.list.d/printmaster.list && sudo apt-get update && sudo apt-get install -y printmaster-agent
           ```
           
           **Fedora/RHEL (DNF repo):**
           ```bash
-          sudo dnf config-manager addrepo --from-repofile=https://mstrhakr.github.io/printmaster/printmaster.repo && sudo dnf install -y printmaster-agent
+          sudo dnf config-manager addrepo --from-repofile=https://packages.printmaster.work/printmaster.repo && sudo dnf install -y printmaster-agent
           ```
           
           **Windows:** Download the MSI installer from Assets below.
           
           **Docker:**
           ```bash
-          docker run -d -p 8080:8080 -v agent-data:/var/lib/printmaster/agent ghcr.io/mstrhakr/printmaster-agent:${{ steps.version.outputs.version }}
+          docker run -d -p 8080:8080 -v agent-data:/var/lib/printmaster/agent ghcr.io/printmaster-org/printmaster-agent:${{ steps.version.outputs.version }}
           ```
           
           Web UI at http://localhost:8080 after install.
@@ -596,11 +598,11 @@ jobs:
           
           For multi-site management, you'll also need the PrintMaster Server:
           
-          **Latest Server: v${{ steps.version.outputs.server_version }}** — [View Release](https://github.com/mstrhakr/printmaster/releases/tag/${{ steps.version.outputs.server_tag }})
+          **Latest Server: v${{ steps.version.outputs.server_version }}** — [View Release](https://github.com/printmaster-org/printmaster/releases/tag/${{ steps.version.outputs.server_tag }})
           
           ```bash
           # Docker (recommended)
-          docker pull ghcr.io/mstrhakr/printmaster-server:latest
+          docker pull ghcr.io/printmaster-org/printmaster-server:latest
           ```
           
           ---
@@ -610,9 +612,9 @@ jobs:
           - **Commit:** ${{ github.sha }}
           
           ### 🔗 Links
-          - [Documentation](https://github.com/mstrhakr/printmaster/tree/main/docs)
-          - [Docker Images](https://github.com/mstrhakr/printmaster/pkgs/container/printmaster-agent)
-          - [Issue Tracker](https://github.com/mstrhakr/printmaster/issues)
+          - [Documentation](https://github.com/printmaster-org/printmaster/tree/main/docs)
+          - [Docker Images](https://github.com/printmaster-org/printmaster/pkgs/container/printmaster-agent)
+          - [Issue Tracker](https://github.com/printmaster-org/printmaster/issues)
         files: artifacts/printmaster-*
         fail_on_unmatched_files: false
         draft: false
@@ -700,9 +702,9 @@ jobs:
           - **Workflow run:** ${{ github.run_id }}
           
           ### 🔗 Links
-          - [Documentation](https://github.com/mstrhakr/printmaster/tree/main/docs)
-          - [Docker Images](https://github.com/mstrhakr/printmaster/pkgs/container/printmaster-agent)
-          - [Issue Tracker](https://github.com/mstrhakr/printmaster/issues)
+          - [Documentation](https://github.com/printmaster-org/printmaster/tree/main/docs)
+          - [Docker Images](https://github.com/printmaster-org/printmaster/pkgs/container/printmaster-agent)
+          - [Issue Tracker](https://github.com/printmaster-org/printmaster/issues)
         files: artifacts/printmaster-*
         fail_on_unmatched_files: false
         draft: false
@@ -1020,11 +1022,16 @@ jobs:
         cat > printmaster.repo << 'EOF'
         [printmaster]
         name=PrintMaster Repository
-        baseurl=https://mstrhakr.github.io/printmaster/rpm
+        baseurl=https://packages.printmaster.work/rpm
         enabled=1
         gpgcheck=1
-        gpgkey=https://mstrhakr.github.io/printmaster/gpg.key
+        gpgkey=https://packages.printmaster.work/gpg.key
         EOF
+
+    - name: Configure custom domain
+      run: |
+        cd apt-repo
+        echo "packages.printmaster.work" > CNAME
 
     - name: Create index page
       run: |
@@ -1050,13 +1057,13 @@ jobs:
         <body>
           <h1>🖨️ PrintMaster Package Repository</h1>
           
-          <p>Official package repositories for <a href="https://github.com/mstrhakr/printmaster">PrintMaster Agent</a>.</p>
+          <p>Official package repositories for <a href="https://github.com/printmaster-org/printmaster">PrintMaster Agent</a>.</p>
           
           <h2>Debian/Ubuntu (APT)</h2>
           
           <h3>Quick Install</h3>
           <pre><code># Add repository
-        echo "deb [trusted=yes] https://mstrhakr.github.io/printmaster stable main" | sudo tee /etc/apt/sources.list.d/printmaster.list
+        echo "deb [trusted=yes] https://packages.printmaster.work stable main" | sudo tee /etc/apt/sources.list.d/printmaster.list
 
         # Update and install
         sudo apt-get update
@@ -1064,10 +1071,10 @@ jobs:
 
           <h3>With GPG Verification (Recommended)</h3>
           <pre><code># Download and add GPG key
-        curl -fsSL https://mstrhakr.github.io/printmaster/gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/printmaster.gpg
+        curl -fsSL https://packages.printmaster.work/gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/printmaster.gpg
 
         # Add repository with signed-by
-        echo "deb [signed-by=/usr/share/keyrings/printmaster.gpg] https://mstrhakr.github.io/printmaster stable main" | sudo tee /etc/apt/sources.list.d/printmaster.list
+        echo "deb [signed-by=/usr/share/keyrings/printmaster.gpg] https://packages.printmaster.work stable main" | sudo tee /etc/apt/sources.list.d/printmaster.list
 
         # Update and install
         sudo apt-get update
@@ -1077,15 +1084,15 @@ jobs:
           
           <h3>Quick Install (One-liner)</h3>
           <pre><code># Add repository and install
-        sudo dnf config-manager addrepo --from-repofile=https://mstrhakr.github.io/printmaster/printmaster.repo
+        sudo dnf config-manager addrepo --from-repofile=https://packages.printmaster.work/printmaster.repo
         sudo dnf install printmaster-agent</code></pre>
 
           <h3>With GPG Verification (Recommended)</h3>
           <pre><code># Import GPG key first
-        sudo rpm --import https://mstrhakr.github.io/printmaster/gpg.key
+        sudo rpm --import https://packages.printmaster.work/gpg.key
 
         # Add repository and install
-        sudo dnf config-manager addrepo --from-repofile=https://mstrhakr.github.io/printmaster/printmaster.repo
+        sudo dnf config-manager addrepo --from-repofile=https://packages.printmaster.work/printmaster.repo
         sudo dnf install printmaster-agent</code></pre>
 
           <h2>After Installation</h2>
@@ -1097,8 +1104,8 @@ jobs:
           
           <h2>Links</h2>
           <ul>
-            <li><a href="https://github.com/mstrhakr/printmaster">GitHub Repository</a></li>
-            <li><a href="https://github.com/mstrhakr/printmaster/releases">Releases</a></li>
+            <li><a href="https://github.com/printmaster-org/printmaster">GitHub Repository</a></li>
+            <li><a href="https://github.com/printmaster-org/printmaster/releases">Releases</a></li>
           </ul>
         </body>
         </html>

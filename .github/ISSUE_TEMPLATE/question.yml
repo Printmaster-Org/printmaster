@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Have a question? We're happy to help! Please check the [documentation](https://github.com/mstrhakr/printmaster/tree/main/docs) first.
+        Have a question? We're happy to help! Please check the [documentation](https://github.com/printmaster-org/printmaster/tree/main/docs) first.
 
   - type: dropdown
     id: topic

@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	defaultRepoOwner    = "mstrhakr"
+	defaultRepoOwner    = "printmaster-org"
 	defaultRepoName     = "printmaster"
 	defaultPollInterval = 4 * time.Hour
 	defaultMaxReleases  = 6

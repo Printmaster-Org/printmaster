@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: 📖 Documentation
-    url: https://github.com/mstrhakr/printmaster/tree/main/docs
+    url: https://github.com/printmaster-org/printmaster/tree/main/docs
     about: Check out our documentation before opening an issue
   - name: 💬 Discussions
-    url: https://github.com/mstrhakr/printmaster/discussions
+    url: https://github.com/printmaster-org/printmaster/discussions
     about: Ask questions and share ideas in GitHub Discussions

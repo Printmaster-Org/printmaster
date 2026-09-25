@@ -114,7 +114,7 @@ var emailThemeGetter func() string
 var getUserFromContext func(ctx context.Context) *storage.User
 
 var (
-	releaseAssetBaseURL   = "https://github.com/mstrhakr/printmaster/releases/download"
+	releaseAssetBaseURL   = "https://github.com/printmaster-org/printmaster/releases/download"
 	releaseDownloadClient = &http.Client{Timeout: 2 * time.Minute}
 )
 
@@ -2382,8 +2382,8 @@ Set-ItemProperty -Path $uninstallKey -Name "EstimatedSize" -Value $fileSize -Typ
 Set-ItemProperty -Path $uninstallKey -Name "NoModify" -Value 1 -Type DWord
 Set-ItemProperty -Path $uninstallKey -Name "NoRepair" -Value 1 -Type DWord
 Set-ItemProperty -Path $uninstallKey -Name "DisplayIcon" -Value "$exePath,0"
-Set-ItemProperty -Path $uninstallKey -Name "URLInfoAbout" -Value "https://github.com/mstrhakr/printmaster"
-Set-ItemProperty -Path $uninstallKey -Name "HelpLink" -Value "https://github.com/mstrhakr/printmaster"
+Set-ItemProperty -Path $uninstallKey -Name "URLInfoAbout" -Value "https://github.com/printmaster-org/printmaster"
+Set-ItemProperty -Path $uninstallKey -Name "HelpLink" -Value "https://github.com/printmaster-org/printmaster"
 Show-Success "Registered in Add/Remove Programs"
 
 Show-Progress -Percent 85 -Message "Starting service..."
@@ -2449,7 +2449,7 @@ if [ "$(id -u)" -ne 0 ]; then
 	exit 1
 fi
 
-REPO_BASE="https://mstrhakr.github.io/printmaster"
+REPO_BASE="https://packages.printmaster.work"
 
 # Detect distro family from /etc/os-release
 DISTRO_FAMILY=""

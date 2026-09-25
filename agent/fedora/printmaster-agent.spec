@@ -11,7 +11,7 @@ Release:        1%{?dist}
 Summary:        Network printer fleet management agent
 
 License:        MIT
-URL:            https://github.com/mstrhakr/printmaster
+URL:            https://github.com/printmaster-org/printmaster
 Source0:        printmaster-agent
 
 BuildRequires:  systemd-rpm-macros
@@ -75,7 +75,7 @@ chmod 440 %{buildroot}%{_sysconfdir}/sudoers.d/printmaster-agent
 cat > %{buildroot}%{_unitdir}/printmaster-agent.service << 'EOF'
 [Unit]
 Description=PrintMaster Agent - Network Printer Fleet Management
-Documentation=https://github.com/mstrhakr/printmaster
+Documentation=https://github.com/printmaster-org/printmaster
 After=network-online.target
 Wants=network-online.target
 

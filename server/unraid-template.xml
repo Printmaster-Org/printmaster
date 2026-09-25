@@ -1,19 +1,19 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>PrintMaster-Server</Name>
-  <Repository>ghcr.io/mstrhakr/printmaster-server:latest</Repository>
-  <Registry>https://ghcr.io/mstrhakr/printmaster-server</Registry>
+  <Repository>ghcr.io/printmaster-org/printmaster-server:latest</Repository>
+  <Registry>https://ghcr.io/printmaster-org/printmaster-server</Registry>
   <Network>bridge</Network>
   <MyIP/>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
-  <Support>https://github.com/mstrhakr/printmaster</Support>
-  <Project>https://github.com/mstrhakr/printmaster</Project>
+  <Support>https://github.com/printmaster-org/printmaster</Support>
+  <Project>https://github.com/printmaster-org/printmaster</Project>
   <Overview>PrintMaster Server - Printer fleet management system for MSPs, MPS providers, copier dealers, and IT departments. Collects and manages printer discovery data from agents.</Overview>
   <Category>Network:Management Tools:</Category>
   <WebUI>http://[IP]:[PORT:9090]</WebUI>
-  <TemplateURL>https://raw.githubusercontent.com/mstrhakr/printmaster/main/server/unraid-template.xml</TemplateURL>
-  <Icon>https://raw.githubusercontent.com/mstrhakr/printmaster/main/docs/icon.png</Icon>
+  <TemplateURL>https://raw.githubusercontent.com/printmaster-org/printmaster/main/server/unraid-template.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/printmaster-org/printmaster/main/docs/icon.png</Icon>
   <ExtraParams>--restart=unless-stopped</ExtraParams>
   <PostArgs/>
   <CPUset/>

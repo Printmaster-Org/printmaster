@@ -10,7 +10,7 @@ docker run -d \
   -p 9090:9090 \
   -v printmaster-data:/var/lib/printmaster/server \
   -e ADMIN_PASSWORD=your-secure-password \
-  ghcr.io/mstrhakr/printmaster-server:latest
+  ghcr.io/printmaster-org/printmaster-server:latest
 ```
 
 Access at `http://localhost:9090` with username `admin`.
@@ -50,7 +50,7 @@ Create a `docker-compose.yml` file:
 version: '3.8'
 services:
   printmaster-server:
-    image: ghcr.io/mstrhakr/printmaster-server:latest
+    image: ghcr.io/printmaster-org/printmaster-server:latest
     container_name: printmaster-server
     ports:
       - "9090:9090"
@@ -224,7 +224,7 @@ healthcheck:
 
 ```bash
 # Pull latest image
-docker pull ghcr.io/mstrhakr/printmaster-server:latest
+docker pull ghcr.io/printmaster-org/printmaster-server:latest
 
 # Recreate container
 docker compose down
@@ -257,7 +257,7 @@ docker run -d \
   -v printmaster-agent-data:/var/lib/printmaster/agent \
   -e SERVER_ENABLED=true \
   -e SERVER_URL=http://your-server:9090 \
-  ghcr.io/mstrhakr/printmaster-agent:latest
+  ghcr.io/printmaster-org/printmaster-agent:latest
 ```
 
 > **Note**: `--network host` is required for SNMP discovery to work properly.

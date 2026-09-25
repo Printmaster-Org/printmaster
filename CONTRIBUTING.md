@@ -204,12 +204,12 @@ snmpwalk -v2c -c public <printer-ip> 1.3.6.1
 
 - [docs/SNMP_REFERENCE.md](docs/SNMP_REFERENCE.md) - OID documentation
 - [agent/scanner/vendor/](agent/scanner/vendor/) - Existing vendor profiles
-- Open a [Printer Support Request](https://github.com/mstrhakr/printmaster/issues/new?template=printer_support.yml) if you need help
+- Open a [Printer Support Request](https://github.com/printmaster-org/printmaster/issues/new?template=printer_support.yml) if you need help
 
 ## Questions?
 
-- Check [existing issues](https://github.com/mstrhakr/printmaster/issues)
-- Open a [Question issue](https://github.com/mstrhakr/printmaster/issues/new?template=question.yml)
+- Check [existing issues](https://github.com/printmaster-org/printmaster/issues)
+- Open a [Question issue](https://github.com/printmaster-org/printmaster/issues/new?template=question.yml)
 - Read the [documentation](docs/)
 
 Thank you for contributing! 🖨️

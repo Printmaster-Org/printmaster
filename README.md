@@ -2,10 +2,10 @@
 
 **Printer & Copier Fleet Management**
 
-[![CI](https://github.com/mstrhakr/printmaster/actions/workflows/ci.yml/badge.svg)](https://github.com/mstrhakr/printmaster/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/mstrhakr/printmaster)](https://github.com/mstrhakr/printmaster/releases)
-[![Go Report Card](https://goreportcard.com/badge/github.com/mstrhakr/printmaster)](https://goreportcard.com/report/github.com/mstrhakr/printmaster)
-[![Docker](https://ghcr-badge.egpl.dev/mstrhakr/printmaster-server/latest_tag?trim=major&label=latest)](https://github.com/mstrhakr/printmaster/pkgs/container/printmaster-server)
+[![CI](https://github.com/printmaster-org/printmaster/actions/workflows/ci.yml/badge.svg)](https://github.com/printmaster-org/printmaster/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/printmaster-org/printmaster)](https://github.com/printmaster-org/printmaster/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/printmaster-org/printmaster)](https://goreportcard.com/report/github.com/printmaster-org/printmaster)
+[![Docker](https://ghcr-badge.egpl.dev/printmaster-org/printmaster-server/latest_tag?trim=major&label=latest)](https://github.com/printmaster-org/printmaster/pkgs/container/printmaster-server)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 PrintMaster automatically discovers and monitors network printers and copiers. Built for MSPs, MPS providers, copier dealers, and IT departments managing print fleets.
@@ -75,14 +75,14 @@ docker run -d \
   -p 9090:9090 \
   -v printmaster-data:/var/lib/printmaster/server \
   -e ADMIN_PASSWORD=your-password \
-  ghcr.io/mstrhakr/printmaster-server:latest
+  ghcr.io/printmaster-org/printmaster-server:latest
 ```
 
 Access at `http://localhost:9090` — Login: `admin` / your password
 
 ### Agent (Windows)
 
-Download the MSI from [Releases](https://github.com/mstrhakr/printmaster/releases), or:
+Download the MSI from [Releases](https://github.com/printmaster-org/printmaster/releases), or:
 
 ```powershell
 # Install as service
@@ -96,7 +96,7 @@ Access at `http://localhost:8080`
 
 ```bash
 # Debian/Ubuntu
-echo "deb [trusted=yes] https://mstrhakr.github.io/printmaster stable main" | \
+echo "deb [trusted=yes] https://packages.printmaster.work stable main" | \
   sudo tee /etc/apt/sources.list.d/printmaster.list
 sudo apt-get update && sudo apt-get install -y printmaster-agent
 ```
@@ -166,7 +166,7 @@ MIT License — see [LICENSE](LICENSE)
 
 ## Links
 
-- [Releases](https://github.com/mstrhakr/printmaster/releases)
-- [Issues](https://github.com/mstrhakr/printmaster/issues)
-- [Discussions](https://github.com/mstrhakr/printmaster/discussions)
+- [Releases](https://github.com/printmaster-org/printmaster/releases)
+- [Issues](https://github.com/printmaster-org/printmaster/issues)
+- [Discussions](https://github.com/printmaster-org/printmaster/discussions)
 

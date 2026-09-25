@@ -197,7 +197,7 @@ This shows you exactly what would happen without actually doing it.
 
 ## GitHub Repository
 
-**URL**: https://github.com/mstrhakr/printmaster
+**URL**: https://github.com/printmaster-org/printmaster
 **Visibility**: Private (will go public at v0.9.0)
 **Current Version**: v0.1.0
 

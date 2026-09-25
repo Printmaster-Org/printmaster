@@ -75,8 +75,8 @@ Central hub for managing multiple agents:
 
 ## Getting Help
 
-- [GitHub Issues](https://github.com/mstrhakr/printmaster/issues) — Bug reports
-- [GitHub Discussions](https://github.com/mstrhakr/printmaster/discussions) — Questions and ideas
+- [GitHub Issues](https://github.com/printmaster-org/printmaster/issues) — Bug reports
+- [GitHub Discussions](https://github.com/printmaster-org/printmaster/discussions) — Questions and ideas
 
 ---
 

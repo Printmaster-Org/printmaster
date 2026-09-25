@@ -234,7 +234,7 @@ type ProxyResponse struct {
 const ProxyEndpoint = "https://api.printmaster.work/diagnostic"
 
 // GitHubIssueBase is the base URL for creating new issues.
-const GitHubIssueBase = "https://github.com/mstrhakr/printmaster/issues/new"
+const GitHubIssueBase = "https://github.com/printmaster-org/printmaster/issues/new"
 
 // Anonymizer provides utilities for sanitizing sensitive data in reports.
 type Anonymizer struct {
