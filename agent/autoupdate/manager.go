@@ -966,7 +966,7 @@ func (m *Manager) applyUpdateViaApt(targetVersion string, progressFn ProgressFun
 	// Format: packagename=version (e.g., printmaster-agent=0.27.4)
 	packageSpec := m.packageName
 	if targetVersion != "" {
-		packageSpec = fmt.Sprintf("%s=%s*", m.packageName, targetVersion)
+		packageSpec = fmt.Sprintf("%s=%s", m.packageName, targetVersion)
 	}
 
 	progressFn(35, fmt.Sprintf("Downloading %s...", packageSpec))
