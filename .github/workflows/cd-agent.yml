@@ -571,9 +571,9 @@ jobs:
           
           ### 📦 Quick Install
           
-          **Debian/Ubuntu (APT repo):**
+          **Debian/Ubuntu:**
           ```bash
-          echo "deb [trusted=yes] https://packages.printmaster.work stable main" | sudo tee /etc/apt/sources.list.d/printmaster.list && sudo apt-get update && sudo apt-get install -y printmaster-agent
+          curl -fsSL https://packages.printmaster.work/install.sh | sudo bash
           ```
           
           **Fedora/RHEL (DNF repo):**
@@ -761,12 +761,18 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         path: main-repo
-        sparse-checkout: agent/VERSION
+        sparse-checkout: |
+          agent/VERSION
+          scripts/install-agent.sh
 
     - name: Get version from main
       id: main_version
       run: |
         echo "version=$(cat main-repo/agent/VERSION)" >> $GITHUB_OUTPUT
+
+    - name: Publish signed APT installer
+      run: |
+        install -m 0755 main-repo/scripts/install-agent.sh apt-repo/install.sh
 
     - name: Install APT repo tools
       run: |
@@ -1061,24 +1067,10 @@ jobs:
           
           <h2>Debian/Ubuntu (APT)</h2>
           
-          <h3>Quick Install</h3>
-          <pre><code># Add repository
-        echo "deb [trusted=yes] https://packages.printmaster.work stable main" | sudo tee /etc/apt/sources.list.d/printmaster.list
+          <h3>Quick Install (GPG signature verification enabled)</h3>
+          <pre><code>curl -fsSL https://packages.printmaster.work/install.sh | sudo bash</code></pre>
 
-        # Update and install
-        sudo apt-get update
-        sudo apt-get install printmaster-agent</code></pre>
-
-          <h3>With GPG Verification (Recommended)</h3>
-          <pre><code># Download and add GPG key
-        curl -fsSL https://packages.printmaster.work/gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/printmaster.gpg
-
-        # Add repository with signed-by
-        echo "deb [signed-by=/usr/share/keyrings/printmaster.gpg] https://packages.printmaster.work stable main" | sudo tee /etc/apt/sources.list.d/printmaster.list
-
-        # Update and install
-        sudo apt-get update
-        sudo apt-get install printmaster-agent</code></pre>
+          <p>The installer verifies the signing-key fingerprint, configures APT with a dedicated keyring, and installs PrintMaster Agent.</p>
 
           <h2>Fedora/RHEL (DNF)</h2>
           

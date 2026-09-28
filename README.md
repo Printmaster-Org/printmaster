@@ -96,9 +96,7 @@ Access at `http://localhost:8080`
 
 ```bash
 # Debian/Ubuntu
-echo "deb [trusted=yes] https://packages.printmaster.work stable main" | \
-  sudo tee /etc/apt/sources.list.d/printmaster.list
-sudo apt-get update && sudo apt-get install -y printmaster-agent
+curl -fsSL https://packages.printmaster.work/install.sh | sudo bash
 ```
 
 ## Architecture

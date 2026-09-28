@@ -43,11 +43,6 @@ Download and run the MSI installer from [GitHub Releases](https://github.com/pri
 ```bash
 # Debian/Ubuntu
 curl -fsSL https://packages.printmaster.work/install.sh | sudo bash
-
-# Or manual apt install
-echo "deb [trusted=yes] https://packages.printmaster.work stable main" | \
-  sudo tee /etc/apt/sources.list.d/printmaster.list
-sudo apt-get update && sudo apt-get install -y printmaster-agent
 ```
 
 ---
@@ -208,27 +203,24 @@ Get-Service PrintMasterAgent
 #### APT Repository (Recommended)
 
 ```bash
-# Add repository
-echo "deb [trusted=yes] https://packages.printmaster.work stable main" | \
-  sudo tee /etc/apt/sources.list.d/printmaster.list
-
-# Install
-sudo apt-get update
-sudo apt-get install -y printmaster-agent
+# The installer validates the repository signing-key fingerprint,
+# configures APT signature verification, and installs the agent.
+curl -fsSL https://packages.printmaster.work/install.sh | sudo bash
 
 # The service starts automatically
 systemctl status printmaster-agent
 ```
 
-#### With GPG Signature Verification (Recommended for Production)
+#### Manual APT Repository Setup
 
 ```bash
-# Import GPG key
+sudo install -d -m 0755 /etc/apt/keyrings
 curl -fsSL https://packages.printmaster.work/gpg.key | \
-  sudo gpg --dearmor -o /usr/share/keyrings/printmaster.gpg
+  sudo gpg --dearmor --yes -o /etc/apt/keyrings/printmaster.gpg
+sudo chmod 0644 /etc/apt/keyrings/printmaster.gpg
 
-# Add repository with signature verification
-echo "deb [signed-by=/usr/share/keyrings/printmaster.gpg] https://packages.printmaster.work stable main" | \
+# Configure APT to trust this key only for the PrintMaster repository
+echo "deb [signed-by=/etc/apt/keyrings/printmaster.gpg] https://packages.printmaster.work stable main" | \
   sudo tee /etc/apt/sources.list.d/printmaster.list
 
 # Install

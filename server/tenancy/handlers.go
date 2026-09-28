@@ -2547,7 +2547,21 @@ case "$DISTRO_FAMILY" in
 	debian)
 		if command -v apt-get >/dev/null 2>&1; then
 			echo "Installing via APT (Debian/Ubuntu family)..."
-			echo "deb [trusted=yes] $REPO_BASE stable main" > /etc/apt/sources.list.d/printmaster.list
+			apt-get update -qq
+			DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates curl gnupg
+			APT_KEY_TMP="$(mktemp)"
+			trap 'rm -f "$APT_KEY_TMP"' EXIT HUP INT TERM
+			curl -fsSL "$REPO_BASE/gpg.key" -o "$APT_KEY_TMP"
+			APT_KEY_FINGERPRINT="$(gpg --show-keys --with-colons "$APT_KEY_TMP" | awk -F: '$1 == "fpr" { print toupper($10); exit }')"
+			if [ "$APT_KEY_FINGERPRINT" != "41CB14AF15B82312DE5ED2EAF5CF692407FFF7DF" ]; then
+				echo "PrintMaster signing-key fingerprint mismatch; refusing APT installation." >&2
+				exit 1
+			fi
+			install -d -m 0755 /etc/apt/keyrings
+			gpg --batch --yes --dearmor --output /etc/apt/keyrings/printmaster.gpg "$APT_KEY_TMP"
+			chmod 0644 /etc/apt/keyrings/printmaster.gpg
+			rm -f /etc/apt/sources.list.d/printmaster.list /etc/apt/sources.list.d/printmaster.sources
+			echo "deb [signed-by=/etc/apt/keyrings/printmaster.gpg] $REPO_BASE stable main" > /etc/apt/sources.list.d/printmaster.list
 			apt-get update -qq
 			if apt-get install -y printmaster-agent; then
 				configure_agent
