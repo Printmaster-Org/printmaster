@@ -214,6 +214,10 @@ systemctl status printmaster-agent
 #### Manual APT Repository Setup
 
 ```bash
+# Remove old repo 
+sudo rm -f /etc/apt/sources.list.d/printmaster.list /etc/apt/sources.list.d/printmaster.sources
+
+# Setup new repo
 sudo install -d -m 0755 /etc/apt/keyrings
 curl -fsSL https://packages.printmaster.work/gpg.key | \
   sudo gpg --dearmor --yes -o /etc/apt/keyrings/printmaster.gpg
