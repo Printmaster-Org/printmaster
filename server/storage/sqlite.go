@@ -798,6 +798,21 @@ func (s *SQLiteStore) initSchema() error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_device_credentials_tenant ON device_credentials(tenant_id);
+
+	-- Tenant-scoped admin notification preferences (fleet level lives in config.toml)
+	CREATE TABLE IF NOT EXISTS tenant_notification_settings (
+		tenant_id TEXT PRIMARY KEY,
+		enabled INTEGER NOT NULL DEFAULT 0,
+		recipients TEXT NOT NULL DEFAULT '[]',
+		notify_on_critical INTEGER NOT NULL DEFAULT 1,
+		notify_on_warning INTEGER NOT NULL DEFAULT 0,
+		daily_summary_enabled INTEGER NOT NULL DEFAULT 0,
+		daily_summary_time TEXT NOT NULL DEFAULT '08:00',
+		daily_summary_timezone TEXT NOT NULL DEFAULT 'Local',
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_by TEXT NOT NULL DEFAULT '',
+		FOREIGN KEY(tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+	);
 	`
 
 	if _, err := s.db.Exec(schema); err != nil {

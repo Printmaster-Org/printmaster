@@ -123,3 +123,34 @@
 
   # Minutes between automatic self-update checks
   check_interval_minutes = 360
+
+[smtp]
+  # Outgoing mail, used for invitations, password resets, and admin notifications
+  enabled = false
+  host = ""
+  port = 587
+  user = ""
+  pass = ""
+  from = ""
+  # HTML email theme: "auto", "dark", or "light"
+  email_theme = "auto"
+
+[notifications]
+  # Server-level administrator notifications. Each condition (for example an
+  # expired SSO client secret) is emailed once and stays latched until resolved.
+  # Tenants configure their own admin recipients in the UI under
+  # Tenants > Notifications; those settings live in the database, not here.
+  enabled = false
+
+  # Server administrators notified about server-wide conditions
+  admin_emails = []
+
+  # Severity levels that trigger an immediate email
+  notify_on_critical = true
+  notify_on_warning = false
+
+  # Daily digest of unresolved alerts
+  daily_summary_enabled = false
+  daily_summary_time = "08:00"
+  # IANA timezone name (e.g. "America/New_York") or "Local"
+  daily_summary_timezone = "Local"

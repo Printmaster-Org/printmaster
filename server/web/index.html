@@ -2507,6 +2507,51 @@
         </div>
     </div>
 
+    <!-- Tenant Notifications Modal -->
+    <div class="modal" id="tenant_notifications_modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <span class="modal-title" id="tenant_notifications_title">Tenant Notifications</span>
+                <button class="modal-close-x" id="tenant_notifications_close_x" title="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="muted-text">Tenant administrators listed here are emailed about alerts scoped to this tenant. Server-level administrators are notified separately.</p>
+                <label class="tenant-form-label">
+                    <span><input type="checkbox" id="tenant_notify_enabled" /> Enable notifications for this tenant</span>
+                </label>
+                <label class="tenant-form-label">
+                    <span>Tenant Admin Emails</span>
+                    <input id="tenant_notify_recipients" type="text" class="tenant-form-input" placeholder="admin@customer.com, it@customer.com" autocomplete="off" data-1p-ignore data-lpignore="true" />
+                    <span class="tenant-form-helper">Comma-separated list of addresses.</span>
+                </label>
+                <label class="tenant-form-label">
+                    <span><input type="checkbox" id="tenant_notify_critical" /> Email critical events</span>
+                </label>
+                <label class="tenant-form-label">
+                    <span><input type="checkbox" id="tenant_notify_warning" /> Email warning events</span>
+                </label>
+                <label class="tenant-form-label">
+                    <span><input type="checkbox" id="tenant_notify_summary" /> Send daily summary</span>
+                </label>
+                <label class="tenant-form-label">
+                    <span>Daily Summary Time (HH:MM)</span>
+                    <input id="tenant_notify_summary_time" type="text" class="tenant-form-input" placeholder="08:00" />
+                </label>
+                <label class="tenant-form-label">
+                    <span>Daily Summary Timezone</span>
+                    <input id="tenant_notify_summary_tz" type="text" class="tenant-form-input" placeholder="Local" />
+                    <span class="tenant-form-helper">IANA timezone name (e.g. America/New_York) or Local.</span>
+                </label>
+                <div id="tenant_notifications_error" class="tenant-form-error"></div>
+            </div>
+            <div class="modal-footer tenant-modal-footer">
+                <button class="btn-outline" id="tenant_notifications_test">Send Test</button>
+                <button class="btn-outline" id="tenant_notifications_cancel">Cancel</button>
+                <button class="btn-primary" id="tenant_notifications_save">Save</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Site Edit Modal -->
     <div class="modal" id="site_modal" style="display:none;">
         <div class="modal-content site-modal-content">

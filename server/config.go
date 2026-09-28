@@ -23,15 +23,28 @@ func newConfigSourceTracker() *ConfigSourceTracker {
 
 // Config represents the server configuration
 type Config struct {
-	Server     ServerConfig          `toml:"server"`
-	Security   SecurityConfig        `toml:"security"`
-	TLS        TLSConfigTOML         `toml:"tls"`
-	Database   config.DatabaseConfig `toml:"database"`
-	Logging    config.LoggingConfig  `toml:"logging"`
-	Tenancy    TenancyConfig         `toml:"tenancy"`
-	SMTP       SMTPConfig            `toml:"smtp"`
-	Releases   ReleasesConfig        `toml:"releases"`
-	SelfUpdate SelfUpdateConfig      `toml:"self_update"`
+	Server        ServerConfig          `toml:"server"`
+	Security      SecurityConfig        `toml:"security"`
+	TLS           TLSConfigTOML         `toml:"tls"`
+	Database      config.DatabaseConfig `toml:"database"`
+	Logging       config.LoggingConfig  `toml:"logging"`
+	Tenancy       TenancyConfig         `toml:"tenancy"`
+	SMTP          SMTPConfig            `toml:"smtp"`
+	Notifications NotificationsConfig   `toml:"notifications"`
+	Releases      ReleasesConfig        `toml:"releases"`
+	SelfUpdate    SelfUpdateConfig      `toml:"self_update"`
+}
+
+// NotificationsConfig controls operator-facing notifications about the server itself
+// (expiring credentials, failed background jobs, daily fleet summaries).
+type NotificationsConfig struct {
+	Enabled              bool     `toml:"enabled"`
+	AdminEmails          []string `toml:"admin_emails"`
+	NotifyOnCritical     bool     `toml:"notify_on_critical"`
+	NotifyOnWarning      bool     `toml:"notify_on_warning"`
+	DailySummaryEnabled  bool     `toml:"daily_summary_enabled"`
+	DailySummaryTime     string   `toml:"daily_summary_time"` // HH:MM in DailySummaryTimezone
+	DailySummaryTimezone string   `toml:"daily_summary_timezone"`
 }
 
 // ServerConfig holds server-specific settings
@@ -158,6 +171,15 @@ func DefaultConfig() *Config {
 			Pass:       "",
 			From:       "",
 			EmailTheme: "auto",
+		},
+		Notifications: NotificationsConfig{
+			Enabled:              false,
+			AdminEmails:          nil,
+			NotifyOnCritical:     true,
+			NotifyOnWarning:      false,
+			DailySummaryEnabled:  false,
+			DailySummaryTime:     "08:00",
+			DailySummaryTimezone: "Local",
 		},
 		Releases: ReleasesConfig{
 			MaxReleases:         6,
@@ -341,6 +363,36 @@ func applyEnvOverrides(cfg *Config, tracker *ConfigSourceTracker) {
 	if val := os.Getenv("SMTP_EMAIL_THEME"); val != "" {
 		cfg.SMTP.EmailTheme = val
 		tracker.EnvKeys["smtp.email_theme"] = true
+	}
+
+	// Admin notification env overrides
+	if val := os.Getenv("NOTIFICATIONS_ENABLED"); val != "" {
+		cfg.Notifications.Enabled = val == "true" || val == "1"
+		tracker.EnvKeys["notifications.enabled"] = true
+	}
+	if val := os.Getenv("NOTIFICATIONS_ADMIN_EMAILS"); val != "" {
+		cfg.Notifications.AdminEmails = parseStringListEnv(val)
+		tracker.EnvKeys["notifications.admin_emails"] = true
+	}
+	if val := os.Getenv("NOTIFICATIONS_NOTIFY_ON_CRITICAL"); val != "" {
+		cfg.Notifications.NotifyOnCritical = val == "true" || val == "1"
+		tracker.EnvKeys["notifications.notify_on_critical"] = true
+	}
+	if val := os.Getenv("NOTIFICATIONS_NOTIFY_ON_WARNING"); val != "" {
+		cfg.Notifications.NotifyOnWarning = val == "true" || val == "1"
+		tracker.EnvKeys["notifications.notify_on_warning"] = true
+	}
+	if val := os.Getenv("NOTIFICATIONS_DAILY_SUMMARY_ENABLED"); val != "" {
+		cfg.Notifications.DailySummaryEnabled = val == "true" || val == "1"
+		tracker.EnvKeys["notifications.daily_summary_enabled"] = true
+	}
+	if val := os.Getenv("NOTIFICATIONS_DAILY_SUMMARY_TIME"); val != "" {
+		cfg.Notifications.DailySummaryTime = val
+		tracker.EnvKeys["notifications.daily_summary_time"] = true
+	}
+	if val := os.Getenv("NOTIFICATIONS_DAILY_SUMMARY_TIMEZONE"); val != "" {
+		cfg.Notifications.DailySummaryTimezone = val
+		tracker.EnvKeys["notifications.daily_summary_timezone"] = true
 	}
 
 	// Logging env overrides with tracking (check prefixed first, then generic)

@@ -781,6 +781,12 @@ type Store interface {
 	UpsertAgentSettings(ctx context.Context, rec *AgentSettingsRecord) error
 	DeleteAgentSettings(ctx context.Context, agentID string) error
 
+	// Admin notification settings (tenant level; fleet level lives in config.toml)
+	GetTenantNotificationSettings(ctx context.Context, tenantID string) (*NotificationSettings, error)
+	UpsertTenantNotificationSettings(ctx context.Context, rec *NotificationSettings) error
+	DeleteTenantNotificationSettings(ctx context.Context, tenantID string) error
+	ListTenantNotificationSettings(ctx context.Context) ([]*NotificationSettings, error)
+
 	// Fleet update policy management
 	GetFleetUpdatePolicy(ctx context.Context, tenantID string) (*FleetUpdatePolicy, error)
 	UpsertFleetUpdatePolicy(ctx context.Context, policy *FleetUpdatePolicy) error

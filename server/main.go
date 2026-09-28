@@ -33,6 +33,7 @@ import (
 	commonutil "printmaster/common/util"
 	sharedweb "printmaster/common/web"
 	wscommon "printmaster/common/ws"
+	adminnotify "printmaster/server/adminnotify"
 	alertsapi "printmaster/server/alerts"
 	authz "printmaster/server/authz"
 	emailtpl "printmaster/server/email"
@@ -385,6 +386,7 @@ var (
 	intakeWorker        *releases.IntakeWorker // Release intake worker for syncing GitHub releases
 	selfUpdateManager   *selfupdate.Manager    // Self-update manager for server binary updates
 	alertEvaluator      *alertsapi.Evaluator   // Alert evaluation background worker
+	adminNotifier       *adminnotify.Notifier  // Latched admin notifications + daily summaries
 	metricsCollector    *metricsapi.Collector  // Server metrics collection background worker
 	credentialsKey      []byte                 // Encryption key for device credentials
 )
@@ -907,6 +909,15 @@ func runServer(ctx context.Context, configFlag string) {
 		logInfo("Authentication rate limiter disabled")
 	}
 
+	// Initialize admin notifications before routes so the API can reference the notifier
+	adminNotifier = adminnotify.New(adminnotify.Options{
+		Store:       serverStore,
+		Mailer:      sendAdminNotificationEmail,
+		FleetConfig: fleetNotificationConfig,
+		ThemeFn:     getEmailTheme,
+		ServerURL:   configuredServerURL,
+	})
+
 	// Setup HTTP routes
 	setupRoutes(cfg)
 
@@ -918,6 +929,9 @@ func runServer(ctx context.Context, configFlag string) {
 	alertEvaluator.Start()
 	defer alertEvaluator.Stop()
 	logInfo("Alert evaluator started", "interval", "60s")
+
+	adminNotifier.StartDailySummaries()
+	defer adminNotifier.StopDailySummaries()
 
 	// Start agent callback token cleanup goroutine
 	go func() {
@@ -3543,6 +3557,29 @@ func setupRoutes(cfg *Config) {
 	})
 	logInfo("Update policy routes registered", "enabled", featureEnabled)
 
+	notificationAPI, err := adminnotify.NewAPI(serverStore, adminNotifier, adminnotify.APIOptions{
+		AuthMiddleware: requireWebAuth,
+		Authorizer: func(r *http.Request, action authz.Action, resource authz.ResourceRef) error {
+			return authorizeRequest(r, action, resource)
+		},
+		ActorResolver: func(r *http.Request) string {
+			if principal := getPrincipal(r); principal != nil && principal.User != nil {
+				return principal.User.Username
+			}
+			return ""
+		},
+		AuditLogger: logRequestAudit,
+	})
+	if err != nil {
+		logFatal("Failed to initialize notification settings API", "error", err)
+	}
+	notificationAPI.RegisterRoutes(adminnotify.RouteConfig{
+		Mux:                 http.DefaultServeMux,
+		FeatureEnabled:      featureEnabled,
+		RegisterTenantAlias: true,
+	})
+	logInfo("Notification settings routes registered", "enabled", featureEnabled)
+
 	// Alerts API routes
 	alertNotifier := alertsapi.NewNotifier(serverStore, alertsapi.NotifierConfig{
 		Logger:     nil, // Uses slog.Default()
@@ -3617,6 +3654,7 @@ func setupRoutes(cfg *Config) {
 
 	// Server settings (read/write via sanitized API)
 	http.HandleFunc("/api/v1/server/settings", requireWebAuth(handleServerSettings))
+	http.HandleFunc("/api/v1/server/settings/notifications/test", requireWebAuth(handleFleetNotificationTest))
 
 	// Onboarding status (for first-run setup wizard)
 	http.HandleFunc("/api/v1/onboarding/status", requireWebAuth(handleOnboardingStatus))
@@ -8400,13 +8438,24 @@ func handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 // ===== Server Settings API =====
 
 type serverSettingsRequest struct {
-	Server     *serverSettingsServerSection     `json:"server"`
-	Security   *serverSettingsSecuritySection   `json:"security"`
-	TLS        *serverSettingsTLSSection        `json:"tls"`
-	Logging    *serverSettingsLoggingSection    `json:"logging"`
-	SMTP       *serverSettingsSMTPSection       `json:"smtp"`
-	Releases   *serverSettingsReleasesSection   `json:"releases"`
-	SelfUpdate *serverSettingsSelfUpdateSection `json:"self_update"`
+	Server        *serverSettingsServerSection        `json:"server"`
+	Security      *serverSettingsSecuritySection      `json:"security"`
+	TLS           *serverSettingsTLSSection           `json:"tls"`
+	Logging       *serverSettingsLoggingSection       `json:"logging"`
+	SMTP          *serverSettingsSMTPSection          `json:"smtp"`
+	Notifications *serverSettingsNotificationsSection `json:"notifications"`
+	Releases      *serverSettingsReleasesSection      `json:"releases"`
+	SelfUpdate    *serverSettingsSelfUpdateSection    `json:"self_update"`
+}
+
+type serverSettingsNotificationsSection struct {
+	Enabled              *bool   `json:"enabled"`
+	AdminEmails          *string `json:"admin_emails"` // comma or newline separated
+	NotifyOnCritical     *bool   `json:"notify_on_critical"`
+	NotifyOnWarning      *bool   `json:"notify_on_warning"`
+	DailySummaryEnabled  *bool   `json:"daily_summary_enabled"`
+	DailySummaryTime     *string `json:"daily_summary_time"`
+	DailySummaryTimezone *string `json:"daily_summary_timezone"`
 }
 
 type serverSettingsServerSection struct {
@@ -8627,6 +8676,15 @@ func buildServerSettingsResponse(cfg *Config) map[string]interface{} {
 			"user":    cfg.SMTP.User,
 			"from":    cfg.SMTP.From,
 		},
+		"notifications": map[string]interface{}{
+			"enabled":                cfg.Notifications.Enabled,
+			"admin_emails":           strings.Join(cfg.Notifications.AdminEmails, ", "),
+			"notify_on_critical":     cfg.Notifications.NotifyOnCritical,
+			"notify_on_warning":      cfg.Notifications.NotifyOnWarning,
+			"daily_summary_enabled":  cfg.Notifications.DailySummaryEnabled,
+			"daily_summary_time":     cfg.Notifications.DailySummaryTime,
+			"daily_summary_timezone": cfg.Notifications.DailySummaryTimezone,
+		},
 		"releases": map[string]interface{}{
 			"max_releases":          cfg.Releases.MaxReleases,
 			"poll_interval_minutes": cfg.Releases.PollIntervalMinutes,
@@ -8719,6 +8777,22 @@ func getEffectiveConfigValues(keys []string) map[string]interface{} {
 		case "smtp.from":
 			values[key] = cfg.SMTP.From
 		// Note: smtp.pass is intentionally not exposed for security
+
+		// Admin notification settings
+		case "notifications.enabled":
+			values[key] = cfg.Notifications.Enabled
+		case "notifications.admin_emails":
+			values[key] = strings.Join(cfg.Notifications.AdminEmails, ", ")
+		case "notifications.notify_on_critical":
+			values[key] = cfg.Notifications.NotifyOnCritical
+		case "notifications.notify_on_warning":
+			values[key] = cfg.Notifications.NotifyOnWarning
+		case "notifications.daily_summary_enabled":
+			values[key] = cfg.Notifications.DailySummaryEnabled
+		case "notifications.daily_summary_time":
+			values[key] = cfg.Notifications.DailySummaryTime
+		case "notifications.daily_summary_timezone":
+			values[key] = cfg.Notifications.DailySummaryTimezone
 
 		// Logging settings
 		case "logging.level":
@@ -9111,6 +9185,102 @@ func applyServerSettings(cfg *Config, req *serverSettingsRequest) (*serverSettin
 		}
 	}
 
+	// Handle admin notification section
+	if section := req.Notifications; section != nil {
+		if section.Enabled != nil {
+			if err := ensureConfigKeyEditable("notifications.enabled"); err != nil {
+				*cfg = original
+				return nil, err
+			}
+			if cfg.Notifications.Enabled != *section.Enabled {
+				cfg.Notifications.Enabled = *section.Enabled
+				markChanged("notifications.enabled", false)
+			}
+		}
+		if section.AdminEmails != nil {
+			if err := ensureConfigKeyEditable("notifications.admin_emails"); err != nil {
+				*cfg = original
+				return nil, err
+			}
+			emails, err := parseAdminEmailList(*section.AdminEmails)
+			if err != nil {
+				*cfg = original
+				return nil, fmt.Errorf("invalid notifications.admin_emails: %w", err)
+			}
+			if !stringSlicesEqual(cfg.Notifications.AdminEmails, emails) {
+				cfg.Notifications.AdminEmails = emails
+				markChanged("notifications.admin_emails", false)
+			}
+		}
+		if section.NotifyOnCritical != nil {
+			if err := ensureConfigKeyEditable("notifications.notify_on_critical"); err != nil {
+				*cfg = original
+				return nil, err
+			}
+			if cfg.Notifications.NotifyOnCritical != *section.NotifyOnCritical {
+				cfg.Notifications.NotifyOnCritical = *section.NotifyOnCritical
+				markChanged("notifications.notify_on_critical", false)
+			}
+		}
+		if section.NotifyOnWarning != nil {
+			if err := ensureConfigKeyEditable("notifications.notify_on_warning"); err != nil {
+				*cfg = original
+				return nil, err
+			}
+			if cfg.Notifications.NotifyOnWarning != *section.NotifyOnWarning {
+				cfg.Notifications.NotifyOnWarning = *section.NotifyOnWarning
+				markChanged("notifications.notify_on_warning", false)
+			}
+		}
+		if section.DailySummaryEnabled != nil {
+			if err := ensureConfigKeyEditable("notifications.daily_summary_enabled"); err != nil {
+				*cfg = original
+				return nil, err
+			}
+			if cfg.Notifications.DailySummaryEnabled != *section.DailySummaryEnabled {
+				cfg.Notifications.DailySummaryEnabled = *section.DailySummaryEnabled
+				markChanged("notifications.daily_summary_enabled", false)
+			}
+		}
+		if section.DailySummaryTime != nil {
+			if err := ensureConfigKeyEditable("notifications.daily_summary_time"); err != nil {
+				*cfg = original
+				return nil, err
+			}
+			value := strings.TrimSpace(*section.DailySummaryTime)
+			if !adminnotify.ValidSummaryTime(value) {
+				*cfg = original
+				return nil, fmt.Errorf("notifications.daily_summary_time must be in HH:MM format")
+			}
+			if cfg.Notifications.DailySummaryTime != value {
+				cfg.Notifications.DailySummaryTime = value
+				markChanged("notifications.daily_summary_time", false)
+			}
+		}
+		if section.DailySummaryTimezone != nil {
+			if err := ensureConfigKeyEditable("notifications.daily_summary_timezone"); err != nil {
+				*cfg = original
+				return nil, err
+			}
+			value := strings.TrimSpace(*section.DailySummaryTimezone)
+			if value == "" {
+				value = "Local"
+			}
+			if !adminnotify.ValidTimezone(value) {
+				*cfg = original
+				return nil, fmt.Errorf("notifications.daily_summary_timezone is not a known timezone")
+			}
+			if cfg.Notifications.DailySummaryTimezone != value {
+				cfg.Notifications.DailySummaryTimezone = value
+				markChanged("notifications.daily_summary_timezone", false)
+			}
+		}
+		if cfg.Notifications.Enabled && len(cfg.Notifications.AdminEmails) == 0 {
+			*cfg = original
+			return nil, fmt.Errorf("notifications.admin_emails must contain at least one address when notifications are enabled")
+		}
+	}
+
 	// Handle releases section
 	if section := req.Releases; section != nil {
 		if section.MaxReleases != nil {
@@ -9237,6 +9407,44 @@ func validatePort(port int) error {
 		return fmt.Errorf("port must be between 1 and 65535")
 	}
 	return nil
+}
+
+// parseAdminEmailList splits a comma/semicolon/newline separated address list and
+// rejects anything that is not a plausible, injection-free email address.
+func parseAdminEmailList(raw string) ([]string, error) {
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r'
+	})
+	out := make([]string, 0, len(fields))
+	seen := make(map[string]bool, len(fields))
+	for _, field := range fields {
+		addr := strings.TrimSpace(field)
+		if addr == "" {
+			continue
+		}
+		if _, err := validateEmailAddress(addr); err != nil {
+			return nil, fmt.Errorf("%q is not a valid email address", addr)
+		}
+		lower := strings.ToLower(addr)
+		if seen[lower] {
+			continue
+		}
+		seen[lower] = true
+		out = append(out, addr)
+	}
+	return out, nil
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // handleAgentUpdateManifest returns the latest update manifest for the requesting agent.

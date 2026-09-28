@@ -876,6 +876,20 @@ func (s *PostgresStore) initSchema() error {
 
 	CREATE INDEX IF NOT EXISTS idx_device_credentials_tenant ON device_credentials(tenant_id);
 
+	-- Tenant-scoped admin notification preferences (fleet level lives in config.toml)
+	CREATE TABLE IF NOT EXISTS tenant_notification_settings (
+		tenant_id TEXT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+		enabled BOOLEAN NOT NULL DEFAULT FALSE,
+		recipients TEXT NOT NULL DEFAULT '[]',
+		notify_on_critical BOOLEAN NOT NULL DEFAULT TRUE,
+		notify_on_warning BOOLEAN NOT NULL DEFAULT FALSE,
+		daily_summary_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+		daily_summary_time TEXT NOT NULL DEFAULT '08:00',
+		daily_summary_timezone TEXT NOT NULL DEFAULT 'Local',
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		updated_by TEXT NOT NULL DEFAULT ''
+	);
+
 	-- Add FK from report_schedules.last_run_id to report_runs
 	DO $$
 	BEGIN

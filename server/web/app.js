@@ -522,6 +522,20 @@ const SERVER_SETTINGS_SCHEMA = [
                 ], helper: 'Color theme for HTML emails (invites, password resets).', configKey: 'smtp.email_theme'
             }
         ]
+    },
+    {
+        section: 'notifications',
+        title: 'Administrator Notifications',
+        description: 'Server-level alerts sent to your operations team. Each condition is emailed once and stays latched until it is resolved. Tenants configure their own admin recipients under Tenants > Notifications.',
+        fields: [
+            { key: 'enabled', label: 'Enable Admin Notifications', type: 'checkbox', helper: 'Requires SMTP to be configured above.', configKey: 'notifications.enabled' },
+            { key: 'admin_emails', label: 'Server Admin Emails', type: 'text', placeholder: 'ops@yourdomain.com, oncall@yourdomain.com', helper: 'Comma-separated list of server administrators.', configKey: 'notifications.admin_emails' },
+            { key: 'notify_on_critical', label: 'Email Critical Events', type: 'checkbox', helper: 'Expired credentials, failed background jobs, and other breakages.', configKey: 'notifications.notify_on_critical' },
+            { key: 'notify_on_warning', label: 'Email Warning Events', type: 'checkbox', helper: 'Lower-severity problems that still need attention.', configKey: 'notifications.notify_on_warning' },
+            { key: 'daily_summary_enabled', label: 'Send Daily Summary', type: 'checkbox', helper: 'One digest per day covering unresolved fleet alerts.', configKey: 'notifications.daily_summary_enabled' },
+            { key: 'daily_summary_time', label: 'Daily Summary Time (HH:MM)', type: 'text', placeholder: '08:00', helper: 'Local time of day the digest is sent.', configKey: 'notifications.daily_summary_time' },
+            { key: 'daily_summary_timezone', label: 'Daily Summary Timezone', type: 'text', placeholder: 'Local', helper: 'IANA timezone name (e.g. America/New_York) or Local.', configKey: 'notifications.daily_summary_timezone' }
+        ]
     }
 ];
 
@@ -4529,6 +4543,7 @@ function normalizeServerSettings(raw) {
     const tlsSection = scoped.tls || {};
     const loggingSection = scoped.logging || {};
     const smtpSection = scoped.smtp || {};
+    const notificationsSection = scoped.notifications || {};
     const databaseSection = scoped.database || {};
     const releasesSection = scoped.releases || {};
     const selfUpdateSection = scoped.self_update || {};
@@ -4576,6 +4591,15 @@ function normalizeServerSettings(raw) {
             pass: '',
             from: safeStr(smtpSection.from || ''),
             email_theme: safeStr(smtpSection.email_theme || 'auto') || 'auto',
+        },
+        notifications: {
+            enabled: safeBool(notificationsSection.enabled),
+            admin_emails: safeStr(notificationsSection.admin_emails || ''),
+            notify_on_critical: safeBool(notificationsSection.notify_on_critical),
+            notify_on_warning: safeBool(notificationsSection.notify_on_warning),
+            daily_summary_enabled: safeBool(notificationsSection.daily_summary_enabled),
+            daily_summary_time: safeStr(notificationsSection.daily_summary_time || '08:00') || '08:00',
+            daily_summary_timezone: safeStr(notificationsSection.daily_summary_timezone || 'Local') || 'Local',
         },
         releases: {
             max_releases: safeStr(releasesSection.max_releases),
@@ -4920,6 +4944,15 @@ function buildServerSettingsPayload() {
             max_artifacts: isLocked('self_update.max_artifacts') ? undefined : parseNumber(data.self_update.max_artifacts),
             check_interval_minutes: isLocked('self_update.check_interval_minutes') ? undefined : parseNumber(data.self_update.check_interval_minutes),
         },
+        notifications: {
+            enabled: isLocked('notifications.enabled') ? undefined : Boolean(data.notifications.enabled),
+            admin_emails: isLocked('notifications.admin_emails') ? undefined : (pickString(data.notifications.admin_emails) || ''),
+            notify_on_critical: isLocked('notifications.notify_on_critical') ? undefined : Boolean(data.notifications.notify_on_critical),
+            notify_on_warning: isLocked('notifications.notify_on_warning') ? undefined : Boolean(data.notifications.notify_on_warning),
+            daily_summary_enabled: isLocked('notifications.daily_summary_enabled') ? undefined : Boolean(data.notifications.daily_summary_enabled),
+            daily_summary_time: isLocked('notifications.daily_summary_time') ? undefined : (pickString(data.notifications.daily_summary_time) || '08:00'),
+            daily_summary_timezone: isLocked('notifications.daily_summary_timezone') ? undefined : (pickString(data.notifications.daily_summary_timezone) || 'Local'),
+        },
     };
     if (payload.tls.mode === 'letsencrypt') {
         payload.tls.letsencrypt = {
@@ -4943,6 +4976,11 @@ function buildServerSettingsPayload() {
     Object.keys(payload.self_update).forEach(key => {
         if (payload.self_update[key] === undefined) {
             delete payload.self_update[key];
+        }
+    });
+    Object.keys(payload.notifications).forEach(key => {
+        if (payload.notifications[key] === undefined) {
+            delete payload.notifications[key];
         }
     });
     Object.keys(payload.server).forEach(key => {
@@ -8595,6 +8633,7 @@ function renderTenants(list) {
                         <button data-action="create-token" data-tenant="${idAttr}">Create Token</button>
                         <button data-action="view-tokens" data-tenant="${idAttr}">Tokens</button>
                         <button data-action="tenant-settings" data-tenant="${idAttr}">Settings</button>
+                        <button data-action="tenant-notifications" data-tenant="${idAttr}" data-tenant-name="${escapeHtml(t.name || '')}">Notifications</button>
                         <button data-action="edit-tenant" data-tenant="${idAttr}">Edit</button>
                         <button data-action="delete-tenant" data-tenant="${idAttr}" data-tenant-name="${escapeHtml(t.name || '')}" class="btn-danger">Delete</button>
                     </div>
@@ -8654,6 +8693,13 @@ function renderTenants(list) {
             await openFleetSettingsForTenant(tenantId);
         });
     });
+    el.querySelectorAll('button[data-action="tenant-notifications"]').forEach(b => {
+        b.addEventListener('click', async () => {
+            const tenantId = b.getAttribute('data-tenant') || '';
+            const tenantName = b.getAttribute('data-tenant-name') || tenantId;
+            await openTenantNotificationsModal(tenantId, tenantName);
+        });
+    });
     el.querySelectorAll('button[data-action="edit-tenant"]').forEach(b => {
         b.addEventListener('click', () => {
             const tenantId = b.getAttribute('data-tenant') || '';
@@ -8668,6 +8714,110 @@ function renderTenants(list) {
             await handleDeleteTenant(tenantId, tenantName);
         });
     });
+}
+
+let tenantNotificationsVM = { tenantId: '', wired: false };
+
+async function openTenantNotificationsModal(tenantId, tenantName) {
+    const modal = document.getElementById('tenant_notifications_modal');
+    if (!modal || !tenantId) return;
+    tenantNotificationsVM.tenantId = tenantId;
+    wireTenantNotificationsModal();
+
+    const titleEl = document.getElementById('tenant_notifications_title');
+    if (titleEl) titleEl.textContent = `Notifications — ${tenantName || tenantId}`;
+    setTenantNotificationsError('');
+
+    try {
+        const rec = await fetchJSON(`/api/v1/tenants/${encodeURIComponent(tenantId)}/notifications`);
+        applyTenantNotificationsToForm(rec || {});
+    } catch (err) {
+        window.__pm_shared.error('Failed to load tenant notification settings', err);
+        setTenantNotificationsError('Failed to load notification settings.');
+        applyTenantNotificationsToForm({});
+    }
+    modal.style.display = 'flex';
+}
+
+function wireTenantNotificationsModal() {
+    if (tenantNotificationsVM.wired) return;
+    tenantNotificationsVM.wired = true;
+    const close = () => {
+        const modal = document.getElementById('tenant_notifications_modal');
+        if (modal) modal.style.display = 'none';
+    };
+    document.getElementById('tenant_notifications_close_x')?.addEventListener('click', close);
+    document.getElementById('tenant_notifications_cancel')?.addEventListener('click', close);
+    document.getElementById('tenant_notifications_save')?.addEventListener('click', async () => {
+        if (await saveTenantNotifications()) close();
+    });
+    document.getElementById('tenant_notifications_test')?.addEventListener('click', sendTenantNotificationTest);
+}
+
+function applyTenantNotificationsToForm(rec) {
+    const set = (id, value) => { const el = document.getElementById(id); if (el) el.value = value; };
+    const check = (id, value) => { const el = document.getElementById(id); if (el) el.checked = Boolean(value); };
+    check('tenant_notify_enabled', rec.enabled);
+    set('tenant_notify_recipients', Array.isArray(rec.recipients) ? rec.recipients.join(', ') : '');
+    check('tenant_notify_critical', rec.notify_on_critical !== false);
+    check('tenant_notify_warning', rec.notify_on_warning);
+    check('tenant_notify_summary', rec.daily_summary_enabled);
+    set('tenant_notify_summary_time', rec.daily_summary_time || '08:00');
+    set('tenant_notify_summary_tz', rec.daily_summary_timezone || 'Local');
+}
+
+function readTenantNotificationsForm() {
+    const val = (id) => (document.getElementById(id)?.value || '').trim();
+    const checked = (id) => Boolean(document.getElementById(id)?.checked);
+    const recipients = val('tenant_notify_recipients')
+        .split(/[,;\n]/)
+        .map(s => s.trim())
+        .filter(Boolean);
+    return {
+        enabled: checked('tenant_notify_enabled'),
+        recipients,
+        notify_on_critical: checked('tenant_notify_critical'),
+        notify_on_warning: checked('tenant_notify_warning'),
+        daily_summary_enabled: checked('tenant_notify_summary'),
+        daily_summary_time: val('tenant_notify_summary_time') || '08:00',
+        daily_summary_timezone: val('tenant_notify_summary_tz') || 'Local',
+    };
+}
+
+function setTenantNotificationsError(message) {
+    const el = document.getElementById('tenant_notifications_error');
+    if (el) el.textContent = message || '';
+}
+
+async function saveTenantNotifications() {
+    const tenantId = tenantNotificationsVM.tenantId;
+    if (!tenantId) return false;
+    setTenantNotificationsError('');
+    try {
+        await fetchJSON(`/api/v1/tenants/${encodeURIComponent(tenantId)}/notifications`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(readTenantNotificationsForm()),
+        });
+        window.__pm_shared.showToast('Tenant notification settings saved.', 'success');
+        return true;
+    } catch (err) {
+        window.__pm_shared.error('Failed to save tenant notification settings', err);
+        setTenantNotificationsError((err && err.message) || 'Failed to save notification settings.');
+        return false;
+    }
+}
+
+async function sendTenantNotificationTest() {
+    const tenantId = tenantNotificationsVM.tenantId;
+    if (!tenantId) return;
+    setTenantNotificationsError('');
+    try {
+        const resp = await fetchJSON(`/api/v1/tenants/${encodeURIComponent(tenantId)}/notifications/test`, { method: 'POST' });
+        window.__pm_shared.showToast(`Test notification sent to ${(resp && resp.sent) || 0} recipient(s).`, 'success');
+    } catch (err) {
+        setTenantNotificationsError((err && err.message) || 'Failed to send test notification. Save your changes first.');
+    }
 }
 
 function renderTenantsFiltered() {

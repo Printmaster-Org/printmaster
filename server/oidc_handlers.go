@@ -18,6 +18,7 @@ import (
 	oidclib "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 
+	adminnotify "printmaster/server/adminnotify"
 	authz "printmaster/server/authz"
 	"printmaster/server/storage"
 )
@@ -344,9 +345,11 @@ func handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	token, err := oauthConfig.Exchange(ctx, code)
 	if err != nil {
 		serverLogger.Error("OIDC token exchange failed", "slug", provider.Slug, "issuer", provider.Issuer, "redirect_url", oauthConfig.RedirectURL, "client_id", provider.ClientID, "secret_hint", secretHint, "error", err)
+		reportOIDCCredentialFailure(ctx, provider, err)
 		http.Redirect(w, r, "/login?error=oidc_exchange", http.StatusFound)
 		return
 	}
+	clearAdminAlert(ctx, oidcCredentialAlertKey(provider.Slug), provider.TenantID)
 
 	rawIDToken, ok := token.Extra("id_token").(string)
 	if !ok {
@@ -415,6 +418,54 @@ func handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, redirectURL, http.StatusFound)
+}
+
+// oidcCredentialAlertKey returns the latch key for a provider's credential health.
+func oidcCredentialAlertKey(slug string) string {
+	return "oidc.credentials." + strings.ToLower(strings.TrimSpace(slug))
+}
+
+// reportOIDCCredentialFailure raises a latched admin alert when an OIDC token
+// exchange fails, calling out expired client secrets explicitly since they
+// silently break every login for the provider.
+func reportOIDCCredentialFailure(ctx context.Context, provider *storage.OIDCProvider, exchangeErr error) {
+	if provider == nil || exchangeErr == nil {
+		return
+	}
+	detail := exchangeErr.Error()
+	lower := strings.ToLower(detail)
+
+	severity := storage.AlertSeverityWarning
+	title := fmt.Sprintf("SSO login failing for %q", providerLabel(provider))
+	message := fmt.Sprintf("PrintMaster could not exchange the authorization code with %s. Users cannot sign in with this provider until it is fixed.", provider.Issuer)
+
+	switch {
+	case strings.Contains(lower, "expired") && strings.Contains(lower, "secret"),
+		strings.Contains(lower, "aadsts7000222"):
+		severity = storage.AlertSeverityCritical
+		title = fmt.Sprintf("SSO client secret expired for %q", providerLabel(provider))
+		message = fmt.Sprintf("The client secret for %q (client_id %s) has expired, so every single sign-on attempt is failing. Issue a new secret at the identity provider and update it in PrintMaster under Settings > Authentication.", providerLabel(provider), provider.ClientID)
+	case strings.Contains(lower, "invalid_client"):
+		severity = storage.AlertSeverityCritical
+		title = fmt.Sprintf("SSO client credentials rejected for %q", providerLabel(provider))
+		message = fmt.Sprintf("The identity provider rejected the client credentials for %q (client_id %s). Verify the client ID and secret in PrintMaster under Settings > Authentication.", providerLabel(provider), provider.ClientID)
+	}
+
+	raiseAdminAlert(ctx, adminnotify.Event{
+		Key:      oidcCredentialAlertKey(provider.Slug),
+		Severity: severity,
+		Title:    title,
+		Message:  message,
+		Details:  detail,
+		TenantID: provider.TenantID,
+	})
+}
+
+func providerLabel(provider *storage.OIDCProvider) string {
+	if name := strings.TrimSpace(provider.DisplayName); name != "" {
+		return name
+	}
+	return provider.Slug
 }
 
 // isAgentCallbackURL checks if a URL is an agent authentication callback
