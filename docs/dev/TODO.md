@@ -9,16 +9,15 @@ Consolidated pending features and improvements from across the codebase.
 ## 🔴 High Priority (Pre-1.0)
 
 ### USB Printer Support
-The killer feature - enables monitoring 40-60% of small business printers.
+Implemented via an IPP-USB HTTP proxy (Windows only) — see
+[USB_IMPLEMENTATION.md](USB_IMPLEMENTATION.md). The earlier pure-Go SNMP-over-USB
+plan (`gousbsnmp`) was abandoned and never built.
 
-- [ ] Pure Go USB library (gousbsnmp) - no C++ dependencies
-- [ ] Cross-platform USB device enumeration (Windows, Linux, macOS, Raspberry Pi)
-- [ ] USB-over-SNMP tunneling (IEEE 1284.4 protocol)
-- [ ] Same metrics as network printers (page counts, toner, supplies)
+- [x] IPP-USB proxy + web-scraped metrics (Windows)
+- [ ] Linux/macOS USB device enumeration + proxy support
+- [ ] Same metrics as network printers (page counts, toner, supplies) - USB scraping is best-effort per vendor, not at parity yet
 - [ ] USB printer configuration UI
-- [ ] USB/network printer differentiation
-
-**Reference**: [USB_IMPLEMENTATION.md](USB_IMPLEMENTATION.md) for protocol details
+- [ ] USB/network printer differentiation in main devices table (currently tracked separately)
 
 ### SNMPv3 Support
 Security enhancement for enterprise deployments.
@@ -172,7 +171,7 @@ These items were completed and can be referenced in their implementation:
 
 ## Notes
 
-- USB support is the 1.0 differentiator - prioritize gousbsnmp library
+- USB support (IPP-USB proxy) works on Windows; Linux/macOS parity is the main gap
 - Security features (SNMPv3, TOTP) needed before enterprise adoption
 - Analytics features can ship incrementally post-1.0
 - Avoid scope creep on reporting - MVP first

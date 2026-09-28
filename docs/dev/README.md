@@ -25,6 +25,7 @@ These docs are now in the parent [/docs](../README.md) folder:
 - [SNMP_RESEARCH_NOTES.md](SNMP_RESEARCH_NOTES.md) – Protocol research and notes
 - [Printer-MIB.mib](Printer-MIB.mib) – Standard Printer-MIB file
 - [RANGE_SYNTAX.md](RANGE_SYNTAX.md) – IP range syntax documentation
+- [USB_IMPLEMENTATION.md](USB_IMPLEMENTATION.md) – USB printer support via IPP-USB proxy (Windows only)
 
 ## Development & Testing
 - [TESTING.md](TESTING.md) – Testing strategy and patterns
@@ -32,7 +33,6 @@ These docs are now in the parent [/docs](../README.md) folder:
 
 ## Feature Plans (In Progress)
 - [AUTO_UPDATE_PLAN.md](AUTO_UPDATE_PLAN.md) – Agent/server auto-update implementation
-- [USB_IMPLEMENTATION.md](USB_IMPLEMENTATION.md) – USB printer support (planned for 1.0)
 - [EPSON_REMOTE_MODE_PLAN.md](EPSON_REMOTE_MODE_PLAN.md) – Epson remote-mode integration
 
 ## Reference
