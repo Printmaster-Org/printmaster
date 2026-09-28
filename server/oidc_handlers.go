@@ -282,9 +282,11 @@ func handleOIDCStart(w http.ResponseWriter, r *http.Request) {
 	op, err := cachedOIDCProvider(ctx, provider.Issuer)
 	if err != nil {
 		serverLogger.Error("Failed to load OIDC issuer", "slug", slug, "issuer", provider.Issuer, "error", err)
+		reportOIDCIssuerFailure(ctx, provider, err)
 		http.Error(w, "failed to load issuer", http.StatusBadGateway)
 		return
 	}
+	clearAdminAlert(ctx, oidcDiscoveryAlertKey(provider.Slug), provider.TenantID)
 
 	oauthConfig := buildOAuthConfig(r, provider, op)
 
@@ -335,9 +337,11 @@ func handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	op, err := cachedOIDCProvider(ctx, provider.Issuer)
 	if err != nil {
 		serverLogger.Error("OIDC issuer discovery failed during callback", "slug", provider.Slug, "issuer", provider.Issuer, "error", err)
+		reportOIDCIssuerFailure(ctx, provider, err)
 		http.Redirect(w, r, "/login?error=oidc_discovery", http.StatusFound)
 		return
 	}
+	clearAdminAlert(ctx, oidcDiscoveryAlertKey(provider.Slug), provider.TenantID)
 
 	oauthConfig := buildOAuthConfig(r, provider, op)
 	secretHint := maskSecret(provider.ClientSecret)
@@ -423,6 +427,24 @@ func handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 // oidcCredentialAlertKey returns the latch key for a provider's credential health.
 func oidcCredentialAlertKey(slug string) string {
 	return "oidc.credentials." + strings.ToLower(strings.TrimSpace(slug))
+}
+
+func oidcDiscoveryAlertKey(slug string) string {
+	return "oidc.discovery." + strings.ToLower(strings.TrimSpace(slug))
+}
+
+func reportOIDCIssuerFailure(ctx context.Context, provider *storage.OIDCProvider, discoveryErr error) {
+	if provider == nil || discoveryErr == nil {
+		return
+	}
+	raiseAdminAlert(ctx, adminnotify.Event{
+		Key:      oidcDiscoveryAlertKey(provider.Slug),
+		Severity: storage.AlertSeverityWarning,
+		Title:    fmt.Sprintf("SSO identity provider unavailable: %q", providerLabel(provider)),
+		Message:  fmt.Sprintf("PrintMaster could not load the OIDC discovery document from %s. Users may be unable to start or complete single sign-on until the identity provider is reachable and its issuer URL is valid.", provider.Issuer),
+		Details:  discoveryErr.Error(),
+		TenantID: provider.TenantID,
+	})
 }
 
 // reportOIDCCredentialFailure raises a latched admin alert when an OIDC token

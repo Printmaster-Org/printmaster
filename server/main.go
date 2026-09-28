@@ -1276,6 +1276,7 @@ func startReverseProxyMode(ctx context.Context, tlsConfig *TLSConfig) {
 		if err != nil {
 			logFatal("Failed to setup TLS for reverse proxy mode", "error", err)
 		}
+		startTLSCertificateMonitor(ctx, tlsCfg)
 
 		logInfo("Starting in reverse proxy mode with HTTPS (end-to-end encryption)",
 			"bind", addr,
@@ -1378,6 +1379,7 @@ func startStandaloneMode(ctx context.Context, tlsConfig *TLSConfig) {
 	if err != nil {
 		logFatal("Failed to setup TLS", "error", err, "mode", tlsConfig.Mode)
 	}
+	startTLSCertificateMonitor(ctx, tlsCfg)
 
 	// Use configured bind address, default to all interfaces if not set
 	bindAddr := tlsConfig.BindAddress
