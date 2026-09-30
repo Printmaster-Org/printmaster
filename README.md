@@ -1,12 +1,13 @@
-# PrintMaster
-
-**Printer & Copier Fleet Management**
+<div align="center">
+  <img src="docs/images/banner.png" alt="Bridge Monitor" width="900">
 
 [![CI](https://github.com/printmaster-org/printmaster/actions/workflows/ci.yml/badge.svg)](https://github.com/printmaster-org/printmaster/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/printmaster-org/printmaster)](https://github.com/printmaster-org/printmaster/releases)
 [![Go Report Card](https://goreportcard.com/badge/github.com/printmaster-org/printmaster)](https://goreportcard.com/report/github.com/printmaster-org/printmaster)
 [![Docker](https://ghcr-badge.egpl.dev/printmaster-org/printmaster-server/latest_tag?trim=major&label=latest)](https://github.com/printmaster-org/printmaster/pkgs/container/printmaster-server)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+</div>
 
 PrintMaster automatically discovers and monitors network printers and copiers. Built for MSPs, MPS providers, copier dealers, and IT departments managing print fleets.
 
