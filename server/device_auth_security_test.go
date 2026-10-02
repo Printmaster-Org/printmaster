@@ -141,4 +141,3 @@ func TestDeviceAuthAssignedTerminalSecurity(t *testing.T) {
 		}
 	}
 }
-

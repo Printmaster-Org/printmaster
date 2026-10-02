@@ -2435,16 +2435,16 @@ func handleAgentAuthCallbackValidate(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"valid":      true,
-		"authorized": true,
-		"agent_id": act.AgentID,
+		"valid":           true,
+		"authorized":      true,
+		"agent_id":        act.AgentID,
 		"agent_tenant_id": agent.TenantID,
-		"user_id":    act.UserID,
-		"username":   act.Username,
-		"role":       act.Role,
-		"tenant_id":  act.TenantID,
-		"tenant_ids": act.TenantIDs,
-		"expires_at": act.ExpiresAt.Format(time.RFC3339),
+		"user_id":         act.UserID,
+		"username":        act.Username,
+		"role":            act.Role,
+		"tenant_id":       act.TenantID,
+		"tenant_ids":      act.TenantIDs,
+		"expires_at":      act.ExpiresAt.Format(time.RFC3339),
 	})
 }
 
@@ -4840,8 +4840,8 @@ func handleAgentDetails(w http.ResponseWriter, r *http.Request) {
 
 			// Broadcast agent_deleted event to UI via SSE
 			sseHub.Broadcast(SSEEvent{
-						Type:     "agent_deleted",
-						TenantID: agent.TenantID,
+				Type:     "agent_deleted",
+				TenantID: agent.TenantID,
 				Data: map[string]interface{}{
 					"agent_id": agentID,
 				},
