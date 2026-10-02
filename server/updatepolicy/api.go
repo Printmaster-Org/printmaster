@@ -230,7 +230,7 @@ func (api *API) handleTenantPolicyPut(w http.ResponseWriter, r *http.Request, te
 	if !isGlobal {
 		resource = authz.ResourceRef{TenantIDs: []string{tenantID}}
 	} else {
-		action = authz.ActionSettingsFleetWrite
+		action = authz.ActionSettingsServerWrite
 	}
 	if !api.authorize(w, r, action, resource) {
 		return
@@ -277,7 +277,7 @@ func (api *API) handleTenantPolicyDelete(w http.ResponseWriter, r *http.Request,
 	if !isGlobal {
 		resource = authz.ResourceRef{TenantIDs: []string{tenantID}}
 	} else {
-		action = authz.ActionSettingsFleetWrite
+		action = authz.ActionSettingsServerWrite
 	}
 	if !api.authorize(w, r, action, resource) {
 		return

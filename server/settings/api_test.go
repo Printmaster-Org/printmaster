@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,6 +116,104 @@ func (s *fakeStore) DeleteAgentSettings(ctx context.Context, agentID string) err
 
 func allowAllAuthorizer(_ *http.Request, _ authz.Action, _ authz.ResourceRef) error {
 	return nil
+}
+
+func TestSettingsTenantSecurity(t *testing.T) {
+	for _, role := range []storage.Role{storage.RoleOperator, storage.RoleViewer, storage.RoleAdmin} {
+		t.Run(string(role), func(t *testing.T) {
+			db, err := storage.NewSQLiteStore(":memory:")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			ctx := context.Background()
+			initialSettings := pmsettings.DefaultSettings()
+			initialSettings.SNMP.TimeoutMS = 4321
+			if err := db.UpsertGlobalSettings(ctx, &storage.SettingsRecord{Settings: initialSettings, ManagedSections: []string{"discovery"}, UpdatedBy: "fixture"}); err != nil {
+				t.Fatal(err)
+			}
+			initialGlobal, err := db.GetGlobalSettings(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range []string{"tenant-a", "tenant-b"} {
+				if err := db.CreateTenant(ctx, &storage.Tenant{ID: id, Name: id}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, tenantID := range []string{"tenant-a", "tenant-b", ""} {
+				agent := &storage.Agent{AgentID: "agent-" + tenantID, TenantID: tenantID, Token: "original-" + tenantID, RegisteredAt: time.Now(), LastSeen: time.Now()}
+				if err := db.RegisterAgent(ctx, agent); err != nil {
+					t.Fatal(err)
+				}
+			}
+			api, err := NewAPI(db, nil, APIOptions{Authorizer: func(r *http.Request, action authz.Action, ref authz.ResourceRef) error {
+				if r.Header.Get("Authorization") == "" {
+					return authz.ErrUnauthorized
+				}
+				return authz.Authorize(authz.Subject{Role: role, IsAdmin: role == storage.RoleAdmin, AllowedTenantIDs: []string{"tenant-a"}}, action, ref)
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mux := http.NewServeMux()
+			api.RegisterRoutes(RouteConfig{Mux: mux, FeatureEnabled: true})
+			globalBody, _ := json.Marshal(struct {
+				pmsettings.Settings
+				ManagedSections []string `json:"managed_sections"`
+			}{pmsettings.DefaultSettings(), []string{"discovery"}})
+			for _, tc := range []struct {
+				path string
+				body string
+			}{
+				{"/api/v1/settings/global", string(globalBody)},
+				{"/api/v1/settings/tenants/tenant-a", `{"discovery":{"snmp_enabled":false}}`},
+				{"/api/v1/settings/tenants/tenant-b", `{"discovery":{"snmp_enabled":false}}`},
+				{"/api/v1/settings/agents/agent-tenant-a", `{"discovery":{"snmp_enabled":false}}`},
+				{"/api/v1/settings/agents/agent-tenant-b", `{"discovery":{"snmp_enabled":false}}`},
+				{"/api/v1/settings/agents/agent-", `{"discovery":{"snmp_enabled":false}}`},
+			} {
+				for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
+					if strings.HasSuffix(tc.path, "/global") && method == http.MethodDelete {
+						continue
+					}
+					t.Run(method+tc.path, func(t *testing.T) {
+						req := httptest.NewRequest(method, tc.path, strings.NewReader(tc.body))
+						req.Header.Set("Authorization", "test-session")
+						rr := httptest.NewRecorder()
+						mux.ServeHTTP(rr, req)
+						want := http.StatusOK
+						if role != storage.RoleAdmin {
+							global := strings.HasSuffix(tc.path, "/global")
+							if strings.Contains(tc.path, "tenant-b") || strings.HasSuffix(tc.path, "agent-") || (global && method != http.MethodGet) || (role == storage.RoleViewer && method != http.MethodGet) {
+								want = http.StatusForbidden
+							}
+						}
+						if rr.Code != want {
+							t.Fatalf("got %d, want %d: %s", rr.Code, want, rr.Body.String())
+						}
+					})
+				}
+			}
+			if role != storage.RoleAdmin {
+				global, err := db.GetGlobalSettings(ctx)
+				if err != nil || !reflect.DeepEqual(global, initialGlobal) {
+					t.Fatalf("forbidden global write persisted: %+v, %v", global, err)
+				}
+				for _, id := range []string{"agent-", "agent-tenant-b"} {
+					rec, err := db.GetAgentSettings(ctx, id)
+					if err != nil || rec != nil {
+						t.Fatalf("forbidden agent write persisted: %+v, %v", rec, err)
+					}
+				}
+			}
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v1/settings/global", strings.NewReader(string(globalBody))))
+			if rr.Code != http.StatusUnauthorized {
+				t.Fatalf("anonymous write returned %d", rr.Code)
+			}
+		})
+	}
 }
 
 func TestResolverResolveGlobalDefaults(t *testing.T) {

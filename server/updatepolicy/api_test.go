@@ -67,6 +67,83 @@ func allowAllAuthorizer(_ *http.Request, _ authz.Action, _ authz.ResourceRef) er
 	return nil
 }
 
+func TestGlobalPolicyMutationsRequireAdmin(t *testing.T) {
+	for _, role := range []storage.Role{storage.RoleOperator, storage.RoleViewer, storage.RoleAdmin} {
+		for _, alias := range []string{"global", "GLOBAL", storage.GlobalFleetPolicyTenantID} {
+			for _, method := range []string{http.MethodPut, http.MethodDelete} {
+				t.Run(string(role)+"/"+alias+"/"+method, func(t *testing.T) {
+					db, err := storage.NewSQLiteStore(":memory:")
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer db.Close()
+					original := &storage.FleetUpdatePolicy{TenantID: storage.GlobalFleetPolicyTenantID, PolicySpec: updatepolicy.PolicySpec{UpdateCheckDays: 7}}
+					if err := db.UpsertFleetUpdatePolicy(context.Background(), original); err != nil {
+						t.Fatal(err)
+					}
+					api, err := NewAPI(db, APIOptions{Authorizer: func(r *http.Request, action authz.Action, ref authz.ResourceRef) error {
+						if r.Header.Get("Authorization") == "" {
+							return authz.ErrUnauthorized
+						}
+						return authz.Authorize(authz.Subject{Role: role, IsAdmin: role == storage.RoleAdmin, AllowedTenantIDs: []string{"tenant-a"}}, action, ref)
+					}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					mux := http.NewServeMux()
+					api.RegisterRoutes(RouteConfig{Mux: mux, FeatureEnabled: true})
+					req := httptest.NewRequest(method, "/api/v1/update-policies/"+alias, strings.NewReader(`{"policy":{"update_check_days":14}}`))
+					req.Header.Set("Authorization", "test-session")
+					rr := httptest.NewRecorder()
+					mux.ServeHTTP(rr, req)
+					want := http.StatusForbidden
+					if role == storage.RoleAdmin {
+						want = http.StatusOK
+						if method == http.MethodDelete {
+							want = http.StatusNoContent
+						}
+					}
+					if rr.Code != want {
+						t.Fatalf("got %d, want %d: %s", rr.Code, want, rr.Body.String())
+					}
+					if role != storage.RoleAdmin {
+						policy, err := db.GetFleetUpdatePolicy(context.Background(), storage.GlobalFleetPolicyTenantID)
+						if err != nil || policy == nil || policy.PolicySpec.UpdateCheckDays != 7 {
+							t.Fatalf("forbidden mutation changed policy: %+v, %v", policy, err)
+						}
+					}
+					rr = httptest.NewRecorder()
+					mux.ServeHTTP(rr, httptest.NewRequest(method, "/api/v1/update-policies/"+alias, strings.NewReader(`{"policy":{"update_check_days":14}}`)))
+					if rr.Code != http.StatusUnauthorized {
+						t.Fatalf("anonymous mutation returned %d", rr.Code)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestTenantPolicyAuthorizationUnchanged(t *testing.T) {
+	api, err := NewAPI(newFakeStore(), APIOptions{Authorizer: func(_ *http.Request, action authz.Action, ref authz.ResourceRef) error {
+		if action != authz.ActionTenantsWrite || len(ref.TenantIDs) != 1 || ref.TenantIDs[0] != "tenant-a" {
+			t.Fatalf("tenant authorization changed: %s %+v", action, ref)
+		}
+		return authz.Authorize(authz.Subject{Role: storage.RoleOperator, AllowedTenantIDs: []string{"tenant-a"}}, action, ref)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		rr := httptest.NewRecorder()
+		api.handlePolicyRoute(rr, httptest.NewRequest(method, "/api/v1/update-policies/tenant-a", strings.NewReader(`{"policy":{"update_check_days":7}}`)))
+		// Existing tenant-policy permissions are admin-only (tenants.write),
+		// unlike tenant/agent fleet settings overrides. Do not broaden them.
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("unexpected tenant policy authorization: %d", rr.Code)
+		}
+	}
+}
+
 func TestHandleTenantPolicyGetNotFound(t *testing.T) {
 	store := newFakeStore()
 	api, err := NewAPI(store, APIOptions{Authorizer: allowAllAuthorizer})

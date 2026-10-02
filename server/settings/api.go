@@ -178,7 +178,7 @@ func (api *API) handleGlobal(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, snap)
 	case http.MethodPut:
-		if !api.authorize(w, r, authz.ActionSettingsFleetWrite, authz.ResourceRef{}) {
+		if !api.authorize(w, r, authz.ActionSettingsServerWrite, authz.ResourceRef{}) {
 			return
 		}
 		// Decode wrapper struct that includes both settings and managed_sections
@@ -343,12 +343,14 @@ func (api *API) handleAgentSettings(w http.ResponseWriter, r *http.Request, agen
 		return
 	}
 	resource := authz.ResourceRef{}
+	readAction, writeAction := authz.ActionSettingsServerRead, authz.ActionSettingsServerWrite
 	if strings.TrimSpace(agent.TenantID) != "" {
 		resource = authz.ResourceRef{TenantIDs: []string{agent.TenantID}}
+		readAction, writeAction = authz.ActionSettingsFleetRead, authz.ActionSettingsFleetWrite
 	}
 	switch r.Method {
 	case http.MethodGet:
-		if !api.authorize(w, r, authz.ActionSettingsFleetRead, resource) {
+		if !api.authorize(w, r, readAction, resource) {
 			return
 		}
 		snap, err := api.resolver.ResolveForAgent(r.Context(), agentID)
@@ -358,12 +360,12 @@ func (api *API) handleAgentSettings(w http.ResponseWriter, r *http.Request, agen
 		}
 		writeJSON(w, http.StatusOK, snap)
 	case http.MethodPut:
-		if !api.authorize(w, r, authz.ActionSettingsFleetWrite, resource) {
+		if !api.authorize(w, r, writeAction, resource) {
 			return
 		}
 		api.saveAgentOverrides(w, r, agent)
 	case http.MethodDelete:
-		if !api.authorize(w, r, authz.ActionSettingsFleetWrite, resource) {
+		if !api.authorize(w, r, writeAction, resource) {
 			return
 		}
 		if err := api.store.DeleteAgentSettings(r.Context(), agentID); err != nil {

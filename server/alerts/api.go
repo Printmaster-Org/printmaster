@@ -67,9 +67,50 @@ type Store interface {
 type APIOptions struct {
 	AuthMiddleware func(http.HandlerFunc) http.HandlerFunc
 	Authorizer     func(*http.Request, authz.Action, authz.ResourceRef) error
-	ActorResolver  func(*http.Request) string
-	AuditLogger    func(*http.Request, *storage.AuditEntry)
-	Notifier       *Notifier
+	// ScopeResolver must derive scope from the authenticated principal, never
+	// query parameters. AllTenants is reserved for an explicit global admin.
+	// Missing/erroring resolvers fail closed; an empty restricted scope owns nothing.
+	ScopeResolver func(*http.Request) (TenantScope, error)
+	ActorResolver func(*http.Request) string
+	AuditLogger   func(*http.Request, *storage.AuditEntry)
+	Notifier      *Notifier
+}
+
+// TenantScope separates unrestricted administration from an empty tenant set.
+type TenantScope struct {
+	AllTenants bool
+	TenantIDs  []string
+}
+
+type tenantScopeKey struct{}
+
+func requestScope(r *http.Request) TenantScope {
+	scope, _ := r.Context().Value(tenantScopeKey{}).(TenantScope)
+	return scope
+}
+
+// owns requires complete ownership: shared records containing a foreign tenant
+// must not expose credentials or be editable through a partial intersection.
+func (scope TenantScope) owns(ids ...string) bool {
+	if scope.AllTenants {
+		return true
+	}
+	if len(ids) == 0 {
+		return false // empty ownership means global, not caller-owned
+	}
+	for _, id := range ids {
+		found := false
+		for _, allowed := range scope.TenantIDs {
+			if id != "" && id == allowed {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // RouteConfig controls how HTTP handlers are registered.
@@ -84,6 +125,7 @@ type API struct {
 	notifier      *Notifier
 	authWrap      func(http.HandlerFunc) http.HandlerFunc
 	authorizer    func(*http.Request, authz.Action, authz.ResourceRef) error
+	scopeResolver func(*http.Request) (TenantScope, error)
 	actorResolver func(*http.Request) string
 	auditLogger   func(*http.Request, *storage.AuditEntry)
 }
@@ -98,6 +140,7 @@ func NewAPI(store Store, opts APIOptions) (*API, error) {
 		notifier:      opts.Notifier,
 		authWrap:      opts.AuthMiddleware,
 		authorizer:    opts.Authorizer,
+		scopeResolver: opts.ScopeResolver,
 		actorResolver: opts.ActorResolver,
 		auditLogger:   opts.AuditLogger,
 	}, nil
@@ -164,7 +207,449 @@ func (api *API) authorize(w http.ResponseWriter, r *http.Request, action authz.A
 		http.Error(w, http.StatusText(status), status)
 		return false
 	}
+	if _, ok := r.Context().Value(tenantScopeKey{}).(TenantScope); !ok {
+		if api.scopeResolver == nil {
+			writeError(w, http.StatusInternalServerError, "tenant scope not configured")
+			return false
+		}
+		scope, err := api.scopeResolver(r)
+		if err != nil {
+			status := http.StatusForbidden
+			if errors.Is(err, authz.ErrUnauthorized) {
+				status = http.StatusUnauthorized
+			}
+			writeError(w, status, http.StatusText(status))
+			return false
+		}
+		scope.TenantIDs = append([]string(nil), scope.TenantIDs...)
+		*r = *r.WithContext(context.WithValue(r.Context(), tenantScopeKey{}, scope))
+	}
+	scope := requestScope(r)
+	if !scope.AllTenants && len(scope.TenantIDs) > 0 {
+		if err := api.authorizer(r, action, authz.ResourceRef{TenantIDs: scope.TenantIDs}); err != nil {
+			writeError(w, http.StatusForbidden, "tenant not permitted")
+			return false
+		}
+	}
+	// Cross-tenant/global access requires both explicit scope and admin policy.
+	if scope.AllTenants {
+		adminAction := authz.ActionSettingsServerRead
+		if action == authz.ActionSettingsAlertsWrite {
+			adminAction = authz.ActionSettingsServerWrite
+		}
+		if err := api.authorizer(r, adminAction, authz.ResourceRef{}); err != nil {
+			writeError(w, http.StatusForbidden, "global administrator required")
+			return false
+		}
+	}
+	if tenant := r.URL.Query().Get("tenant_id"); tenant != "" {
+		if !scope.owns(tenant) {
+			writeError(w, http.StatusForbidden, "tenant not permitted")
+			return false
+		}
+		if err := api.authorizer(r, action, authz.ResourceRef{TenantIDs: []string{tenant}}); err != nil {
+			writeError(w, http.StatusForbidden, "tenant not permitted")
+			return false
+		}
+	}
+	// These records have no persisted tenant ownership. Do not invent a schema
+	// or infer policy ownership from channel references that can change later.
+	if r.URL.Path == "/api/v1/alert-settings" ||
+		strings.HasPrefix(r.URL.Path, "/api/v1/escalation-policies") ||
+		r.URL.Path == "/api/v1/notification-channels/test" {
+		if !scope.AllTenants {
+			writeError(w, http.StatusForbidden, "global administrator required")
+			return false
+		}
+	}
 	return true
+}
+
+func (api *API) requireTenants(w http.ResponseWriter, r *http.Request, ids ...string) bool {
+	if !requestScope(r).owns(ids...) {
+		writeError(w, http.StatusForbidden, "tenant not permitted")
+		return false
+	}
+	action := authz.ActionSettingsAlertsRead
+	if r.Method != http.MethodGet {
+		action = authz.ActionSettingsAlertsWrite
+	}
+	return api.authorize(w, r, action, authz.ResourceRef{TenantIDs: ids})
+}
+
+// checkRecord loads ownership before any mutation or notification side effect.
+// Global records and records partly owned by another tenant are hidden.
+func (api *API) checkRecord(w http.ResponseWriter, r *http.Request, kind string, id int64) bool {
+	var ids []string
+	var err error
+	found := false
+	switch kind {
+	case "alert":
+		var record *storage.Alert
+		record, err = api.store.GetAlert(r.Context(), id)
+		if record != nil {
+			found, ids = true, []string{record.TenantID}
+		}
+	case "rule":
+		var record *storage.AlertRule
+		record, err = api.store.GetAlertRule(r.Context(), id)
+		if record != nil {
+			found, ids = true, record.TenantIDs
+			if record.Scope == storage.AlertScopeFleet && !requestScope(r).AllTenants {
+				ids = nil
+			}
+		}
+	case "channel":
+		var record *storage.NotificationChannel
+		record, err = api.store.GetNotificationChannel(r.Context(), id)
+		if record != nil {
+			found, ids = true, record.TenantIDs
+		}
+	case "window":
+		var record *storage.AlertMaintenanceWindow
+		record, err = api.store.GetAlertMaintenanceWindow(r.Context(), id)
+		if record != nil {
+			found, ids = true, []string{record.TenantID}
+			if (record.Scope == "" || record.Scope == storage.AlertScopeFleet) && !requestScope(r).AllTenants {
+				ids = nil
+			}
+		}
+	case "policy":
+		var record *storage.EscalationPolicy
+		record, err = api.store.GetEscalationPolicy(r.Context(), id)
+		found = record != nil
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check record ownership")
+		return false
+	}
+	if !found {
+		http.NotFound(w, r)
+		return false
+	}
+	return api.recordVisible(w, r, ids...)
+}
+
+func (api *API) recordVisible(w http.ResponseWriter, r *http.Request, ids ...string) bool {
+	if !requestScope(r).owns(ids...) {
+		http.NotFound(w, r)
+		return false
+	}
+	return api.requireTenants(w, r, ids...)
+}
+
+func visibleTenants(r *http.Request, ids ...string) bool {
+	if !requestScope(r).owns(ids...) {
+		return false
+	}
+	requested := r.URL.Query().Get("tenant_id")
+	if requested == "" {
+		return true
+	}
+	for _, id := range ids {
+		if id == requested {
+			return true
+		}
+	}
+	return false
+}
+
+func visibleRule(r *http.Request, rule storage.AlertRule) bool {
+	return (rule.Scope != storage.AlertScopeFleet || requestScope(r).AllTenants) && visibleTenants(r, rule.TenantIDs...)
+}
+
+func visibleWindow(r *http.Request, window storage.AlertMaintenanceWindow) bool {
+	return ((window.Scope != "" && window.Scope != storage.AlertScopeFleet) || requestScope(r).AllTenants) && visibleTenants(r, window.TenantID)
+}
+
+// Target lookups are optional capabilities of Store. If a request references
+// fleet objects and the store cannot verify ownership, fail closed.
+func (api *API) checkTargets(w http.ResponseWriter, r *http.Request, tenant, site, agent, device string) bool {
+	return api.checkTargetTenants(w, r, []string{tenant}, site, agent, device)
+}
+
+func (api *API) checkTargetTenants(w http.ResponseWriter, r *http.Request, tenants []string, site, agent, device string) bool {
+	check := func(owner string) bool {
+		if !api.requireTenants(w, r, owner) {
+			return false
+		}
+		if len(tenants) > 0 && !(len(tenants) == 1 && tenants[0] == "" && requestScope(r).AllTenants) {
+			for _, tenant := range tenants {
+				if owner == tenant {
+					return true
+				}
+			}
+			writeError(w, http.StatusBadRequest, "target does not belong to requested tenants")
+			return false
+		}
+		return true
+	}
+	if device != "" {
+		store, ok := api.store.(interface {
+			GetDevice(context.Context, string) (*storage.Device, error)
+		})
+		if !ok {
+			writeError(w, http.StatusInternalServerError, "device ownership lookup unavailable")
+			return false
+		}
+		record, err := store.GetDevice(r.Context(), device)
+		if err != nil || record == nil {
+			http.NotFound(w, r)
+			return false
+		}
+		if agent != "" && agent != record.AgentID {
+			writeError(w, http.StatusBadRequest, "device does not belong to requested agent")
+			return false
+		}
+		agent = record.AgentID
+		if agent == "" {
+			writeError(w, http.StatusForbidden, "device ownership unavailable")
+			return false
+		}
+	}
+	if agent != "" {
+		store, ok := api.store.(interface {
+			GetAgent(context.Context, string) (*storage.Agent, error)
+		})
+		if !ok {
+			writeError(w, http.StatusInternalServerError, "agent ownership lookup unavailable")
+			return false
+		}
+		record, err := store.GetAgent(r.Context(), agent)
+		if err != nil || record == nil {
+			http.NotFound(w, r)
+			return false
+		}
+		if !check(record.TenantID) {
+			return false
+		}
+	}
+	if site != "" {
+		store, ok := api.store.(interface {
+			GetSite(context.Context, string) (*storage.Site, error)
+		})
+		if !ok {
+			writeError(w, http.StatusInternalServerError, "site ownership lookup unavailable")
+			return false
+		}
+		record, err := store.GetSite(r.Context(), site)
+		if err != nil || record == nil {
+			http.NotFound(w, r)
+			return false
+		}
+		if !check(record.TenantID) {
+			return false
+		}
+	}
+	return true
+}
+
+func (api *API) checkRule(w http.ResponseWriter, r *http.Request, rule *storage.AlertRule) bool {
+	if !api.requireTenants(w, r, rule.TenantIDs...) {
+		return false
+	}
+	if rule.Scope == storage.AlertScopeFleet && !requestScope(r).AllTenants {
+		writeError(w, http.StatusForbidden, "global administrator required")
+		return false
+	}
+	for _, site := range rule.SiteIDs {
+		if !api.checkTargetTenants(w, r, rule.TenantIDs, site, "", "") {
+			return false
+		}
+	}
+	for _, agent := range rule.AgentIDs {
+		if !api.checkTargetTenants(w, r, rule.TenantIDs, "", agent, "") {
+			return false
+		}
+	}
+	for _, channel := range rule.ChannelIDs {
+		record, err := api.store.GetNotificationChannel(r.Context(), channel)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to check channel ownership")
+			return false
+		}
+		if record == nil {
+			http.NotFound(w, r)
+			return false
+		}
+		if !api.recordVisible(w, r, record.TenantIDs...) {
+			return false
+		}
+		if !requestScope(r).AllTenants && !channelCoversRule(record.TenantIDs, rule) {
+			writeError(w, http.StatusForbidden, "channel ownership incompatible with rule")
+			return false
+		}
+	}
+	if rule.EscalationPolicyID != nil && !api.checkRecord(w, r, "policy", *rule.EscalationPolicyID) {
+		return false
+	}
+	return true
+}
+
+// channelCoversRule prevents a caller owning multiple tenants from attaching a
+// rule to a channel owned only by a different tenant. Global/fleet rules cannot
+// depend on a restricted channel without an explicit administrator override.
+func channelCoversRule(tenants []string, rule *storage.AlertRule) bool {
+	return rule.Scope != storage.AlertScopeFleet && (TenantScope{TenantIDs: tenants}).owns(rule.TenantIDs...)
+}
+
+// checkChannelDependents protects legacy references as well as new ones. A
+// channel's own ownership is insufficient: changing credentials, disabling it,
+// moving its ownership, or deleting it also affects every referencing record.
+// Policies have no persisted tenant ownership and remain global/admin-only.
+// Include disabled dependents; they can be enabled later. Never use visibility
+// filters (including tenant_id) to discover reverse references.
+func (api *API) checkChannelDependents(w http.ResponseWriter, r *http.Request, id int64, replacement *storage.NotificationChannel) bool {
+	if requestScope(r).AllTenants {
+		return true
+	}
+	rules, err := api.store.ListAlertRules(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check channel dependencies")
+		return false
+	}
+	for _, rule := range rules {
+		for _, channel := range rule.ChannelIDs {
+			if channel != id {
+				continue
+			}
+			if rule.Scope == storage.AlertScopeFleet || !requestScope(r).owns(rule.TenantIDs...) {
+				writeError(w, http.StatusForbidden, "channel dependencies not permitted")
+				return false
+			}
+			if !api.requireTenants(w, r, rule.TenantIDs...) {
+				return false
+			}
+			if replacement != nil && !channelCoversRule(replacement.TenantIDs, &rule) {
+				writeError(w, http.StatusForbidden, "channel ownership incompatible with rule")
+				return false
+			}
+			break
+		}
+	}
+	policies, err := api.store.ListEscalationPolicies(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check channel dependencies")
+		return false
+	}
+	for _, policy := range policies {
+		for _, step := range policy.Steps {
+			for _, channel := range step.ChannelIDs {
+				if channel == id {
+					writeError(w, http.StatusForbidden, "channel dependencies not permitted")
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+func (api *API) checkPolicyChannels(w http.ResponseWriter, r *http.Request, policy *storage.EscalationPolicy) bool {
+	for _, step := range policy.Steps {
+		for _, channel := range step.ChannelIDs {
+			if !api.checkRecord(w, r, "channel", channel) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (api *API) checkWindow(w http.ResponseWriter, r *http.Request, window *storage.AlertMaintenanceWindow) bool {
+	// Empty/fleet scope suppresses the entire fleet in the evaluator, even when
+	// a tenant_id is supplied. It must never be created by a restricted caller.
+	if (window.Scope == "" || window.Scope == storage.AlertScopeFleet) && !requestScope(r).AllTenants {
+		writeError(w, http.StatusForbidden, "global administrator required")
+		return false
+	}
+	return api.requireTenants(w, r, window.TenantID) &&
+		api.checkTargets(w, r, window.TenantID, window.SiteID, window.AgentID, window.DeviceSerial)
+}
+
+func (api *API) scopedSummary(r *http.Request) (*storage.AlertSummary, error) {
+	if requestScope(r).AllTenants && r.URL.Query().Get("tenant_id") == "" {
+		return api.store.GetAlertSummary(r.Context())
+	}
+	// ListActiveAlerts cannot supply resolved/suppressed counts. Real stores
+	// implement ListAlerts; alternate stores must supply this capability rather
+	// than accidentally falling back to a global summary.
+	store, ok := api.store.(interface {
+		ListAlerts(context.Context, storage.AlertFilters) ([]*storage.Alert, error)
+	})
+	if !ok {
+		return nil, errors.New("scoped alert history unavailable")
+	}
+	filter := storage.AlertFilters{TenantID: r.URL.Query().Get("tenant_id")}
+	if scope := requestScope(r); filter.TenantID == "" && !scope.AllTenants && len(scope.TenantIDs) == 1 {
+		filter.TenantID = scope.TenantIDs[0]
+	}
+	alerts, err := store.ListAlerts(r.Context(), filter)
+	if err != nil {
+		return nil, err
+	}
+	summary := &storage.AlertSummary{
+		AlertsByType: make(map[string]int), AlertsByScope: make(map[string]int),
+	}
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	for _, alert := range alerts {
+		if alert == nil || !visibleTenants(r, alert.TenantID) {
+			continue
+		}
+		switch alert.Status {
+		case storage.AlertStatusActive:
+			summary.ActiveCount++
+			summary.AlertsByType[alert.Type]++
+			summary.AlertsByScope[alert.Scope]++
+			switch alert.Severity {
+			case storage.AlertSeverityCritical:
+				summary.CriticalCount++
+			case storage.AlertSeverityWarning:
+				summary.WarningCount++
+			case storage.AlertSeverityInfo:
+				summary.InfoCount++
+			}
+		case storage.AlertStatusAcknowledged:
+			summary.AcknowledgedCount++
+		case storage.AlertStatusSuppressed:
+			summary.SuppressedCount++
+		case storage.AlertStatusResolved:
+			if alert.ResolvedAt != nil && !alert.ResolvedAt.Before(today) {
+				summary.ResolvedTodayCount++
+			}
+		}
+	}
+	rules, err := api.store.ListAlertRules(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	for _, rule := range rules {
+		if rule.Enabled && visibleRule(r, rule) {
+			summary.ActiveRules++
+		}
+	}
+	channels, err := api.store.ListNotificationChannels(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	for _, channel := range channels {
+		if channel.Enabled && visibleTenants(r, channel.TenantIDs...) {
+			summary.ActiveChannels++
+		}
+	}
+	windows, err := api.store.GetActiveAlertMaintenanceWindows(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	for _, window := range windows {
+		if visibleWindow(r, window) {
+			summary.HasMaintenance = true
+			break
+		}
+	}
+	// Global quiet-hours/settings state is intentionally not exposed to scoped
+	// callers. Scope breakdown fields remain zero, matching the existing store.
+	return summary, nil
 }
 
 func (api *API) actorLabel(r *http.Request) string {
@@ -197,7 +682,7 @@ func (api *API) handleAlertSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	summary, err := api.store.GetAlertSummary(r.Context())
+	summary, err := api.scopedSummary(r)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to get alert summary")
 		return
@@ -254,6 +739,11 @@ func (api *API) handleListAlerts(w http.ResponseWriter, r *http.Request) {
 			filters.Offset = o
 		}
 	}
+	// Use the store's tenant predicate when the caller owns exactly one tenant.
+	// Multiple tenant sets are filtered below before computing pagination.
+	if scope := requestScope(r); filters.TenantID == "" && !scope.AllTenants && len(scope.TenantIDs) == 1 {
+		filters.TenantID = scope.TenantIDs[0]
+	}
 
 	// Get total count for pagination (without limit/offset)
 	countFilters := filters
@@ -264,13 +754,27 @@ func (api *API) handleListAlerts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to count alerts")
 		return
 	}
-	totalCount := len(allAlerts)
-
-	alerts, err := api.store.ListActiveAlerts(r.Context(), filters)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list alerts")
-		return
+	// Scope before pagination and totals; never fetch a global page then filter.
+	alerts := make([]storage.Alert, 0, len(allAlerts))
+	for _, alert := range allAlerts {
+		if visibleTenants(r, alert.TenantID) {
+			alerts = append(alerts, alert)
+		}
 	}
+	totalCount := len(alerts)
+	start := 0
+	// Preserve legacy semantics: offset is applied only with a positive limit.
+	if filters.Limit > 0 {
+		start = filters.Offset
+	}
+	if start > totalCount {
+		start = totalCount
+	}
+	end := totalCount
+	if filters.Limit > 0 && filters.Limit < end-start {
+		end = start + filters.Limit
+	}
+	alerts = alerts[start:end]
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"alerts":      alerts,
@@ -307,7 +811,21 @@ func (api *API) handleCreateAlert(w http.ResponseWriter, r *http.Request) {
 	if alert.Status == "" {
 		alert.Status = storage.AlertStatusActive
 	}
+	if alert.Scope == storage.AlertScopeFleet && !requestScope(r).AllTenants {
+		writeError(w, http.StatusForbidden, "global administrator required")
+		return
+	}
 
+	if !api.requireTenants(w, r, alert.TenantID) ||
+		!api.checkTargets(w, r, alert.TenantID, alert.SiteID, alert.AgentID, alert.DeviceSerial) {
+		return
+	}
+	if alert.RuleID != 0 && !api.checkRecord(w, r, "rule", alert.RuleID) {
+		return
+	}
+	if alert.ParentAlertID != nil && !api.checkRecord(w, r, "alert", *alert.ParentAlertID) {
+		return
+	}
 	id, err := api.store.CreateAlert(r.Context(), &alert)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create alert")
@@ -379,6 +897,9 @@ func (api *API) handleGetAlert(w http.ResponseWriter, r *http.Request, id int64)
 		http.NotFound(w, r)
 		return
 	}
+	if !api.recordVisible(w, r, alert.TenantID) {
+		return
+	}
 
 	writeJSON(w, http.StatusOK, alert)
 }
@@ -389,6 +910,9 @@ func (api *API) handleDeleteAlert(w http.ResponseWriter, r *http.Request, id int
 	}
 
 	// Resolve the alert (soft delete - mark as resolved)
+	if !api.checkRecord(w, r, "alert", id) {
+		return
+	}
 	if err := api.store.ResolveAlert(r.Context(), id); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete alert")
 		return
@@ -413,6 +937,9 @@ func (api *API) handleAcknowledgeAlert(w http.ResponseWriter, r *http.Request, i
 		return
 	}
 
+	if !api.checkRecord(w, r, "alert", id) {
+		return
+	}
 	acknowledgedBy := api.actorLabel(r)
 	if err := api.store.AcknowledgeAlert(r.Context(), id, acknowledgedBy); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to acknowledge alert")
@@ -438,6 +965,9 @@ func (api *API) handleResolveAlert(w http.ResponseWriter, r *http.Request, id in
 		return
 	}
 
+	if !api.checkRecord(w, r, "alert", id) {
+		return
+	}
 	if err := api.store.ResolveAlert(r.Context(), id); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to resolve alert")
 		return
@@ -486,6 +1016,9 @@ func (api *API) handleListAlertRules(w http.ResponseWriter, r *http.Request) {
 
 	filtered := make([]storage.AlertRule, 0, len(rules))
 	for _, rule := range rules {
+		if !visibleRule(r, rule) {
+			continue
+		}
 		if enabledOnly && !rule.Enabled {
 			continue
 		}
@@ -528,6 +1061,9 @@ func (api *API) handleCreateAlertRule(w http.ResponseWriter, r *http.Request) {
 		rule.Scope = storage.AlertScopeDevice
 	}
 
+	if !api.checkRule(w, r, &rule) {
+		return
+	}
 	rule.CreatedBy = api.actorLabel(r)
 
 	id, err := api.store.CreateAlertRule(r.Context(), &rule)
@@ -587,6 +1123,13 @@ func (api *API) handleGetAlertRule(w http.ResponseWriter, r *http.Request, id in
 		http.NotFound(w, r)
 		return
 	}
+	if !visibleRule(r, *rule) {
+		http.NotFound(w, r)
+		return
+	}
+	if !api.recordVisible(w, r, rule.TenantIDs...) {
+		return
+	}
 
 	writeJSON(w, http.StatusOK, rule)
 }
@@ -596,12 +1139,18 @@ func (api *API) handleUpdateAlertRule(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 
+	if !api.checkRecord(w, r, "rule", id) {
+		return
+	}
 	var rule storage.AlertRule
 	if err := decodeJSON(r.Body, &rule); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
+	if !api.checkRule(w, r, &rule) {
+		return
+	}
 	rule.ID = id
 	if err := api.store.UpdateAlertRule(r.Context(), &rule); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update alert rule")
@@ -623,6 +1172,9 @@ func (api *API) handleDeleteAlertRule(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 
+	if !api.checkRecord(w, r, "rule", id) {
+		return
+	}
 	if err := api.store.DeleteAlertRule(r.Context(), id); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete alert rule")
 		return
@@ -664,6 +1216,13 @@ func (api *API) handleListNotificationChannels(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	filtered := make([]storage.NotificationChannel, 0, len(channels))
+	for _, channel := range channels {
+		if visibleTenants(r, channel.TenantIDs...) {
+			filtered = append(filtered, channel)
+		}
+	}
+	channels = filtered
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"channels": channels,
 		"count":    len(channels),
@@ -691,6 +1250,9 @@ func (api *API) handleCreateNotificationChannel(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	if !api.requireTenants(w, r, channel.TenantIDs...) {
+		return
+	}
 	id, err := api.store.CreateNotificationChannel(r.Context(), &channel)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create notification channel")
@@ -756,6 +1318,13 @@ func (api *API) handleGetNotificationChannel(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusNotFound, "notification channel not found")
 		return
 	}
+	if channel == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if !api.recordVisible(w, r, channel.TenantIDs...) {
+		return
+	}
 
 	writeJSON(w, http.StatusOK, channel)
 }
@@ -765,12 +1334,21 @@ func (api *API) handleUpdateNotificationChannel(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	if !api.checkRecord(w, r, "channel", id) {
+		return
+	}
 	var req storage.NotificationChannel
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
+	if !api.requireTenants(w, r, req.TenantIDs...) {
+		return
+	}
+	if !api.checkChannelDependents(w, r, id, &req) {
+		return
+	}
 	req.ID = id
 
 	if err := api.store.UpdateNotificationChannel(r.Context(), &req); err != nil {
@@ -793,6 +1371,12 @@ func (api *API) handleDeleteNotificationChannel(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	if !api.checkRecord(w, r, "channel", id) {
+		return
+	}
+	if !api.checkChannelDependents(w, r, id, nil) {
+		return
+	}
 	if err := api.store.DeleteNotificationChannel(r.Context(), id); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete notification channel")
 		return
@@ -870,6 +1454,9 @@ func (api *API) handleTestExistingChannel(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if !api.checkRecord(w, r, "channel", id) {
+		return
+	}
 	if api.notifier == nil {
 		writeError(w, http.StatusServiceUnavailable, "notification service not available")
 		return
@@ -878,6 +1465,13 @@ func (api *API) handleTestExistingChannel(w http.ResponseWriter, r *http.Request
 	channel, err := api.store.GetNotificationChannel(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "notification channel not found")
+		return
+	}
+	if channel == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if !api.recordVisible(w, r, channel.TenantIDs...) {
 		return
 	}
 
@@ -946,6 +1540,9 @@ func (api *API) handleCreateEscalationPolicy(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	if !api.checkPolicyChannels(w, r, &policy) {
+		return
+	}
 	id, err := api.store.CreateEscalationPolicy(r.Context(), &policy)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create escalation policy")
@@ -994,6 +1591,9 @@ func (api *API) handleGetEscalationPolicy(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if !api.checkRecord(w, r, "policy", id) {
+		return
+	}
 	policy, err := api.store.GetEscalationPolicy(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "escalation policy not found")
@@ -1008,12 +1608,18 @@ func (api *API) handleUpdateEscalationPolicy(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	if !api.checkRecord(w, r, "policy", id) {
+		return
+	}
 	var req storage.EscalationPolicy
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
+	if !api.checkPolicyChannels(w, r, &req) {
+		return
+	}
 	req.ID = id
 
 	if err := api.store.UpdateEscalationPolicy(r.Context(), &req); err != nil {
@@ -1036,6 +1642,9 @@ func (api *API) handleDeleteEscalationPolicy(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	if !api.checkRecord(w, r, "policy", id) {
+		return
+	}
 	if err := api.store.DeleteEscalationPolicy(r.Context(), id); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete escalation policy")
 		return
@@ -1088,6 +1697,13 @@ func (api *API) handleListMaintenanceWindows(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	filtered := make([]storage.AlertMaintenanceWindow, 0, len(windows))
+	for _, window := range windows {
+		if visibleWindow(r, window) {
+			filtered = append(filtered, window)
+		}
+	}
+	windows = filtered
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"windows": windows,
 		"count":   len(windows),
@@ -1123,6 +1739,9 @@ func (api *API) handleCreateMaintenanceWindow(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	if !api.checkWindow(w, r, &window) {
+		return
+	}
 	window.CreatedBy = api.actorLabel(r)
 
 	id, err := api.store.CreateAlertMaintenanceWindow(r.Context(), &window)
@@ -1178,6 +1797,17 @@ func (api *API) handleGetMaintenanceWindow(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusNotFound, "maintenance window not found")
 		return
 	}
+	if window == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if !visibleWindow(r, *window) {
+		http.NotFound(w, r)
+		return
+	}
+	if !api.recordVisible(w, r, window.TenantID) {
+		return
+	}
 
 	writeJSON(w, http.StatusOK, window)
 }
@@ -1187,12 +1817,18 @@ func (api *API) handleUpdateMaintenanceWindow(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	if !api.checkRecord(w, r, "window", id) {
+		return
+	}
 	var req storage.AlertMaintenanceWindow
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
+	if !api.checkWindow(w, r, &req) {
+		return
+	}
 	req.ID = id
 
 	if err := api.store.UpdateAlertMaintenanceWindow(r.Context(), &req); err != nil {
@@ -1215,6 +1851,9 @@ func (api *API) handleDeleteMaintenanceWindow(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	if !api.checkRecord(w, r, "window", id) {
+		return
+	}
 	if err := api.store.DeleteAlertMaintenanceWindow(r.Context(), id); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete maintenance window")
 		return
