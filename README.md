@@ -117,7 +117,7 @@ curl -fsSL https://packages.printmaster.work/install.sh | sudo bash
 ## Documentation
 
 | Guide | Description |
-|-------|-------------|
+| ------- | ------------- |
 | [Installation](docs/INSTALL.md) | Complete setup instructions for all platforms |
 | [Getting Started](docs/GETTING_STARTED.md) | First steps after installation |
 | [Features](docs/FEATURES.md) | Detailed feature documentation |
@@ -167,4 +167,3 @@ MIT License — see [LICENSE](LICENSE)
 - [Releases](https://github.com/printmaster-org/printmaster/releases)
 - [Issues](https://github.com/printmaster-org/printmaster/issues)
 - [Discussions](https://github.com/printmaster-org/printmaster/discussions)
-
