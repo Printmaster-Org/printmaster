@@ -620,6 +620,24 @@ jobs:
         draft: false
         prerelease: false
 
+    - name: Notify website about published Agent release
+      env:
+        WEBHOOK_SECRET: ${{ secrets.PRINTMASTER_WEBSITE_RELEASE_SECRET }}
+        RELEASE_TAG: ${{ steps.version.outputs.tag }}
+      run: |
+        if [[ -z "$WEBHOOK_SECRET" ]]; then
+          echo "Website release webhook secret is not configured; skipping notification."
+          exit 0
+        fi
+        payload=$(jq -cn --arg tag "$RELEASE_TAG" '{tag_name: $tag}')
+        signature=$(printf '%s' "$payload" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $NF}')
+        curl --fail --silent --show-error --retry 3 --retry-delay 2 --retry-connrefused \
+          -X POST "https://printmaster.work/api/releases/refresh" \
+          -H 'Content-Type: application/json' \
+          -H "X-PrintMaster-Signature: sha256=$signature" \
+          --data "$payload"
+      continue-on-error: true
+
   release-agent-dev:
     name: Create Agent Dev Release
     if: github.ref == 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/')
@@ -709,6 +727,24 @@ jobs:
         fail_on_unmatched_files: false
         draft: false
         prerelease: true
+
+    - name: Notify website about published Agent beta release
+      env:
+        WEBHOOK_SECRET: ${{ secrets.PRINTMASTER_WEBSITE_RELEASE_SECRET }}
+        RELEASE_TAG: ${{ steps.version.outputs.tag }}
+      run: |
+        if [[ -z "$WEBHOOK_SECRET" ]]; then
+          echo "Website release webhook secret is not configured; skipping notification."
+          exit 0
+        fi
+        payload=$(jq -cn --arg tag "$RELEASE_TAG" '{tag_name: $tag}')
+        signature=$(printf '%s' "$payload" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $NF}')
+        curl --fail --silent --show-error --retry 3 --retry-delay 2 --retry-connrefused \
+          -X POST "https://printmaster.work/api/releases/refresh" \
+          -H 'Content-Type: application/json' \
+          -H "X-PrintMaster-Signature: sha256=$signature" \
+          --data "$payload"
+      continue-on-error: true
 
   update-package-repos:
     name: Update Package Repositories (APT + DNF)
