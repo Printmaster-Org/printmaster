@@ -110,30 +110,6 @@ func (s *BaseStore) insertReturningID(ctx context.Context, query string, args ..
 	return result.LastInsertId()
 }
 
-// upsertReturningID executes an UPSERT (INSERT...ON CONFLICT) and returns the generated ID.
-// For PostgreSQL, it appends RETURNING id. On conflict/update, this returns the existing ID.
-// For SQLite, it uses LastInsertId (which may be 0 on update).
-func (s *BaseStore) upsertReturningID(ctx context.Context, query string, args ...interface{}) (int64, error) {
-	if s.dialect.Name() == "postgres" {
-		// PostgreSQL: use RETURNING id - works for both insert and update
-		query = s.query(query) + " RETURNING id"
-		var id int64
-		err := s.db.QueryRowContext(ctx, query, args...).Scan(&id)
-		if err != nil {
-			return 0, err
-		}
-		return id, nil
-	}
-
-	// SQLite: use LastInsertId (returns 0 on update, which is fine)
-	result, err := s.execContext(ctx, query, args...)
-	if err != nil {
-		return 0, err
-	}
-	id, _ := result.LastInsertId()
-	return id, nil
-}
-
 // ============================================================================
 // Agent Management Methods
 // ============================================================================
