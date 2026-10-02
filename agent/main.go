@@ -278,6 +278,7 @@ var (
 )
 
 type agentAuthManager struct {
+	config           *AgentConfig // Read the persisted machine identity, including post-start enrollment.
 	mode             string
 	allowLocalAdmin  bool
 	serverURL        string
@@ -317,6 +318,7 @@ func newAgentAuthManager(cfg *AgentConfig, sessions *agentSessionManager) *agent
 		}
 	}
 	return &agentAuthManager{
+		config:           cfg,
 		mode:             mode,
 		allowLocalAdmin:  allowLocal,
 		serverURL:        serverURL,
@@ -836,8 +838,12 @@ func (a *agentAuthManager) handleAuthCallback(w http.ResponseWriter, r *http.Req
 
 // validateServerCallbackToken validates a callback token with the server and returns user info.
 func (a *agentAuthManager) validateServerCallbackToken(ctx context.Context, token string) (*AgentPrincipal, string, time.Time, error) {
-	if a == nil || strings.TrimSpace(a.serverURL) == "" {
+	if a == nil || a.mode != "server" || strings.TrimSpace(a.serverURL) == "" {
 		return nil, "", time.Time{}, fmt.Errorf("server validation unavailable")
+	}
+	agentID, err := a.serverAuthAgentID()
+	if err != nil || strings.TrimSpace(token) == "" {
+		return nil, "", time.Time{}, fmt.Errorf("callback requires machine identity and token")
 	}
 
 	if appLogger != nil {
@@ -852,7 +858,7 @@ func (a *agentAuthManager) validateServerCallbackToken(ctx context.Context, toke
 		return nil, "", time.Time{}, err
 	}
 
-	payload := map[string]string{"token": token}
+	payload := map[string]string{"token": token, "agent_id": agentID}
 	buf := &bytes.Buffer{}
 	if err := json.NewEncoder(buf).Encode(payload); err != nil {
 		return nil, "", time.Time{}, err
@@ -884,34 +890,41 @@ func (a *agentAuthManager) validateServerCallbackToken(ctx context.Context, toke
 	}
 
 	var result struct {
-		Valid     bool     `json:"valid"`
-		UserID    int64    `json:"user_id"`
-		Username  string   `json:"username"`
-		Role      string   `json:"role"`
-		TenantID  string   `json:"tenant_id"`
-		TenantIDs []string `json:"tenant_ids"`
-		ExpiresAt string   `json:"expires_at"`
+		Authorized    bool     `json:"authorized"`
+		AgentID       string   `json:"agent_id"`
+		AgentTenantID string   `json:"agent_tenant_id"`
+		Valid         bool     `json:"valid"`
+		UserID        int64    `json:"user_id"`
+		Username      string   `json:"username"`
+		Role          string   `json:"role"`
+		TenantID      string   `json:"tenant_id"`
+		TenantIDs     []string `json:"tenant_ids"`
+		ExpiresAt     string   `json:"expires_at"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
 		return nil, "", time.Time{}, err
 	}
 
-	if !result.Valid {
+	if !result.Valid || !result.Authorized || result.AgentID != agentID || !serverPrincipalAllowsAgent(result.Username, result.Role, result.TenantID, result.TenantIDs, result.AgentTenantID) {
 		if appLogger != nil {
 			appLogger.Debug("Server reported token as invalid")
 		}
 		return nil, "", time.Time{}, fmt.Errorf("token invalid")
 	}
 
-	expiresAt, _ := time.Parse(time.RFC3339, result.ExpiresAt)
-	if expiresAt.IsZero() {
-		expiresAt = time.Now().Add(60 * time.Minute) // Default to 1 hour
+	expiresAt, err := time.Parse(time.RFC3339, result.ExpiresAt)
+	if err != nil || !expiresAt.After(time.Now()) {
+		return nil, "", time.Time{}, fmt.Errorf("callback expiration invalid")
 	}
 
 	principal := &AgentPrincipal{
-		Username: result.Username,
-		Role:     result.Role,
-		Source:   "server-callback",
+		Username:  result.Username,
+		Role:      result.Role,
+		Source:    "server-callback",
+		TenantIDs: result.TenantIDs,
+	}
+	if len(principal.TenantIDs) == 0 && result.TenantID != "" {
+		principal.TenantIDs = []string{result.TenantID}
 	}
 
 	if appLogger != nil {
@@ -926,6 +939,9 @@ func (a *agentAuthManager) validateServerCallbackToken(ctx context.Context, toke
 func (a *agentAuthManager) serverLogin(ctx context.Context, username, password string) (*AgentPrincipal, string, time.Time, error) {
 	if a == nil || strings.TrimSpace(a.serverURL) == "" {
 		return nil, "", time.Time{}, fmt.Errorf("server login unavailable")
+	}
+	if _, err := a.serverAuthAgentID(); err != nil {
+		return nil, "", time.Time{}, err
 	}
 	client, err := a.newServerHTTPClient()
 	if err != nil {
@@ -1007,6 +1023,10 @@ func (a *agentAuthManager) serverLogout(ctx context.Context, serverToken string)
 }
 
 func (a *agentAuthManager) fetchServerPrincipal(ctx context.Context, client *http.Client, serverToken string) (*AgentPrincipal, error) {
+	agentID, err := a.serverAuthAgentID()
+	if err != nil || serverToken == "" {
+		return nil, fmt.Errorf("agent authorization unavailable")
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.serverAPIURL("/api/v1/auth/me"), nil)
 	if err != nil {
 		return nil, err
@@ -1027,12 +1047,38 @@ func (a *agentAuthManager) fetchServerPrincipal(ctx context.Context, client *htt
 		TenantID  string   `json:"tenant_id"`
 		TenantIDs []string `json:"tenant_ids"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
 		return nil, err
 	}
 	ids := payload.TenantIDs
 	if len(ids) == 0 && payload.TenantID != "" {
 		ids = []string{payload.TenantID}
+	}
+	// Authentication alone is insufficient: the server must authorize this
+	// session against this machine's persisted agent record.
+	targetReq, err := http.NewRequestWithContext(ctx, http.MethodGet, a.serverAPIURL("/api/v1/agents/"+url.PathEscape(agentID)), nil)
+	if err != nil {
+		return nil, err
+	}
+	targetReq.AddCookie(&http.Cookie{Name: "pm_session", Value: serverToken})
+	targetReq.Header.Set("User-Agent", fmt.Sprintf("PrintMaster-Agent/%s", Version))
+	targetResp, err := client.Do(targetReq)
+	if err != nil {
+		return nil, err
+	}
+	defer targetResp.Body.Close()
+	if targetResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("agent authorization failed: status %d", targetResp.StatusCode)
+	}
+	var target struct {
+		AgentID  string `json:"agent_id"`
+		TenantID string `json:"tenant_id"`
+	}
+	if err := json.NewDecoder(io.LimitReader(targetResp.Body, 1<<20)).Decode(&target); err != nil {
+		return nil, err
+	}
+	if target.AgentID != agentID || !serverPrincipalAllowsAgent(payload.Username, payload.Role, payload.TenantID, ids, target.TenantID) {
+		return nil, fmt.Errorf("agent identity or tenant authorization mismatch")
 	}
 	return &AgentPrincipal{
 		Username:  payload.Username,
@@ -1040,6 +1086,34 @@ func (a *agentAuthManager) fetchServerPrincipal(ctx context.Context, client *htt
 		Source:    "server",
 		TenantIDs: ids,
 	}, nil
+}
+
+func (a *agentAuthManager) serverAuthAgentID() (string, error) {
+	if a == nil || a.config == nil || strings.TrimSpace(a.config.Server.AgentID) == "" {
+		return "", fmt.Errorf("persisted agent ID unavailable")
+	}
+	return strings.TrimSpace(a.config.Server.AgentID), nil
+}
+
+func serverPrincipalAllowsAgent(username, role, tenantID string, tenantIDs []string, agentTenantID string) bool {
+	if strings.TrimSpace(username) == "" {
+		return false
+	}
+	if role == "admin" {
+		return true
+	}
+	if (role != "operator" && role != "viewer") || agentTenantID == "" {
+		return false
+	}
+	if len(tenantIDs) == 0 {
+		return tenantID == agentTenantID
+	}
+	for _, id := range tenantIDs {
+		if id == agentTenantID {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *agentAuthManager) newServerHTTPClient() (*http.Client, error) {
@@ -1056,7 +1130,9 @@ func (a *agentAuthManager) newServerHTTPClient() (*http.Client, error) {
 		tlsConfig.RootCAs = pool
 	}
 	transport := &http.Transport{TLSClientConfig: tlsConfig}
-	return &http.Client{Timeout: serverAuthTimeout, Transport: transport}, nil
+	return &http.Client{Timeout: serverAuthTimeout, Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}, nil
 }
 
 func (a *agentAuthManager) serverAPIURL(p string) string {
@@ -1085,9 +1161,14 @@ func (a *agentAuthManager) serverLoginURL(r *http.Request) string {
 	// Build the agent callback URL that the server will redirect to after auth
 	// We need to determine the agent's external URL
 	agentCallbackURL := buildAgentCallbackURL(r, returnTo)
+	agentID, err := a.serverAuthAgentID()
+	if err != nil {
+		return "/login?error=missing_agent_id"
+	}
+	agentCallbackURL += "&agent_id=" + url.QueryEscape(agentID)
 
 	// Use 'redirect' parameter for external redirects (server login page convention)
-	return strings.TrimRight(a.serverURL, "/") + "/login?redirect=" + url.QueryEscape(agentCallbackURL)
+	return strings.TrimRight(a.serverURL, "/") + "/login?agent_id=" + url.QueryEscape(agentID) + "&redirect=" + url.QueryEscape(agentCallbackURL)
 }
 
 // buildAgentCallbackURL constructs the callback URL that the server should redirect to after auth
