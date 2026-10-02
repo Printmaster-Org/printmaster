@@ -257,6 +257,8 @@ func sanitizeEmailHeader(s string) string {
 type SSEEvent struct {
 	Type string                 `json:"type"`
 	Data map[string]interface{} `json:"data"`
+	// Trusted producer ownership for deletion events whose DB row is gone.
+	TenantID string `json:"-"`
 }
 
 type SSEClient struct {
@@ -2163,7 +2165,7 @@ type agentCallbackToken struct {
 	Role        string    // User's role
 	TenantID    string    // User's primary tenant
 	TenantIDs   []string  // All tenant IDs user has access to
-	AgentID     string    // Target agent ID (optional, for validation)
+	AgentID     string    // Required target agent ID
 	CallbackURL string    // The agent callback URL
 	ExpiresAt   time.Time // Token expiration (short-lived, typically 5 min)
 	CreatedAt   time.Time
@@ -2190,7 +2192,7 @@ func generateAgentCallbackToken(user *storage.User, agentID, callbackURL string)
 		Username:    user.Username,
 		Role:        string(user.Role),
 		TenantID:    user.TenantID,
-		TenantIDs:   user.TenantIDs,
+		TenantIDs:   append([]string(nil), user.TenantIDs...),
 		AgentID:     agentID,
 		CallbackURL: callbackURL,
 		ExpiresAt:   now.Add(5 * time.Minute), // Short-lived
@@ -2208,7 +2210,9 @@ func generateAgentCallbackToken(user *storage.User, agentID, callbackURL string)
 		"expires_at", act.ExpiresAt.Format(time.RFC3339),
 	)
 
-	return act
+	clone := *act
+	clone.TenantIDs = append([]string(nil), act.TenantIDs...)
+	return &clone
 }
 
 // validateAgentCallbackToken validates and consumes a callback token.
@@ -2286,25 +2290,20 @@ func handleAgentAuthCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	if req.AgentID == "" {
+		http.Error(w, "agent_id required", http.StatusBadRequest)
+		return
+	}
+	if _, ok := authorizeInventoryAgent(w, r, req.AgentID, authz.ActionAgentsRead); !ok {
+		return
+	}
 
-	// Validate callback URL is reasonable (must be HTTPS or localhost)
-	callbackURL := strings.TrimSpace(req.CallbackURL)
-	if callbackURL == "" {
-		http.Error(w, "callback_url required", http.StatusBadRequest)
-		return
-	}
-	parsed, err := url.Parse(callbackURL)
+	callbackURL, _, err := agentCallbackTarget(req.CallbackURL, req.AgentID)
 	if err != nil {
-		http.Error(w, "invalid callback_url", http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Allow localhost (any scheme) or HTTPS
-	host := strings.ToLower(parsed.Hostname())
-	isLocalhost := host == "localhost" || host == "127.0.0.1" || host == "::1"
-	if !isLocalhost && parsed.Scheme != "https" {
-		http.Error(w, "callback_url must use HTTPS for non-localhost addresses", http.StatusBadRequest)
-		return
-	}
+	parsed, _ := url.Parse(callbackURL)
 
 	// Generate callback token
 	act := generateAgentCallbackToken(principal.User, req.AgentID, callbackURL)
@@ -2356,7 +2355,7 @@ func handleAgentAuthCallbackValidate(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		Token   string `json:"token"`
-		AgentID string `json:"agent_id,omitempty"` // Optional: for extra validation
+		AgentID string `json:"agent_id"` // Required: must exactly match the grant target
 	}
 	if err := decodeJSONBody(r, &req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -2391,14 +2390,21 @@ func handleAgentAuthCallbackValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Optional: verify agent ID matches if provided
-	if req.AgentID != "" && act.AgentID != "" && req.AgentID != act.AgentID {
-		serverLogger.Warn("Agent callback token agent ID mismatch",
-			"expected", act.AgentID,
-			"got", req.AgentID,
-		)
-		// Still allow it but log the mismatch
+	// Callback grants are target-bound, including when the caller omits an ID.
+	if act.AgentID == "" || req.AgentID != act.AgentID {
+		http.Error(w, "callback target mismatch", http.StatusForbidden)
+		return
 	}
+	// Recheck current assignments: a short-lived grant must not survive user
+	// removal or an agent moving to a different tenant.
+	agent, err := serverStore.GetAgent(r.Context(), act.AgentID)
+	user, userErr := serverStore.GetUserByID(r.Context(), act.UserID)
+	if err != nil || agent == nil || userErr != nil || user == nil || !newPrincipal(user).CanAccessTenant(agent.TenantID) {
+		http.Error(w, "callback access revoked", http.StatusForbidden)
+		return
+	}
+	act.Username, act.Role = user.Username, string(user.Role)
+	act.TenantID, act.TenantIDs = user.TenantID, user.TenantIDs
 
 	serverLogger.Info("Agent callback token validated",
 		"user_id", act.UserID,
@@ -2430,6 +2436,9 @@ func handleAgentAuthCallbackValidate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"valid":      true,
+		"authorized": true,
+		"agent_id": act.AgentID,
+		"agent_tenant_id": agent.TenantID,
 		"user_id":    act.UserID,
 		"username":   act.Username,
 		"role":       act.Role,
@@ -3599,6 +3608,13 @@ func setupRoutes(cfg *Config) {
 	})
 	alertsAPI, err := alertsapi.NewAPI(serverStore, alertsapi.APIOptions{
 		AuthMiddleware: requireWebAuth,
+		ScopeResolver: func(r *http.Request) (alertsapi.TenantScope, error) {
+			principal := getPrincipal(r)
+			if principal == nil {
+				return alertsapi.TenantScope{}, authz.ErrUnauthorized
+			}
+			return alertsapi.TenantScope{AllTenants: principal.IsAdmin(), TenantIDs: principal.AllowedTenantIDs()}, nil
+		},
 		Authorizer: func(r *http.Request, action authz.Action, resource authz.ResourceRef) error {
 			return authorizeRequest(r, action, resource)
 		},
@@ -3662,31 +3678,7 @@ func setupRoutes(cfg *Config) {
 	http.HandleFunc("/api/v1/onboarding/status", requireWebAuth(handleOnboardingStatus))
 
 	// Server settings sources (metadata about which keys are locked by env overrides)
-	http.HandleFunc("/api/v1/server/settings/sources", requireWebAuth(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
-			return
-		}
-		// Build list of locked keys (those set by environment variables)
-		lockedKeys := make([]string, 0)
-		effectiveValues := make(map[string]interface{})
-		if configSourceTracker != nil && configSourceTracker.EnvKeys != nil {
-			lockedKeys = make([]string, 0, len(configSourceTracker.EnvKeys))
-			for key := range configSourceTracker.EnvKeys {
-				lockedKeys = append(lockedKeys, key)
-			}
-			// Include effective runtime values for locked keys
-			effectiveValues = getEffectiveConfigValues(lockedKeys)
-		}
-		resp := map[string]interface{}{
-			"locked_keys":      lockedKeys,
-			"lock_reason":      "environment_variable",
-			"effective_values": effectiveValues,
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
+	http.HandleFunc("/api/v1/server/settings/sources", requireWebAuth(handleServerSettingsSources))
 
 	// Proxy endpoints - require login
 	http.HandleFunc("/api/v1/proxy/agent/", requireWebAuth(handleAgentProxy))   // Proxy to agent's own web UI
@@ -3878,6 +3870,79 @@ func probeHealthEndpoint(endpoint string, insecure bool) error {
 	return nil
 }
 
+// streamPrincipal revalidates long-lived browser subscriptions independently
+// of agent liveness. No DB lookups run on the shared broadcast/heartbeat loop.
+func streamPrincipal(r *http.Request) *Principal {
+	token := sessionTokenFromRequest(r)
+	if token == "" || serverStore == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	session, err := serverStore.GetSessionByToken(ctx, token)
+	if err != nil || session == nil || !session.ExpiresAt.After(time.Now()) {
+		return nil
+	}
+	user, err := serverStore.GetUserByID(ctx, session.UserID)
+	if err != nil || user == nil {
+		return nil
+	}
+	return newPrincipal(user)
+}
+
+// eventVisibleToPrincipal allows only classified, owned resource events for
+// scoped users. Global snapshots, config, release progress and new event types
+// remain admin-only until their payloads have a reviewed ownership contract.
+func eventVisibleToPrincipal(ctx context.Context, principal *Principal, event SSEEvent) bool {
+	if principal == nil {
+		return false
+	}
+	if principal.IsAdmin() {
+		return true
+	}
+	if len(principal.AllowedTenantIDs()) == 0 || serverStore == nil {
+		return false
+	}
+	switch event.Type {
+	case "agent_connected", "agent_disconnected", "agent_ws_diag", "agent_heartbeat", "agent_updated",
+		"agent_deleted", "device_updated", "device_deleted", "update_progress", "job_progress":
+	default:
+		return false
+	}
+	agentID, _ := event.Data["agent_id"].(string)
+	if agentID == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	agent, err := serverStore.GetAgent(ctx, agentID)
+	if err != nil || agent == nil {
+		// Only a trusted server producer can tag a deleted agent. A payload
+		// tenant_id alone never confers access.
+		return errors.Is(err, sql.ErrNoRows) && event.Type == "agent_deleted" && event.TenantID != "" && principal.CanAccessTenant(event.TenantID)
+	}
+	if !principal.CanAccessTenant(agent.TenantID) {
+		return false
+	}
+	if tenantID, _ := event.Data["tenant_id"].(string); tenantID != "" && tenantID != agent.TenantID {
+		return false
+	}
+	serial, _ := event.Data["serial"].(string)
+	if (event.Type == "device_updated" || event.Type == "device_deleted") && serial == "" {
+		return false
+	}
+	if serial != "" {
+		device, err := serverStore.GetDevice(ctx, serial)
+		if err != nil || device == nil {
+			return errors.Is(err, sql.ErrNoRows) && event.Type == "device_deleted"
+		}
+		if device.AgentID != agentID {
+			return false
+		}
+	}
+	return true
+}
+
 // handleSSE streams server-sent events to UI clients for real-time updates
 func handleSSE(w http.ResponseWriter, r *http.Request) {
 	if !authorizeOrReject(w, r, authz.ActionEventsSubscribe, authz.ResourceRef{}) {
@@ -3898,6 +3963,8 @@ func handleSSE(w http.ResponseWriter, r *http.Request) {
 	// Create client and register with hub
 	client := sseHub.NewClient()
 	defer sseHub.RemoveClient(client)
+	revalidate := time.NewTicker(30 * time.Second)
+	defer revalidate.Stop()
 
 	logDebug("SSE client connected", "client_id", client.id)
 
@@ -3908,7 +3975,17 @@ func handleSSE(w http.ResponseWriter, r *http.Request) {
 	// Stream events to client
 	for {
 		select {
-		case event := <-client.events:
+		case event, ok := <-client.events:
+			if !ok {
+				return
+			}
+			principal := streamPrincipal(r)
+			if principal == nil || !principal.HasRole(storage.RoleViewer) {
+				return
+			}
+			if !eventVisibleToPrincipal(r.Context(), principal, event) {
+				continue
+			}
 			// Marshal event data
 			data, err := json.Marshal(event.Data)
 			if err != nil {
@@ -3919,6 +3996,11 @@ func handleSSE(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, data)
 			flusher.Flush()
 
+		case <-revalidate.C:
+			principal := streamPrincipal(r)
+			if principal == nil || !principal.HasRole(storage.RoleViewer) {
+				return
+			}
 		case <-r.Context().Done():
 			// Client disconnected
 			logDebug("SSE client disconnected", "client_id", client.id)
@@ -3941,11 +4023,10 @@ func handleUIWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Register with wsHub to receive bridged events from the SSE hub
-	clientID := fmt.Sprintf("ui-%d", time.Now().UnixNano())
-	ch := make(chan wscommon.Message, 20)
-	wsHub.Register(clientID, ch)
-	defer wsHub.Unregister(clientID)
+	// Subscribe directly so trusted ownership metadata survives the bridge.
+	// Authorization happens per subscriber, never on the shared hub loop.
+	client := sseHub.NewClient()
+	defer sseHub.RemoveClient(client)
 
 	// Send initial version message
 	versionMsg := wscommon.Message{
@@ -3961,19 +4042,37 @@ func handleUIWebSocket(w http.ResponseWriter, r *http.Request) {
 		_ = conn.WriteRaw(payload, 5*time.Second)
 	}
 
-	// Forward hub events (from wsHub) to WS
+	// Forward only authorized events; revocation also closes idle connections.
 	done := make(chan struct{})
+	forwardDone := make(chan struct{})
 	go func() {
+		defer close(forwardDone)
+		revalidate := time.NewTicker(30 * time.Second)
+		defer revalidate.Stop()
+		defer conn.Close()
 		for {
 			select {
-			case ev, ok := <-ch:
+			case ev, ok := <-client.events:
 				if !ok {
 					return
 				}
-				if b, err := ev.Marshal(); err == nil {
+				principal := streamPrincipal(r)
+				if principal == nil || !principal.HasRole(storage.RoleViewer) {
+					return
+				}
+				if !eventVisibleToPrincipal(r.Context(), principal, ev) {
+					continue
+				}
+				msg := wscommon.Message{Type: ev.Type, Data: ev.Data, Timestamp: time.Now()}
+				if b, err := msg.Marshal(); err == nil {
 					if err := conn.WriteRaw(b, 10*time.Second); err != nil {
 						return
 					}
+				}
+			case <-revalidate.C:
+				principal := streamPrincipal(r)
+				if principal == nil || !principal.HasRole(storage.RoleViewer) {
+					return
 				}
 			case <-done:
 				return
@@ -4012,6 +4111,7 @@ func handleUIWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	close(done)
 	conn.Close()
+	<-forwardDone
 }
 
 func handleConfigStatus(w http.ResponseWriter, r *http.Request) {
@@ -4242,9 +4342,15 @@ func handleAgentDeviceCredentials(w http.ResponseWriter, r *http.Request) {
 
 	// Get credentials from server storage
 	creds, err := serverStore.GetDeviceCredentials(ctx, serial)
-	if err != nil {
+	if err != nil || creds == nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{"exists": false})
+		return
+	}
+	// Serial ownership alone cannot authorize credentials left behind after a
+	// tenant transfer. Legacy unscoped credentials also fail closed.
+	if agent.TenantID == "" || creds.TenantID != agent.TenantID {
+		http.Error(w, "credential tenant mismatch", http.StatusForbidden)
 		return
 	}
 
@@ -4734,7 +4840,8 @@ func handleAgentDetails(w http.ResponseWriter, r *http.Request) {
 
 			// Broadcast agent_deleted event to UI via SSE
 			sseHub.Broadcast(SSEEvent{
-				Type: "agent_deleted",
+						Type:     "agent_deleted",
+						TenantID: agent.TenantID,
 				Data: map[string]interface{}{
 					"agent_id": agentID,
 				},
@@ -4764,18 +4871,10 @@ func handleAgentProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	principal := getPrincipal(r)
-	if principal == nil {
-		http.Error(w, "unauthenticated", http.StatusUnauthorized)
-		return
-	}
-	scope, ok := tenantScope(principal)
-	if !ok {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-
 	agentID := parts[0]
+	if _, ok := authorizeInventoryAgent(w, r, agentID, authz.ActionProxyAgentConnect); !ok {
+		return
+	}
 	targetPath := "/"
 	if len(parts) > 1 {
 		targetPath = "/" + parts[1]
@@ -4789,21 +4888,6 @@ func handleAgentProxy(w http.ResponseWriter, r *http.Request) {
 	// Check if agent is connected via WebSocket
 	if !isAgentConnectedWS(agentID) {
 		http.Error(w, "Agent not connected via WebSocket", http.StatusServiceUnavailable)
-		return
-	}
-
-	// Get agent to determine local port (default 8080)
-	ctx := context.Background()
-	agent, err := serverStore.GetAgent(ctx, agentID)
-	if err != nil {
-		http.Error(w, "Agent not found", http.StatusNotFound)
-		return
-	}
-	if !tenantAllowed(scope, agent.TenantID) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-	if !authorizeOrReject(w, r, authz.ActionProxyAgentConnect, authz.ResourceRef{TenantIDs: []string{agent.TenantID}}) {
 		return
 	}
 
@@ -4907,7 +4991,7 @@ func handleDeviceCredentials(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthenticated", http.StatusUnauthorized)
 		return
 	}
-	scope, ok := tenantScope(principal)
+	_, ok := tenantScope(principal)
 	if !ok {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -4935,13 +5019,8 @@ func handleDeviceCredentials(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Check tenant access via the device's agent
-		if device.AgentID != "" {
-			agent, err := serverStore.GetAgent(ctx, device.AgentID)
-			if err == nil && agent != nil && !tenantAllowed(scope, agent.TenantID) {
-				http.Error(w, "forbidden", http.StatusForbidden)
-				return
-			}
+		if _, ok := authorizeInventoryAgent(w, r, device.AgentID, authz.ActionProxyDeviceConnect); !ok {
+			return
 		}
 
 		// Get credentials from server storage
@@ -4986,17 +5065,14 @@ func handleDeviceCredentials(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Check tenant access via the device's agent
+		// Resolve ownership before encrypting or writing credentials.
+		agent, ok := authorizeInventoryAgent(w, r, device.AgentID, authz.ActionProxyDeviceConnect)
+		if !ok {
+			return
+		}
 		var tenantID string
-		if device.AgentID != "" {
-			agent, err := serverStore.GetAgent(ctx, device.AgentID)
-			if err == nil && agent != nil {
-				if !tenantAllowed(scope, agent.TenantID) {
-					http.Error(w, "forbidden", http.StatusForbidden)
-					return
-				}
-				tenantID = agent.TenantID
-			}
+		if agent != nil {
+			tenantID = agent.TenantID
 		}
 
 		// Encrypt password if provided
@@ -5039,17 +5115,9 @@ func handleDeviceCredentials(w http.ResponseWriter, r *http.Request) {
 }
 
 func proxyDeviceRequest(w http.ResponseWriter, r *http.Request, serial string, targetPath string) {
-	principal := getPrincipal(r)
-	if principal == nil {
-		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+	if !authorizeOrReject(w, r, authz.ActionProxyDeviceConnect, authz.ResourceRef{}) {
 		return
 	}
-	scope, ok := tenantScope(principal)
-	if !ok {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-
 	ctx := r.Context()
 	if ctx == nil {
 		ctx = context.Background()
@@ -5074,6 +5142,9 @@ func proxyDeviceRequest(w http.ResponseWriter, r *http.Request, serial string, t
 		http.Error(w, "Device not found", http.StatusNotFound)
 		return
 	}
+	if _, ok := authorizeInventoryAgent(w, r, device.AgentID, authz.ActionProxyDeviceConnect); !ok {
+		return
+	}
 
 	// USB devices don't have an IP - they're proxied via USB transport on the agent
 	// Network devices require an IP address
@@ -5092,21 +5163,6 @@ func proxyDeviceRequest(w http.ResponseWriter, r *http.Request, serial string, t
 	if !isAgentConnectedWS(device.AgentID) {
 		logWarn("Device proxy agent offline", "serial", serial, "agent_id", device.AgentID)
 		http.Error(w, "Device's agent not connected via WebSocket", http.StatusServiceUnavailable)
-		return
-	}
-
-	agent, err := serverStore.GetAgent(ctx, device.AgentID)
-	if err != nil {
-		logWarn("Device proxy agent lookup failed", "serial", serial, "agent_id", device.AgentID, "error", err)
-		http.Error(w, "Agent not found", http.StatusNotFound)
-		return
-	}
-	if !tenantAllowed(scope, agent.TenantID) {
-		logWarn("Device proxy forbidden", "serial", serial, "agent_id", device.AgentID, "tenant_id", agent.TenantID)
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-	if !authorizeOrReject(w, r, authz.ActionProxyDeviceConnect, authz.ResourceRef{TenantIDs: []string{agent.TenantID}}) {
 		return
 	}
 
@@ -5155,6 +5211,94 @@ func appendQueryToPath(path, rawQuery string) string {
 		separator = "&"
 	}
 	return path + separator + rawQuery
+}
+
+// outgoingProxyHeaders never relays central credentials or browser-supplied
+// identity/trust headers. The agent transport supplies its own trusted marker.
+func outgoingProxyHeaders(r *http.Request, deviceCookies bool) map[string]string {
+	headers := make(map[string]string)
+	hop := map[string]bool{
+		"connection": true, "keep-alive": true, "proxy-authenticate": true,
+		"proxy-authorization": true, "te": true, "trailer": true,
+		"transfer-encoding": true, "upgrade": true,
+	}
+	for _, value := range r.Header.Values("Connection") {
+		for _, name := range strings.Split(value, ",") {
+			hop[strings.ToLower(strings.TrimSpace(name))] = true
+		}
+	}
+	for key, values := range r.Header {
+		name := strings.ToLower(key)
+		if len(values) == 0 || hop[name] || name == "authorization" || name == "cookie" ||
+			name == "forwarded" || name == "x-real-ip" || name == "x-detected-proto" ||
+			strings.HasPrefix(name, "x-printmaster-") || strings.HasPrefix(name, "x-forwarded-") ||
+			strings.HasPrefix(name, "x-internal-") || strings.HasPrefix(name, "x-auth-") ||
+			name == "x-remote-user" {
+			continue
+		}
+		headers[http.CanonicalHeaderKey(key)] = values[0]
+	}
+	if deviceCookies && !hop["cookie"] {
+		var cookies []string
+		for _, cookie := range r.Cookies() {
+			if strings.EqualFold(cookie.Name, "pm_session") || strings.EqualFold(cookie.Name, "pm_agent_session") {
+				continue
+			}
+			if value := cookie.String(); value != "" {
+				cookies = append(cookies, value)
+			}
+		}
+		if len(cookies) > 0 {
+			headers["Cookie"] = strings.Join(cookies, "; ")
+		}
+	}
+	return headers
+}
+
+func authenticatedBatchAgent(w http.ResponseWriter, r *http.Request, bodyAgentID string) (*storage.Agent, bool) {
+	agent, ok := r.Context().Value(agentContextKey).(*storage.Agent)
+	if !ok || agent == nil || agent.AgentID == "" {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return nil, false
+	}
+	if bodyAgentID != agent.AgentID {
+		http.Error(w, "agent_id does not match authenticated agent", http.StatusForbidden)
+		return nil, false
+	}
+	return agent, true
+}
+
+func authorizeGlobalAdmin(w http.ResponseWriter, r *http.Request, action authz.Action) bool {
+	if !authorizeOrReject(w, r, action, authz.ResourceRef{}) {
+		return false
+	}
+	if !getPrincipal(r).IsAdmin() {
+		http.Error(w, "global administrator required", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+func handleServerSettingsSources(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+	if !authorizeOrReject(w, r, authz.ActionSettingsServerRead, authz.ResourceRef{}) {
+		return
+	}
+	lockedKeys := make([]string, 0)
+	effectiveValues := make(map[string]interface{})
+	if configSourceTracker != nil && configSourceTracker.EnvKeys != nil {
+		for key := range configSourceTracker.EnvKeys {
+			lockedKeys = append(lockedKeys, key)
+		}
+		effectiveValues = getEffectiveConfigValues(lockedKeys)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"locked_keys": lockedKeys, "lock_reason": "environment_variable", "effective_values": effectiveValues,
+	})
 }
 
 // proxyThroughWebSocket sends an HTTP request through WebSocket and returns the response.
@@ -5215,13 +5359,8 @@ func proxyThroughWebSocketWithTimeout(w http.ResponseWriter, r *http.Request, ag
 		}
 	}
 
-	// Extract headers
-	headers := make(map[string]string)
-	for k, v := range r.Header {
-		if len(v) > 0 {
-			headers[k] = v[0]
-		}
-	}
+	// Only device proxy requests may retain non-central device cookies.
+	headers := outgoingProxyHeaders(r, isAgentDeviceProxy)
 
 	// Add principal info for the agent to use when returning auth/me responses
 	// This allows the proxied agent UI to know who the server-authenticated user is
@@ -5713,6 +5852,9 @@ func handleDevicePreviewProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Device not found", http.StatusNotFound)
 		return
 	}
+	if _, ok := authorizeInventoryAgent(w, r, device.AgentID, authz.ActionProxyDeviceConnect); !ok {
+		return
+	}
 
 	if device.AgentID == "" {
 		http.Error(w, "Device has no associated agent", http.StatusBadRequest)
@@ -5770,6 +5912,9 @@ func handleDeviceUpdateProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Device not found", http.StatusNotFound)
 		return
 	}
+	if _, ok := authorizeInventoryAgent(w, r, device.AgentID, authz.ActionProxyDeviceConnect); !ok {
+		return
+	}
 
 	if device.AgentID == "" {
 		http.Error(w, "Device has no associated agent", http.StatusBadRequest)
@@ -5819,6 +5964,9 @@ func handleDeviceMetricsCollectProxy(w http.ResponseWriter, r *http.Request) {
 	device, err := serverStore.GetDevice(ctx, req.Serial)
 	if err != nil || device == nil {
 		http.Error(w, "Device not found", http.StatusNotFound)
+		return
+	}
+	if _, ok := authorizeInventoryAgent(w, r, device.AgentID, authz.ActionProxyDeviceConnect); !ok {
 		return
 	}
 
@@ -5960,13 +6108,7 @@ func proxyReportWithServerLogs(w http.ResponseWriter, r *http.Request, agentID s
 		}
 	}
 
-	// Extract headers
-	headers := make(map[string]string)
-	for k, v := range r.Header {
-		if len(v) > 0 {
-			headers[k] = v[0]
-		}
-	}
+	headers := outgoingProxyHeaders(r, false)
 
 	// Send proxy request to agent
 	if err := sendProxyRequest(agentID, requestID, targetURL, r.Method, headers, bodyStr); err != nil {
@@ -5998,7 +6140,7 @@ func proxyReportWithServerLogs(w http.ResponseWriter, r *http.Request, agentID s
 
 		// If it's a JSON response, inject server logs
 		var responseData map[string]interface{}
-		if err := json.Unmarshal(bodyBytes, &responseData); err == nil {
+		if err := json.Unmarshal(bodyBytes, &responseData); err == nil && getPrincipal(r).IsAdmin() {
 			// Get server logs (last 200 lines)
 			serverLogs := tailServerLogFile(200)
 
@@ -6151,13 +6293,7 @@ func proxyReportWithTrueStreaming(w http.ResponseWriter, r *http.Request, agentI
 	// Encode request body
 	bodyStr := base64.StdEncoding.EncodeToString(bodyBytes)
 
-	// Extract headers
-	headers := make(map[string]string)
-	for k, v := range r.Header {
-		if len(v) > 0 {
-			headers[k] = v[0]
-		}
-	}
+	headers := outgoingProxyHeaders(r, false)
 
 	// Send streaming proxy request to agent
 	conn, exists := getAgentWSConnection(agentID)
@@ -6253,7 +6389,7 @@ func proxyReportWithTrueStreaming(w http.ResponseWriter, r *http.Request, agentI
 					if err == nil {
 						// Try to inject server logs
 						var responseData map[string]interface{}
-						if json.Unmarshal(bodyData, &responseData) == nil {
+						if json.Unmarshal(bodyData, &responseData) == nil && getPrincipal(r).IsAdmin() {
 							if reportData, ok := responseData["report"].(map[string]interface{}); ok {
 								serverLogs := tailServerLogFile(200)
 								reportData["server_logs"] = serverLogs
@@ -6325,12 +6461,19 @@ func handleDeviceDelete(w http.ResponseWriter, r *http.Request) {
 	var agentID string
 	deviceExistsOnServer := false
 	device, err := serverStore.GetDevice(ctx, req.Serial)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) && !strings.Contains(strings.ToLower(err.Error()), "not found") {
+		http.Error(w, "Failed to query device", http.StatusInternalServerError)
+		return
+	}
 	if err == nil && device != nil {
 		deviceExistsOnServer = true
 		agentID = device.AgentID
 	} else {
 		// Device not in server DB - use agent_id from request if provided
 		agentID = req.AgentID
+	}
+	if _, ok := authorizeInventoryAgent(w, r, agentID, authz.ActionAgentsDelete); !ok {
+		return
 	}
 
 	deletedFromAgent := false
@@ -6369,7 +6512,22 @@ func handleDeviceDelete(w http.ResponseWriter, r *http.Request) {
 	// Delete from server database (if it exists there)
 	deletedFromServer := false
 	if deviceExistsOnServer {
-		if err := serverStore.DeleteDevice(ctx, req.Serial, req.DeleteMetrics); err != nil {
+		var deleteErr error
+		if agentID == "" {
+			// Only global admins can authorize unowned server-only records.
+			deleteErr = serverStore.DeleteDevice(ctx, req.Serial, req.DeleteMetrics)
+		} else if ownedStore, ok := serverStore.(interface {
+			DeleteDeviceForAgentWithMetrics(context.Context, string, string, bool) error
+		}); ok {
+			deleteErr = ownedStore.DeleteDeviceForAgentWithMetrics(ctx, req.Serial, agentID, req.DeleteMetrics)
+		} else {
+			deleteErr = errors.New("storage lacks atomic owned device deletion")
+		}
+		if errors.Is(deleteErr, storage.ErrOwnershipConflict) {
+			http.Error(w, "Device ownership changed", http.StatusConflict)
+			return
+		}
+		if err := deleteErr; err != nil {
 			logError("Failed to delete device from server", "serial", req.Serial, "error", err)
 			http.Error(w, "Failed to delete device: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -6443,15 +6601,19 @@ func handleDevicesBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	agent, ok := authenticatedBatchAgent(w, r, req.AgentID)
+	if !ok {
+		return
+	}
 	logInfo("Devices batch received", "agent_id", req.AgentID, "count", len(req.Devices))
 
 	// Store each device
-	ctx := context.Background()
+	ctx := r.Context()
 	stored := 0
 	for _, deviceMap := range req.Devices {
 		// Convert map to Device struct (simplified - in production, use proper unmarshaling)
 		device := &storage.Device{}
-		device.AgentID = req.AgentID
+		device.AgentID = agent.AgentID
 		device.LastSeen = req.Timestamp
 		device.FirstSeen = req.Timestamp
 		device.CreatedAt = req.Timestamp
@@ -6533,9 +6695,6 @@ func handleDevicesBatch(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Get authenticated agent from context
-	agent := r.Context().Value(agentContextKey).(*storage.Agent)
-
 	logInfo("Devices stored", "agent_id", agent.AgentID, "stored", stored, "total", len(req.Devices))
 
 	// Log audit entry for device upload
@@ -6562,6 +6721,73 @@ func handleDevicesBatch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// inventoryAgentScope keeps an empty tenant selection distinct from unrestricted
+// admin access. Storage list/count methods treat empty ID filters as unrestricted.
+type inventoryAgentScope struct {
+	unrestricted bool
+	agentIDs     []string
+}
+
+func (s inventoryAgentScope) empty() bool {
+	return !s.unrestricted && len(s.agentIDs) == 0
+}
+
+func resolveInventoryAgentScope(ctx context.Context, scope map[string]struct{}) (inventoryAgentScope, error) {
+	if scope == nil {
+		return inventoryAgentScope{unrestricted: true}, nil
+	}
+	selection := inventoryAgentScope{agentIDs: []string{}}
+	agents, err := serverStore.ListAgents(ctx)
+	if err != nil {
+		return selection, err
+	}
+	for _, agent := range agents {
+		if agent != nil && tenantAllowed(scope, agent.TenantID) {
+			selection.agentIDs = append(selection.agentIDs, agent.AgentID)
+		}
+	}
+	return selection, nil
+}
+
+// authorizeInventoryAgent checks role and owning tenant before metrics,
+// credentials, connection diagnostics, or device management side effects.
+func authorizeInventoryAgent(w http.ResponseWriter, r *http.Request, agentID string, action authz.Action) (*storage.Agent, bool) {
+	principal := getPrincipal(r)
+	if principal == nil {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return nil, false
+	}
+	scope, ok := tenantScope(principal)
+	if !ok {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return nil, false
+	}
+	if !authorizeOrReject(w, r, action, authz.ResourceRef{}) {
+		return nil, false
+	}
+	if agentID == "" {
+		// Admins can still manage server-only records without an owning agent.
+		if principal.IsAdmin() {
+			return nil, true
+		}
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return nil, false
+	}
+	agent, err := serverStore.GetAgent(r.Context(), agentID)
+	if err != nil || agent == nil {
+		http.Error(w, "Agent not found", http.StatusNotFound)
+		return nil, false
+	}
+	if !tenantAllowed(scope, agent.TenantID) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return nil, false
+	}
+	if !authorizeOrReject(w, r, action, authz.ResourceRef{TenantIDs: []string{agent.TenantID}}) {
+		return nil, false
+	}
+	return agent, true
+}
+
 // handleDevicesList returns all devices for UI display
 func handleDevicesList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -6583,27 +6809,19 @@ func handleDevicesList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := r.Context()
 
 	// Parse pagination params
 	limitStr := r.URL.Query().Get("limit")
 	offsetStr := r.URL.Query().Get("offset")
 
-	// Build list of allowed agent IDs for tenant-scoped users
-	var allowedAgentIDs []string
-	if scope != nil {
-		agents, err := serverStore.ListAgents(ctx)
-		if err != nil {
-			logError("Failed to list agents for scope filter", "error", err)
-			http.Error(w, "Failed to list devices", http.StatusInternalServerError)
-			return
-		}
-		for _, a := range agents {
-			if a != nil && tenantAllowed(scope, a.TenantID) {
-				allowedAgentIDs = append(allowedAgentIDs, a.AgentID)
-			}
-		}
+	selection, err := resolveInventoryAgentScope(ctx, scope)
+	if err != nil {
+		logError("Failed to list agents for scope filter", "error", err)
+		http.Error(w, "Failed to list devices", http.StatusInternalServerError)
+		return
 	}
+	allowedAgentIDs := selection.agentIDs
 
 	// If pagination is requested, use paginated endpoint
 	if limitStr != "" {
@@ -6617,6 +6835,15 @@ func handleDevicesList(w http.ResponseWriter, r *http.Request) {
 		}
 		if offset < 0 {
 			offset = 0
+		}
+
+		if selection.empty() {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"devices": []*storage.DeviceWithMetrics{}, "total_count": 0,
+				"has_more": false, "limit": limit, "offset": offset,
+			})
+			return
 		}
 
 		// Get total count
@@ -6650,6 +6877,12 @@ func handleDevicesList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if selection.empty() {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]*storage.DeviceWithMetrics{})
+		return
+	}
+
 	// Legacy: return all devices (for backwards compatibility)
 	devices, err := serverStore.ListAllDevices(ctx)
 	if err != nil {
@@ -6659,7 +6892,7 @@ func handleDevicesList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// If scoped, filter devices to tenant scope
-	if scope != nil && len(allowedAgentIDs) > 0 {
+	if !selection.unrestricted {
 		agentAllowed := make(map[string]struct{}, len(allowedAgentIDs))
 		for _, id := range allowedAgentIDs {
 			agentAllowed[id] = struct{}{}
@@ -7310,6 +7543,11 @@ func handleMetricsAggregated(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthenticated", http.StatusUnauthorized)
 		return
 	}
+	scope, ok := tenantScope(principal)
+	if !ok {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
 
 	// Parse time range
 	sinceStr := r.URL.Query().Get("since")
@@ -7338,24 +7576,28 @@ func handleMetricsAggregated(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 	tenantIDs := principal.AllowedTenantIDs()
 
-	// If a specific tenant is requested and user has access, use that instead
+	// Reject foreign filters before aggregation, rather than silently substituting
+	// the caller's tenants or treating an empty non-admin scope as global access.
 	if filterTenantID != "" {
-		if len(tenantIDs) == 0 {
-			// Global admin - allow any tenant filter
-			tenantIDs = []string{filterTenantID}
-		} else {
-			// Check if requested tenant is in allowed list
-			allowed := false
-			for _, tid := range tenantIDs {
-				if tid == filterTenantID {
-					allowed = true
-					break
-				}
-			}
-			if allowed {
-				tenantIDs = []string{filterTenantID}
-			}
-			// If not allowed, keep original tenantIDs (will return empty or their data)
+		if !tenantAllowed(scope, filterTenantID) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		tenantIDs = []string{filterTenantID}
+	}
+	if filterAgentID != "" {
+		if _, ok := authorizeInventoryAgent(w, r, filterAgentID, authz.ActionMetricsSummaryRead); !ok {
+			return
+		}
+	}
+	if filterDeviceSerial != "" {
+		device, err := serverStore.GetDevice(r.Context(), filterDeviceSerial)
+		if err != nil || device == nil {
+			http.Error(w, "device not found", http.StatusNotFound)
+			return
+		}
+		if _, ok := authorizeInventoryAgent(w, r, device.AgentID, authz.ActionMetricsSummaryRead); !ok {
+			return
 		}
 	}
 
@@ -7376,7 +7618,10 @@ func handleMetricsAggregated(w http.ResponseWriter, r *http.Request) {
 		agg = filterAggregatedMetricsByDevice(agg, filterDeviceSerial)
 	}
 
-	attachServerStats(ctx, agg)
+	// Server DB statistics contain global inventory counts, not tenant totals.
+	if principal.IsAdmin() {
+		attachServerStats(ctx, agg)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(agg)
@@ -7404,6 +7649,19 @@ func filterAggregatedMetricsByDevice(agg *storage.AggregatedMetrics, serial stri
 	// the aggregation query to be modified. The client-side filtering handles display.
 	// TODO: Implement proper server-side filtering by modifying GetAggregatedMetrics to accept device filter
 	return agg
+}
+
+// Stored server snapshots contain global fleet totals. They cannot safely be
+// filtered into tenant snapshots; only admins may read these global endpoints.
+func authorizeGlobalInventoryMetrics(w http.ResponseWriter, r *http.Request) bool {
+	if !authorizeOrReject(w, r, authz.ActionMetricsSummaryRead, authz.ResourceRef{}) {
+		return false
+	}
+	if !getPrincipal(r).IsAdmin() {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return false
+	}
+	return true
 }
 
 func attachServerStats(ctx context.Context, agg *storage.AggregatedMetrics) {
@@ -7454,7 +7712,7 @@ func handleServerMetricsTimeSeries(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
-	if !authorizeOrReject(w, r, authz.ActionMetricsSummaryRead, authz.ResourceRef{}) {
+	if !authorizeGlobalInventoryMetrics(w, r) {
 		return
 	}
 
@@ -7516,7 +7774,7 @@ func handleServerMetricsLatest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
-	if !authorizeOrReject(w, r, authz.ActionMetricsSummaryRead, authz.ResourceRef{}) {
+	if !authorizeGlobalInventoryMetrics(w, r) {
 		return
 	}
 
@@ -7577,16 +7835,7 @@ func handleMetricsBounds(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "device not found", http.StatusNotFound)
 			return
 		}
-		agent, err := serverStore.GetAgent(ctx, device.AgentID)
-		if err != nil {
-			http.Error(w, "device not found", http.StatusNotFound)
-			return
-		}
-		if !tenantAllowed(scope, agent.TenantID) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-		if !authorizeOrReject(w, r, authz.ActionMetricsHistoryRead, authz.ResourceRef{TenantIDs: []string{agent.TenantID}}) {
+		if _, ok := authorizeInventoryAgent(w, r, device.AgentID, authz.ActionMetricsHistoryRead); !ok {
 			return
 		}
 	}
@@ -7692,16 +7941,7 @@ func handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "device not found", http.StatusNotFound)
 			return
 		}
-		agent, err := serverStore.GetAgent(ctx, device.AgentID)
-		if err != nil {
-			http.Error(w, "device not found", http.StatusNotFound)
-			return
-		}
-		if !tenantAllowed(scope, agent.TenantID) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-		if !authorizeOrReject(w, r, authz.ActionMetricsHistoryRead, authz.ResourceRef{TenantIDs: []string{agent.TenantID}}) {
+		if _, ok := authorizeInventoryAgent(w, r, device.AgentID, authz.ActionMetricsHistoryRead); !ok {
 			return
 		}
 	}
@@ -7802,14 +8042,18 @@ func handleMetricsBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	agent, ok := authenticatedBatchAgent(w, r, req.AgentID)
+	if !ok {
+		return
+	}
 	logInfo("Metrics batch received", "agent_id", req.AgentID, "count", len(req.Metrics))
 
 	// Store each metric snapshot
-	ctx := context.Background()
+	ctx := r.Context()
 	stored := 0
 	for _, metricMap := range req.Metrics {
 		metric := &storage.MetricsSnapshot{}
-		metric.AgentID = req.AgentID
+		metric.AgentID = agent.AgentID
 		metric.Timestamp = req.Timestamp
 
 		// Extract fields
@@ -7842,9 +8086,6 @@ func handleMetricsBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		stored++
 	}
-
-	// Get authenticated agent from context
-	agent := r.Context().Value(agentContextKey).(*storage.Agent)
 
 	logInfo("Metrics stored", "agent_id", agent.AgentID, "stored", stored, "total", len(req.Metrics))
 
@@ -8062,7 +8303,7 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
-	if !authorizeOrReject(w, r, authz.ActionLogsRead, authz.ResourceRef{}) {
+	if !authorizeGlobalAdmin(w, r, authz.ActionLogsRead) {
 		return
 	}
 
@@ -8102,7 +8343,7 @@ func handleLogsClear(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
-	if !authorizeOrReject(w, r, authz.ActionLogsRead, authz.ResourceRef{}) {
+	if !authorizeGlobalAdmin(w, r, authz.ActionLogsRead) {
 		return
 	}
 
@@ -9642,6 +9883,9 @@ var releaseSyncInProgress bool
 func handleReleasesSync(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !authorizeOrReject(w, r, authz.ActionReleasesWrite, authz.ResourceRef{}) {
 		return
 	}
 	if intakeWorker == nil {

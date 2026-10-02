@@ -134,8 +134,9 @@ func (s *deviceAuthStore) Create(meta deviceAuthMetadata) *deviceAuthRequest {
 	s.mu.Lock()
 	s.byCode[strings.ToUpper(req.Code)] = req
 	s.byPoll[req.PollToken] = req
+	clone := *req
 	s.mu.Unlock()
-	return req
+	return &clone
 }
 
 func (s *deviceAuthStore) snapshot(code string) (*deviceAuthRequest, bool) {
@@ -175,10 +176,11 @@ func (s *deviceAuthStore) getByPoll(pollToken string) (*deviceAuthRequest, bool)
 		delete(s.byCode, strings.ToUpper(req.Code))
 		delete(s.byPoll, pollToken)
 	}
-	return req, ok
+	clone := *req
+	return &clone, ok
 }
 
-func (s *deviceAuthStore) approve(code, tenantID, tenantName, agentName, approver string, joinToken string) (*deviceAuthRequest, error) {
+func (s *deviceAuthStore) approve(code, authorizedTenantID, tenantID, tenantName, agentName, approver string, issue func() (string, error)) (*deviceAuthRequest, error) {
 	if s == nil {
 		return nil, errors.New("store unavailable")
 	}
@@ -195,11 +197,17 @@ func (s *deviceAuthStore) approve(code, tenantID, tenantName, agentName, approve
 		delete(s.byPoll, req.PollToken)
 		return nil, errors.New("request expired")
 	}
-	if req.Status == deviceAuthStatusRejected {
-		return nil, errors.New("request already rejected")
+	if req.Status != deviceAuthStatusPending || req.TenantID != authorizedTenantID {
+		return nil, errors.New("request changed or already completed")
 	}
-	if req.Status == deviceAuthStatusApproved {
-		return req, nil
+	if req.TenantID != "" && req.TenantID != tenantID {
+		return nil, errors.New("request assigned to another tenant")
+	}
+	// Serialize token issuance with approval/rejection/expiry. Failure leaves
+	// the request pending and retryable; losing reviewers never mint a token.
+	joinToken, err := issue()
+	if err != nil {
+		return nil, err
 	}
 	req.Status = deviceAuthStatusApproved
 	req.TenantID = tenantID
@@ -211,10 +219,11 @@ func (s *deviceAuthStore) approve(code, tenantID, tenantName, agentName, approve
 	req.ApprovedBy = approver
 	req.JoinToken = joinToken
 	req.Message = "Approved"
-	return req, nil
+	clone := *req
+	return &clone, nil
 }
 
-func (s *deviceAuthStore) reject(code, reason, actor string) (*deviceAuthRequest, error) {
+func (s *deviceAuthStore) reject(code, reason, actor string, authorizedTenantID string) (*deviceAuthRequest, error) {
 	if s == nil {
 		return nil, errors.New("store unavailable")
 	}
@@ -231,11 +240,17 @@ func (s *deviceAuthStore) reject(code, reason, actor string) (*deviceAuthRequest
 		delete(s.byPoll, req.PollToken)
 		return nil, errors.New("request expired")
 	}
+	// Authorization used a snapshot; never mutate a newly assigned or terminal
+	// request after that decision (approval and rejection may race).
+	if req.TenantID != authorizedTenantID || req.Status != deviceAuthStatusPending {
+		return nil, errors.New("request changed or already completed")
+	}
 	req.Status = deviceAuthStatusRejected
 	req.Message = reason
 	req.RejectedAt = time.Now().UTC()
 	req.RejectedBy = actor
-	return req, nil
+	clone := *req
+	return &clone, nil
 }
 
 func generateDeviceAuthCode() string {
@@ -367,9 +382,16 @@ func handleDeviceAuthRequestRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleDeviceAuthRequestGet(w http.ResponseWriter, r *http.Request, store *deviceAuthStore, code string) {
+	if getPrincipal(r) == nil {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
 	snapshot, ok := store.snapshot(code)
 	if !ok || snapshot == nil {
 		http.NotFound(w, r)
+		return
+	}
+	if !authorizeDeviceAuthRequest(w, r, snapshot) {
 		return
 	}
 	tenants, err := listAccessibleTenants(r)
@@ -413,7 +435,41 @@ type tenantOption struct {
 	Name string `json:"name"`
 }
 
+// Unassigned pending requests are shared only through possession of their
+// code. A tenant-scoped operator must have at least one writable tenant;
+// assigned requests always use stored ownership, never a supplied tenant.
+func authorizeDeviceAuthRequest(w http.ResponseWriter, r *http.Request, req *deviceAuthRequest) bool {
+	principal := getPrincipal(r)
+	if principal == nil || principal.User == nil {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return false
+	}
+	if req.TenantID != "" {
+		return authorizeOrReject(w, r, authz.ActionAgentsWrite, authz.ResourceRef{TenantIDs: []string{req.TenantID}})
+	}
+	if !authorizeOrReject(w, r, authz.ActionAgentsWrite, authz.ResourceRef{}) {
+		return false
+	}
+	if principal.IsAdmin() {
+		return true
+	}
+	tenants, err := listAccessibleTenants(r)
+	if err != nil {
+		http.Error(w, "failed to list tenants", http.StatusInternalServerError)
+		return false
+	}
+	if req.Status != deviceAuthStatusPending || len(tenants) == 0 {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
 func listAccessibleTenants(r *http.Request) ([]tenantOption, error) {
+	principal := getPrincipal(r)
+	if principal == nil || principal.User == nil {
+		return nil, authz.ErrUnauthorized
+	}
 	if serverStore == nil {
 		return nil, errors.New("store unavailable")
 	}
@@ -421,10 +477,9 @@ func listAccessibleTenants(r *http.Request) ([]tenantOption, error) {
 	if err != nil {
 		return nil, err
 	}
-	principal := getPrincipal(r)
 	allowed := make([]tenantOption, 0, len(list))
 	for _, t := range list {
-		if principal != nil && !principal.CanAccessTenant(t.ID) {
+		if !principal.CanAccessTenant(t.ID) {
 			continue
 		}
 		allowed = append(allowed, tenantOption{ID: t.ID, Name: t.Name})
@@ -438,6 +493,14 @@ func handleDeviceAuthApprove(w http.ResponseWriter, r *http.Request, store *devi
 		http.Error(w, "unauthenticated", http.StatusUnauthorized)
 		return
 	}
+	snapshot, ok := store.snapshot(code)
+	if !ok || snapshot == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if !authorizeDeviceAuthRequest(w, r, snapshot) {
+		return
+	}
 	var in struct {
 		TenantID  string `json:"tenant_id"`
 		AgentName string `json:"agent_name"`
@@ -448,6 +511,10 @@ func handleDeviceAuthApprove(w http.ResponseWriter, r *http.Request, store *devi
 	}
 	if strings.TrimSpace(in.TenantID) == "" {
 		http.Error(w, "tenant_id required", http.StatusBadRequest)
+		return
+	}
+	if snapshot.Status != deviceAuthStatusPending || (snapshot.TenantID != "" && snapshot.TenantID != strings.TrimSpace(in.TenantID)) {
+		http.Error(w, "request completed or assigned to another tenant", http.StatusBadRequest)
 		return
 	}
 	if !authorizeOrReject(w, r, authz.ActionAgentsWrite, authz.ResourceRef{TenantIDs: []string{strings.TrimSpace(in.TenantID)}}) {
@@ -463,13 +530,17 @@ func handleDeviceAuthApprove(w http.ResponseWriter, r *http.Request, store *devi
 	if tenantName == "" {
 		tenantName = strings.TrimSpace(in.TenantID)
 	}
-	_, rawToken, err := serverStore.CreateJoinToken(ctx, strings.TrimSpace(in.TenantID), deviceAuthJoinTokenTTL, true)
+	issuanceFailed := false
+	req, err := store.approve(code, snapshot.TenantID, strings.TrimSpace(in.TenantID), tenantName, in.AgentName, principal.User.Username, func() (string, error) {
+		_, rawToken, err := serverStore.CreateJoinToken(ctx, strings.TrimSpace(in.TenantID), deviceAuthJoinTokenTTL, true)
+		issuanceFailed = err != nil
+		return rawToken, err
+	})
 	if err != nil {
-		http.Error(w, "failed to create join token", http.StatusInternalServerError)
-		return
-	}
-	req, err := store.approve(code, strings.TrimSpace(in.TenantID), tenantName, in.AgentName, principal.User.Username, rawToken)
-	if err != nil {
+		if issuanceFailed {
+			http.Error(w, "failed to create join token", http.StatusInternalServerError)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -497,6 +568,14 @@ func handleDeviceAuthReject(w http.ResponseWriter, r *http.Request, store *devic
 		http.Error(w, "unauthenticated", http.StatusUnauthorized)
 		return
 	}
+	snapshot, ok := store.snapshot(code)
+	if !ok || snapshot == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if !authorizeDeviceAuthRequest(w, r, snapshot) {
+		return
+	}
 	var in struct {
 		Reason string `json:"reason"`
 	}
@@ -508,7 +587,7 @@ func handleDeviceAuthReject(w http.ResponseWriter, r *http.Request, store *devic
 	if reason == "" {
 		reason = "Rejected by operator"
 	}
-	req, err := store.reject(code, reason, principal.User.Username)
+	req, err := store.reject(code, reason, principal.User.Username, snapshot.TenantID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

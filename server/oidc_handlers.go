@@ -266,6 +266,15 @@ func handleOIDCStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	redirectURL := sanitizeRedirectTarget(r.URL.Query().Get("redirect"))
+	if isAgentCallbackURL(r.URL.Query().Get("redirect")) {
+		// Persist the explicit target in the existing state-bound redirect URL.
+		var err error
+		redirectURL, _, err = agentCallbackTarget(r.URL.Query().Get("redirect"), r.URL.Query().Get("agent_id"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 	state, err := randomURLSafe(24)
 	if err != nil {
 		serverLogger.Error("Failed to generate OIDC state", "slug", slug, "error", err)
@@ -405,19 +414,11 @@ func handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	// Check if this is an agent callback redirect
 	if isAgentCallbackURL(redirectURL) {
 		serverLogger.Debug("OIDC callback detected agent redirect", "user_id", user.ID, "callback_url", redirectURL)
-		// Generate an agent callback token and append it to the URL
-		act := generateAgentCallbackToken(user, "", redirectURL)
-		if act != nil {
-			parsed, err := url.Parse(redirectURL)
-			if err == nil {
-				q := parsed.Query()
-				q.Set("token", act.Token)
-				parsed.RawQuery = q.Encode()
-				redirectURL = parsed.String()
-				serverLogger.Info("OIDC callback injected agent token", "user_id", user.ID, "username", user.Username)
-			}
-		} else {
-			serverLogger.Error("Failed to generate agent callback token during OIDC flow", "user_id", user.ID)
+		var err error
+		redirectURL, err = issueOIDCAgentRedirect(ctx, user, redirectURL)
+		if err != nil {
+			http.Redirect(w, r, "/login?error=oidc_agent", http.StatusFound)
+			return
 		}
 	}
 
@@ -496,7 +497,29 @@ func isAgentCallbackURL(rawURL string) bool {
 	if err != nil {
 		return false
 	}
-	return strings.Contains(parsed.Path, "/api/v1/auth/callback")
+	return parsed.Path == "/api/v1/auth/callback"
+}
+
+// issueOIDCAgentRedirect uses only the target persisted at login start, never
+// callback request parameters. Recheck current ownership before issuing a grant.
+func issueOIDCAgentRedirect(ctx context.Context, user *storage.User, redirect string) (string, error) {
+	callback, agentID, err := agentCallbackTarget(redirect, "")
+	if err != nil {
+		return "", err
+	}
+	agent, err := serverStore.GetAgent(ctx, agentID)
+	if err != nil || agent == nil || !newPrincipal(user).CanAccessTenant(agent.TenantID) {
+		return "", errors.New("callback target inaccessible")
+	}
+	act := generateAgentCallbackToken(user, agentID, callback)
+	if act == nil {
+		return "", errors.New("failed to issue callback grant")
+	}
+	u, _ := url.Parse(callback)
+	q := u.Query()
+	q.Set("token", act.Token)
+	u.RawQuery = q.Encode()
+	return u.String(), nil
 }
 
 type tenantResolution struct {
@@ -682,8 +705,12 @@ func buildProviderFromPayload(payload *oidcProviderPayload, existing *storage.OI
 	result.TenantID = strings.TrimSpace(payload.TenantID)
 
 	role := strings.ToLower(strings.TrimSpace(payload.DefaultRole))
-	if role != "admin" {
-		role = "user"
+	switch role {
+	case "admin", "operator", "viewer", "user", "":
+		// Legacy user intentionally normalizes to operator; explicit/omitted
+		// viewer defaults never acquire write permissions.
+	default:
+		return nil, fmt.Errorf("invalid default_role")
 	}
 	result.DefaultRole = storage.NormalizeRole(role)
 
@@ -783,8 +810,17 @@ func sanitizeRedirectTarget(raw string) string {
 		return "/"
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.IsAbs() {
+	if err != nil || (!u.IsAbs() && u.Host != "") || strings.ContainsAny(raw, "\\\r\n\t") {
 		return "/"
+	}
+	if u.IsAbs() {
+		if !isAgentCallbackURL(raw) {
+			return "/"
+		}
+		if _, _, err := agentCallbackTarget(raw, ""); err != nil {
+			return "/"
+		}
+		return u.String()
 	}
 	if u.Path == "" {
 		u.Path = "/"
@@ -813,6 +849,9 @@ func maskSecret(s string) string {
 }
 
 func resolveOIDCUser(ctx context.Context, provider *storage.OIDCProvider, claims *oidcClaims) (*storage.User, error) {
+	if provider == nil || claims == nil || strings.TrimSpace(claims.Subject) == "" {
+		return nil, errors.New("OIDC provider and subject required")
+	}
 	link, err := serverStore.GetOIDCLink(ctx, provider.Slug, claims.Subject)
 	if err == nil {
 		user, err := serverStore.GetUserByID(ctx, link.UserID)
@@ -831,18 +870,26 @@ func resolveOIDCUser(ctx context.Context, provider *storage.OIDCProvider, claims
 
 	email := strings.ToLower(strings.TrimSpace(claims.Email))
 	if email != "" {
-		user, err := serverStore.GetUserByEmail(ctx, email)
+		_, err := serverStore.GetUserByEmail(ctx, email)
 		if err == nil {
-			_ = serverStore.CreateOIDCLink(ctx, &storage.OIDCLink{ProviderSlug: provider.Slug, Subject: claims.Subject, Email: email, UserID: user.ID})
-			return user, nil
+			// Email, even verified, is not authority to attach a new subject to
+			// an existing account. Preserve explicitly prelinked identities above.
+			return nil, errors.New("existing email requires explicit OIDC identity linking")
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
 	}
+	// Unverified email is not a usable account ownership attribute.
+	if !claims.EmailVerified {
+		email = ""
+	}
 
 	username := deriveUsername(claims)
 	role := provider.DefaultRole
+	if provider.TenantID != "" && role == storage.RoleAdmin {
+		return nil, errors.New("tenant OIDC provider cannot provision a global administrator")
+	}
 	if role != storage.RoleAdmin && role != storage.RoleOperator {
 		role = storage.RoleViewer
 	}

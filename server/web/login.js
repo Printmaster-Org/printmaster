@@ -21,6 +21,7 @@
         oidc_claims: 'Could not read your profile information from the identity provider.',
         oidc_user: 'We could not create or find a user for this identity.',
         oidc_session: 'We could not establish a session. Please try again.',
+        oidc_agent: 'Access to the requested agent was denied. Start again from the agent.',
     };
 
     const elementIds = {
@@ -335,6 +336,14 @@
         if(redirectTarget){
             qs.set('redirect', redirectTarget);
         }
+        if(isAgentCallbackRedirect(redirectTarget)){
+            try {
+                qs.set('agent_id', agentCallbackTarget(redirectTarget));
+            } catch (err) {
+                showError(err.message);
+                return;
+            }
+        }
         navigateTo('/auth/oidc/start/' + encodeURIComponent(slug) + (qs.toString() ? ('?' + qs.toString()) : ''));
     }
 
@@ -356,19 +365,32 @@
     function isAgentCallbackRedirect(url) {
         try {
             const parsed = new URL(url, window.location.origin);
-            return parsed.pathname.includes('/api/v1/auth/callback');
+            return parsed.pathname === '/api/v1/auth/callback';
         } catch (e) {
             return false;
         }
     }
 
     // Get a callback token for agent redirect
+    function agentCallbackTarget(callbackUrl) {
+        const url = new URL(callbackUrl, window.location.origin);
+        const ids = url.searchParams.getAll('agent_id');
+        const carried = (ids[0] || '').trim();
+        const explicit = (params.get('agent_id') || '').trim();
+        if(ids.length > 1 || (explicit && carried && explicit !== carried)) {
+            throw new Error('Agent callback target mismatch. Start again from the agent.');
+        }
+        const target = explicit || carried;
+        if(!target) throw new Error('Agent ID missing. Start again from the agent.');
+        return target;
+    }
+
     async function getAgentCallbackToken(callbackUrl) {
         const resp = await fetch('/api/v1/auth/agent-callback', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'same-origin',
-            body: JSON.stringify({ callback_url: callbackUrl })
+            body: JSON.stringify({ callback_url: callbackUrl, agent_id: agentCallbackTarget(callbackUrl) })
         });
         if (!resp.ok) {
             throw new Error('Failed to create agent callback token');

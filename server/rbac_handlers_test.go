@@ -18,6 +18,7 @@ func TestHandleAgentsList_TenantFiltering(t *testing.T) {
 	agents := []*storage.Agent{
 		{
 			AgentID:         "agent-tenant-a",
+			Token:           "rbac-list-token-tenant-a",
 			Name:            "Tenant A Agent",
 			TenantID:        "tenant-a",
 			RegisteredAt:    time.Now(),
@@ -26,6 +27,7 @@ func TestHandleAgentsList_TenantFiltering(t *testing.T) {
 		},
 		{
 			AgentID:         "agent-tenant-b",
+			Token:           "rbac-list-token-tenant-b",
 			Name:            "Tenant B Agent",
 			TenantID:        "tenant-b",
 			RegisteredAt:    time.Now(),
@@ -72,6 +74,7 @@ func TestHandleAgentDetails_DeleteRespectsTenantScope(t *testing.T) {
 	for idx, tenant := range tenants {
 		agent := &storage.Agent{
 			AgentID:         "agent-" + tenant,
+			Token:           "rbac-delete-token-" + tenant,
 			Name:            "Agent " + tenant,
 			TenantID:        tenant,
 			RegisteredAt:    time.Now(),

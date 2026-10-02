@@ -37,6 +37,10 @@ func (rs *ReportStore) ListAgents(ctx context.Context) ([]*storage.Agent, error)
 	return rs.store.ListAgents(ctx)
 }
 
+func (rs *ReportStore) GetAgentSiteIDs(ctx context.Context, agentID string) ([]string, error) {
+	return rs.store.GetAgentSiteIDs(ctx, agentID)
+}
+
 func (rs *ReportStore) GetAgent(ctx context.Context, agentID string) (*storage.Agent, error) {
 	return rs.store.GetAgent(ctx, agentID)
 }
@@ -81,9 +85,203 @@ func (rs *ReportStore) UpdateReportRun(ctx context.Context, run *storage.ReportR
 	return rs.store.UpdateReportRun(ctx, run)
 }
 
+// Reports use the principal's role and complete tenant set, never query-supplied
+// ownership. Global built-ins are readable templates only; their jobs/results
+// are administrator-only. Operators may manage only their own definitions.
+func reportPrincipal(w http.ResponseWriter, r *http.Request, write bool) *Principal {
+	p := getPrincipal(r)
+	if p == nil || p.User == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return nil
+	}
+	minimum := storage.RoleViewer
+	if write {
+		minimum = storage.RoleOperator
+	}
+	if !p.HasRole(minimum) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return nil
+	}
+	if _, ok := tenantScope(p); !ok {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return nil
+	}
+	return p
+}
+
+func reportTenantsAllowed(p *Principal, ids []string) bool {
+	if len(ids) == 0 {
+		return false
+	}
+	for _, id := range ids {
+		if id == "" || strings.Contains(id, ",") || !p.CanAccessTenant(id) {
+			return false
+		}
+	}
+	return true
+}
+
+func reportVisible(p *Principal, report *storage.ReportDefinition, template bool) bool {
+	if report == nil {
+		return false
+	}
+	if p.IsAdmin() {
+		return true
+	}
+	if template && report.IsBuiltIn && report.Scope == storage.ReportScopeFleet && len(report.TenantIDs) == 0 {
+		return true
+	}
+	switch report.Scope {
+	case storage.ReportScopeTenant, storage.ReportScopeSite, storage.ReportScopeAgent, storage.ReportScopeDevice:
+		return reportTenantsAllowed(p, report.TenantIDs)
+	default:
+		return false
+	}
+}
+
+func reportForRequest(w http.ResponseWriter, r *http.Request, id int64, write, template bool) *storage.ReportDefinition {
+	p := reportPrincipal(w, r, write)
+	if p == nil {
+		return nil
+	}
+	report, err := serverStore.GetReport(r.Context(), id)
+	if err != nil {
+		http.Error(w, "Failed to load report", http.StatusInternalServerError)
+		return nil
+	}
+	if !reportVisible(p, report, template) {
+		http.NotFound(w, r)
+		return nil
+	}
+	if write && !p.IsAdmin() && (report.IsBuiltIn || report.CreatedBy != p.User.Username) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return nil
+	}
+	return report
+}
+
+func validateReportScope(w http.ResponseWriter, r *http.Request, report *storage.ReportDefinition) bool {
+	p := getPrincipal(r)
+	if !reportVisible(p, report, false) {
+		http.Error(w, "Forbidden report scope", http.StatusForbidden)
+		return false
+	}
+	// IDs are serialized as comma-separated strings. Reject ambiguous input
+	// rather than silently expanding one tenant ID into several on retrieval.
+	for _, ids := range [][]string{report.TenantIDs, report.SiteIDs, report.AgentIDs} {
+		for _, id := range ids {
+			if id == "" || strings.Contains(id, ",") {
+				http.Error(w, "Invalid report scope ID", http.StatusBadRequest)
+				return false
+			}
+		}
+	}
+	if p.IsAdmin() {
+		return true
+	}
+	for _, id := range report.AgentIDs {
+		agent, err := serverStore.GetAgent(r.Context(), id)
+		if err != nil || agent == nil || !reportHasID(report.TenantIDs, agent.TenantID) {
+			http.Error(w, "Forbidden report agent", http.StatusForbidden)
+			return false
+		}
+	}
+	for _, id := range report.SiteIDs {
+		site, err := serverStore.GetSite(r.Context(), id)
+		if err != nil || site == nil || !reportHasID(report.TenantIDs, site.TenantID) {
+			http.Error(w, "Forbidden report site", http.StatusForbidden)
+			return false
+		}
+	}
+	return true
+}
+
+func reportHasID(ids []string, id string) bool {
+	for _, candidate := range ids {
+		if candidate == id {
+			return true
+		}
+	}
+	return false
+}
+
+func reportRunVisible(p *Principal, run *storage.ReportRun, report *storage.ReportDefinition) bool {
+	if !reportVisible(p, report, false) {
+		return false
+	}
+	if p.IsAdmin() {
+		return true
+	}
+	ids, verified := storage.ReportRunTenantScope(run)
+	return verified && reportTenantsAllowed(p, ids)
+}
+
+func visibleReportRuns(ctx context.Context, p *Principal, filter storage.ReportRunFilter) ([]*storage.ReportRun, error) {
+	limit, offset := filter.Limit, filter.Offset
+	// Apply pagination to visible rows, but never materialize candidate bodies.
+	// A stable storage order makes offset-based metadata batches deterministic.
+	const batchSize = 100
+	filter.Limit, filter.Offset, filter.MetadataOnly = batchSize, 0, true
+	visible := make([]*storage.ReportRun, 0)
+	parents := make(map[int64]*storage.ReportDefinition)
+	for {
+		runs, err := serverStore.ListReportRuns(ctx, filter)
+		if err != nil {
+			return nil, err
+		}
+		for _, run := range runs {
+			report, loaded := parents[run.ReportID]
+			if !loaded {
+				report, err = serverStore.GetReport(ctx, run.ReportID)
+				if err != nil {
+					return nil, err
+				}
+				parents[run.ReportID] = report
+			}
+			if !reportRunVisible(p, run, report) {
+				continue
+			}
+			if offset > 0 {
+				offset--
+				continue
+			}
+			visible = append(visible, run)
+			if limit > 0 && len(visible) >= limit {
+				return visible, nil
+			}
+		}
+		if len(runs) < batchSize {
+			return visible, nil
+		}
+		filter.Offset += len(runs)
+	}
+}
+
+func visibleReportSchedules(ctx context.Context, p *Principal) ([]*storage.ReportSchedule, error) {
+	schedules, err := serverStore.ListReportSchedules(ctx, 0)
+	if err != nil {
+		return nil, err
+	}
+	visible := make([]*storage.ReportSchedule, 0)
+	for _, schedule := range schedules {
+		report, err := serverStore.GetReport(ctx, schedule.ReportID)
+		if err != nil {
+			return nil, err
+		}
+		if reportVisible(p, report, false) {
+			visible = append(visible, schedule)
+		}
+	}
+	return visible, nil
+}
+
 // handleReports handles GET /api/v1/reports and POST /api/v1/reports
 func handleReports(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	p := reportPrincipal(w, r, r.Method != http.MethodGet)
+	if p == nil {
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:
@@ -114,6 +312,8 @@ func handleReports(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		limit, offset := filter.Limit, filter.Offset
+		filter.Limit, filter.Offset = 0, 0
 		reports, err := serverStore.ListReports(ctx, filter)
 		if err != nil {
 			serverLogger.Error("Failed to list reports", "error", err)
@@ -121,6 +321,22 @@ func handleReports(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		visible := make([]*storage.ReportDefinition, 0)
+		for _, report := range reports {
+			if reportVisible(p, report, true) {
+				visible = append(visible, report)
+			}
+		}
+		if offset > len(visible) {
+			offset = len(visible)
+		}
+		if offset > 0 {
+			visible = visible[offset:]
+		}
+		if limit > 0 && len(visible) > limit {
+			visible = visible[:limit]
+		}
+		reports = visible
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"reports": reports,
@@ -135,9 +351,11 @@ func handleReports(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Get current user for created_by
-		if principal := getPrincipal(r); principal != nil {
-			report.CreatedBy = principal.User.Username
+		report.ID = 0
+		report.IsBuiltIn = false
+		report.CreatedBy = p.User.Username
+		if !validateReportScope(w, r, &report) {
+			return
 		}
 
 		if err := serverStore.CreateReport(ctx, &report); err != nil {
@@ -172,12 +390,12 @@ func handleReport(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		switch {
-		case strings.HasPrefix(subPath, "/run"):
+		switch subPath {
+		case "/run":
 			handleReportRun(w, r, id)
-		case strings.HasPrefix(subPath, "/schedules"):
+		case "/schedules":
 			handleReportSchedules(w, r, id)
-		case strings.HasPrefix(subPath, "/runs"):
+		case "/runs":
 			handleReportRuns(w, r, id)
 		default:
 			http.Error(w, "Not found", http.StatusNotFound)
@@ -190,22 +408,15 @@ func handleReport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid report ID", http.StatusBadRequest)
 		return
 	}
+	existing := reportForRequest(w, r, id, r.Method != http.MethodGet, r.Method == http.MethodGet)
+	if existing == nil {
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:
-		report, err := serverStore.GetReport(ctx, id)
-		if err != nil {
-			serverLogger.Error("Failed to get report", "report_id", id, "error", err)
-			http.Error(w, fmt.Sprintf("get report: %v", err), http.StatusInternalServerError)
-			return
-		}
-		if report == nil {
-			http.Error(w, "Report not found", http.StatusNotFound)
-			return
-		}
-
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(report)
+		json.NewEncoder(w).Encode(existing)
 
 	case http.MethodPut:
 		var report storage.ReportDefinition
@@ -214,6 +425,14 @@ func handleReport(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		report.ID = id
+		report.CreatedBy, report.IsBuiltIn, report.CreatedAt = existing.CreatedBy, existing.IsBuiltIn, existing.CreatedAt
+		if report.Scope != existing.Scope || strings.Join(report.TenantIDs, ",") != strings.Join(existing.TenantIDs, ",") {
+			http.Error(w, "Report tenant scope is immutable; create a new report", http.StatusBadRequest)
+			return
+		}
+		if !validateReportScope(w, r, &report) {
+			return
+		}
 
 		if err := serverStore.UpdateReport(ctx, &report); err != nil {
 			serverLogger.Error("Failed to update report", "report_id", report.ID, "error", err)
@@ -243,6 +462,9 @@ func handleReportRun(w http.ResponseWriter, r *http.Request, reportID int64) {
 
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if reportForRequest(w, r, reportID, true, false) == nil {
 		return
 	}
 
@@ -275,6 +497,9 @@ func handleReportRuns(w http.ResponseWriter, r *http.Request, reportID int64) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if reportForRequest(w, r, reportID, false, false) == nil {
+		return
+	}
 
 	filter := storage.ReportRunFilter{
 		ReportID: reportID,
@@ -290,7 +515,7 @@ func handleReportRuns(w http.ResponseWriter, r *http.Request, reportID int64) {
 		}
 	}
 
-	runs, err := serverStore.ListReportRuns(ctx, filter)
+	runs, err := visibleReportRuns(ctx, getPrincipal(r), filter)
 	if err != nil {
 		serverLogger.Error("Failed to list report runs", "report_id", reportID, "error", err)
 		http.Error(w, fmt.Sprintf("list runs: %v", err), http.StatusInternalServerError)
@@ -312,6 +537,10 @@ func handleReportRunsCollection(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	p := reportPrincipal(w, r, false)
+	if p == nil {
+		return
+	}
 
 	filter := storage.ReportRunFilter{
 		Limit: 50,
@@ -326,12 +555,18 @@ func handleReportRunsCollection(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if rid := r.URL.Query().Get("report_id"); rid != "" {
-		if rv, err := strconv.ParseInt(rid, 10, 64); err == nil {
-			filter.ReportID = rv
+		rv, err := strconv.ParseInt(rid, 10, 64)
+		if err != nil || rv <= 0 {
+			http.Error(w, "Invalid report ID", http.StatusBadRequest)
+			return
 		}
+		if reportForRequest(w, r, rv, false, false) == nil {
+			return
+		}
+		filter.ReportID = rv
 	}
 
-	runs, err := serverStore.ListReportRuns(ctx, filter)
+	runs, err := visibleReportRuns(ctx, p, filter)
 	if err != nil {
 		serverLogger.Error("Failed to list all report runs", "error", err)
 		http.Error(w, fmt.Sprintf("list runs: %v", err), http.StatusInternalServerError)
@@ -348,6 +583,9 @@ func handleReportRunsCollection(w http.ResponseWriter, r *http.Request) {
 // handleReportSchedules handles GET/POST /api/v1/reports/{id}/schedules
 func handleReportSchedules(w http.ResponseWriter, r *http.Request, reportID int64) {
 	ctx := r.Context()
+	if reportForRequest(w, r, reportID, r.Method != http.MethodGet, false) == nil {
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:
@@ -401,8 +639,11 @@ func handleReportSchedulesCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// List all schedules (no report filter)
-	schedules, err := serverStore.ListReportSchedules(ctx, 0)
+	p := reportPrincipal(w, r, false)
+	if p == nil {
+		return
+	}
+	schedules, err := visibleReportSchedules(ctx, p)
 	if err != nil {
 		serverLogger.Error("Failed to list all report schedules", "error", err)
 		http.Error(w, fmt.Sprintf("list schedules: %v", err), http.StatusInternalServerError)
@@ -419,6 +660,9 @@ func handleReportSchedulesCollection(w http.ResponseWriter, r *http.Request) {
 // handleSchedule handles GET/PUT/DELETE /api/v1/report-schedules/{id}
 func handleSchedule(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	if reportPrincipal(w, r, r.Method != http.MethodGet) == nil {
+		return
+	}
 
 	// Extract ID
 	idStr := strings.TrimPrefix(r.URL.Path, "/api/v1/report-schedules/")
@@ -427,22 +671,23 @@ func handleSchedule(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid schedule ID", http.StatusBadRequest)
 		return
 	}
+	existing, err := serverStore.GetReportSchedule(ctx, id)
+	if err != nil {
+		http.Error(w, "Failed to load schedule", http.StatusInternalServerError)
+		return
+	}
+	if existing == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if reportForRequest(w, r, existing.ReportID, r.Method != http.MethodGet, false) == nil {
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:
-		schedule, err := serverStore.GetReportSchedule(ctx, id)
-		if err != nil {
-			serverLogger.Error("Failed to get report schedule", "schedule_id", id, "error", err)
-			http.Error(w, fmt.Sprintf("get schedule: %v", err), http.StatusInternalServerError)
-			return
-		}
-		if schedule == nil {
-			http.Error(w, "Schedule not found", http.StatusNotFound)
-			return
-		}
-
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(schedule)
+		json.NewEncoder(w).Encode(existing)
 
 	case http.MethodPut:
 		var schedule storage.ReportSchedule
@@ -451,6 +696,11 @@ func handleSchedule(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		schedule.ID = id
+		if schedule.ReportID != 0 && schedule.ReportID != existing.ReportID {
+			http.Error(w, "Schedule report ownership is immutable", http.StatusBadRequest)
+			return
+		}
+		schedule.ReportID = existing.ReportID
 
 		// Recalculate next run if schedule changed
 		if schedule.NextRunAt.IsZero() {
@@ -487,6 +737,10 @@ func handleReportRunResult(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	p := reportPrincipal(w, r, false)
+	if p == nil {
+		return
+	}
 
 	// Extract ID
 	idStr := strings.TrimPrefix(r.URL.Path, "/api/v1/report-runs/")
@@ -503,7 +757,7 @@ func handleReportRunResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	run, err := serverStore.GetReportRun(ctx, id)
+	run, err := serverStore.GetReportRunMetadata(ctx, id)
 	if err != nil {
 		serverLogger.Error("Failed to get report run", "run_id", id, "error", err)
 		http.Error(w, fmt.Sprintf("get run: %v", err), http.StatusInternalServerError)
@@ -511,6 +765,27 @@ func handleReportRunResult(w http.ResponseWriter, r *http.Request) {
 	}
 	if run == nil {
 		http.Error(w, "Run not found", http.StatusNotFound)
+		return
+	}
+	report, err := serverStore.GetReport(ctx, run.ReportID)
+	if err != nil {
+		http.Error(w, "Failed to load report", http.StatusInternalServerError)
+		return
+	}
+	if !reportRunVisible(p, run, report) {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Load the body only after checking both current and execution ownership.
+	run, err = serverStore.GetReportRun(ctx, id)
+	if err != nil {
+		serverLogger.Error("Failed to get report run", "run_id", id, "error", err)
+		http.Error(w, fmt.Sprintf("get run: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if run == nil || !reportRunVisible(p, run, report) {
+		http.NotFound(w, r)
 		return
 	}
 
@@ -547,6 +822,9 @@ func handleReportRunResult(w http.ResponseWriter, r *http.Request) {
 
 // handleReportTypes handles GET /api/v1/reports/types
 func handleReportTypes(w http.ResponseWriter, r *http.Request) {
+	if reportPrincipal(w, r, false) == nil {
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -569,8 +847,12 @@ func handleReportSummary(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	p := reportPrincipal(w, r, false)
+	if p == nil {
+		return
+	}
 
-	summary, err := serverStore.GetReportSummary(ctx)
+	summary, err := scopedReportSummary(ctx, p)
 	if err != nil {
 		serverLogger.Error("Failed to get report summary", "error", err)
 		http.Error(w, fmt.Sprintf("get summary: %v", err), http.StatusInternalServerError)
@@ -579,6 +861,66 @@ func handleReportSummary(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(summary)
+}
+
+func scopedReportSummary(ctx context.Context, p *Principal) (*storage.ReportSummary, error) {
+	if p.IsAdmin() {
+		return serverStore.GetReportSummary(ctx)
+	}
+	summary := &storage.ReportSummary{ReportsByType: make(map[string]int)}
+	definitions, err := serverStore.ListReports(ctx, storage.ReportFilter{})
+	if err != nil {
+		return nil, err
+	}
+	for _, report := range definitions {
+		if reportVisible(p, report, true) {
+			summary.TotalReports++
+			summary.ReportsByType[report.Type]++
+			if report.IsBuiltIn {
+				summary.BuiltInReports++
+			} else {
+				summary.CustomReports++
+			}
+		}
+	}
+	schedules, err := visibleReportSchedules(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	summary.TotalSchedules = len(schedules)
+	for _, schedule := range schedules {
+		if schedule.Enabled {
+			summary.ActiveSchedules++
+		}
+	}
+	runs, err := visibleReportRuns(ctx, p, storage.ReportRunFilter{})
+	if err != nil {
+		return nil, err
+	}
+	summary.TotalRuns = len(runs)
+	since := time.Now().Add(-24 * time.Hour)
+	var duration int64
+	var timedRuns int64
+	for _, run := range runs {
+		if !run.StartedAt.Before(since) {
+			summary.RunsLast24h++
+			if run.Status == storage.ReportStatusFailed {
+				summary.FailedRunsLast24h++
+			}
+		}
+		if run.Status == storage.ReportStatusCompleted {
+			summary.SuccessfulRuns++
+			if run.DurationMS > 0 {
+				duration += run.DurationMS
+				timedRuns++
+			}
+		}
+		summary.StorageUsedBytes += run.ResultSize
+	}
+	if timedRuns > 0 {
+		summary.AverageRunTimeMS = duration / timedRuns
+	}
+	return summary, nil
 }
 
 // calculateInitialNextRun calculates the first run time for a new schedule.

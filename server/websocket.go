@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -347,11 +348,11 @@ func handleAgentWebSocket(w http.ResponseWriter, r *http.Request, serverStore st
 		case wscommon.MessageTypeHeartbeat:
 			handleWSHeartbeat(conn, agent, msg, serverStore)
 		case wscommon.MessageTypeProxyResponse:
-			handleWSProxyResponse(msg)
+			handleWSProxyResponse(agent.AgentID, msg)
 		case wscommon.MessageTypeProxyStreamChunk:
-			handleWSProxyStreamChunk(msg)
+			handleWSProxyStreamChunk(agent.AgentID, msg)
 		case wscommon.MessageTypeProxyStreamEnd:
-			handleWSProxyStreamEnd(msg)
+			handleWSProxyStreamEnd(agent.AgentID, msg)
 		case wscommon.MessageTypeUpdateProgress:
 			handleWSUpdateProgress(agent, msg)
 		case wscommon.MessageTypeJobProgress:
@@ -506,8 +507,22 @@ func cleanupAgentDiagnostics(agentID string) {
 	delete(wsDisconnectEventsPerAgent, agentID)
 }
 
-// handleWSProxyResponse handles HTTP proxy responses from agents
-func handleWSProxyResponse(msg wscommon.Message) {
+// proxyRequestOwnedBy checks the target identity embedded by all three server
+// proxy dispatchers in their pending request keys: agentID + "-" + UnixNano.
+// Split at the LAST hyphen: agent IDs can contain hyphens, and prefix matching
+// would let one agent impersonate another. Call only after a pending-key lookup;
+// an unsolicited ID supplied by an agent is never an authorization credential.
+func proxyRequestOwnedBy(requestID, agentID string) bool {
+	i := strings.LastIndexByte(requestID, '-')
+	if agentID == "" || i <= 0 || requestID[:i] != agentID {
+		return false
+	}
+	n, err := strconv.ParseInt(requestID[i+1:], 10, 64)
+	return err == nil && n > 0
+}
+
+// handleWSProxyResponse handles HTTP proxy responses from authenticated agents.
+func handleWSProxyResponse(agentID string, msg wscommon.Message) {
 	requestID, ok := msg.Data["request_id"].(string)
 	if !ok {
 		logWarn("Proxy response missing request_id")
@@ -518,17 +533,21 @@ func handleWSProxyResponse(msg wscommon.Message) {
 
 	// Find the waiting channel for this request
 	proxyRequestsLock.Lock()
+	defer proxyRequestsLock.Unlock()
 	respChan, exists := proxyRequests[requestID]
-	if exists {
-		delete(proxyRequests, requestID)
-	}
-	proxyRequestsLock.Unlock()
 
 	if !exists {
 		logWarn("Received proxy response for unknown request ID", "request_id", requestID)
 		return
 	}
+	if !proxyRequestOwnedBy(requestID, agentID) {
+		logWarn("Rejected foreign agent proxy response", "agent_id", agentID, "request_id", requestID)
+		return
+	}
+	delete(proxyRequests, requestID)
 
+	// Keep the map lock through delivery: HTTP cleanup uses it before closing
+	// the channel. Releasing it first can race cleanup and panic on send.
 	// Send response to waiting HTTP handler (non-blocking with timeout)
 	select {
 	case respChan <- msg:
@@ -539,7 +558,7 @@ func handleWSProxyResponse(msg wscommon.Message) {
 }
 
 // handleWSProxyStreamChunk handles streaming proxy response chunks from agents
-func handleWSProxyStreamChunk(msg wscommon.Message) {
+func handleWSProxyStreamChunk(agentID string, msg wscommon.Message) {
 	requestID, ok := msg.Data["request_id"].(string)
 	if !ok {
 		logWarn("Stream chunk missing request_id")
@@ -548,12 +567,16 @@ func handleWSProxyStreamChunk(msg wscommon.Message) {
 
 	// Find the waiting channel for this request (don't delete - more chunks coming)
 	proxyRequestsLock.RLock()
+	defer proxyRequestsLock.RUnlock()
 	respChan, exists := proxyRequests[requestID]
-	proxyRequestsLock.RUnlock()
 
 	if !exists {
 		// This can happen if the connection was closed - not necessarily an error
 		logDebug("Received stream chunk for unknown/closed request", "request_id", requestID)
+		return
+	}
+	if !proxyRequestOwnedBy(requestID, agentID) {
+		logWarn("Rejected foreign agent proxy stream chunk", "agent_id", agentID, "request_id", requestID)
 		return
 	}
 
@@ -568,7 +591,7 @@ func handleWSProxyStreamChunk(msg wscommon.Message) {
 }
 
 // handleWSProxyStreamEnd handles end of streaming proxy response
-func handleWSProxyStreamEnd(msg wscommon.Message) {
+func handleWSProxyStreamEnd(agentID string, msg wscommon.Message) {
 	requestID, ok := msg.Data["request_id"].(string)
 	if !ok {
 		logWarn("Stream end missing request_id")
@@ -579,15 +602,17 @@ func handleWSProxyStreamEnd(msg wscommon.Message) {
 
 	// Find and remove the waiting channel
 	proxyRequestsLock.Lock()
+	defer proxyRequestsLock.Unlock()
 	respChan, exists := proxyRequests[requestID]
-	if exists {
-		delete(proxyRequests, requestID)
-	}
-	proxyRequestsLock.Unlock()
 
 	if !exists {
 		return
 	}
+	if !proxyRequestOwnedBy(requestID, agentID) {
+		logWarn("Rejected foreign agent proxy stream end", "agent_id", agentID, "request_id", requestID)
+		return
+	}
+	delete(proxyRequests, requestID)
 
 	// Send end signal to the HTTP handler
 	endMsg := wscommon.Message{
@@ -642,6 +667,9 @@ func sendProxyRequest(agentID string, requestID string, targetURL string, method
 // handleWSUpdateProgress processes update progress messages from agents
 // and broadcasts them to connected UI clients via SSE
 func handleWSUpdateProgress(agent *storage.Agent, msg wscommon.Message) {
+	if msg.Data == nil {
+		msg.Data = make(map[string]interface{})
+	}
 	// Check status to determine log level - failures should be logged as errors
 	status, _ := msg.Data["status"].(string)
 	if status == "failed" {
@@ -667,6 +695,9 @@ func handleWSUpdateProgress(agent *storage.Agent, msg wscommon.Message) {
 // and broadcasts them to connected UI clients via SSE for real-time updates.
 // Jobs include metrics collection, device scanning, report generation, etc.
 func handleWSJobProgress(agent *storage.Agent, msg wscommon.Message) {
+	if msg.Data == nil {
+		msg.Data = make(map[string]interface{})
+	}
 	jobID, _ := msg.Data["job_id"].(string)
 	jobType, _ := msg.Data["job_type"].(string)
 	status, _ := msg.Data["status"].(string)
@@ -702,9 +733,21 @@ func handleWSJobProgress(agent *storage.Agent, msg wscommon.Message) {
 // handleWSDeviceDeleted processes device deletion messages from agents.
 // When an agent deletes a device locally, it notifies the server to sync the deletion.
 func handleWSDeviceDeleted(agent *storage.Agent, msg wscommon.Message, store storage.Store) {
+	if agent == nil || agent.AgentID == "" {
+		return
+	}
 	serial, _ := msg.Data["serial"].(string)
 	if serial == "" {
 		logError("Device deleted message missing serial", "agent_id", agent.AgentID)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	device, err := store.GetDevice(ctx, serial)
+	if err != nil || device == nil || device.AgentID != agent.AgentID {
+		logWarn("Rejected device deletion without agent ownership",
+			"agent_id", agent.AgentID, "serial", serial, "error", err)
 		return
 	}
 
@@ -712,15 +755,24 @@ func handleWSDeviceDeleted(agent *storage.Agent, msg wscommon.Message, store sto
 		"agent_id", agent.AgentID,
 		"serial", serial)
 
-	// Delete from server storage (without metrics - agent already deleted locally)
-	ctx := context.Background()
-	err := store.DeleteDevice(ctx, serial, false)
+	// Recheck ownership in the DELETE itself: a serial could be deleted and
+	// rediscovered by another agent between the lookup and this write. Both
+	// production stores embed BaseStore. Fail closed for unsupported stores.
+	ownedStore, ok := store.(interface {
+		DeleteDeviceForAgent(context.Context, string, string) error
+	})
+	if !ok {
+		logError("Storage lacks atomic agent device deletion", "agent_id", agent.AgentID)
+		return
+	}
+	err = ownedStore.DeleteDeviceForAgent(ctx, serial, agent.AgentID)
 	if err != nil {
 		// Log but don't fail - device may not exist on server yet
 		logWarn("Failed to delete device from server during agent sync",
 			"serial", serial,
 			"agent_id", agent.AgentID,
 			"error", err.Error())
+		return
 	} else {
 		logInfo("Device deleted from server (synced from agent)",
 			"serial", serial,

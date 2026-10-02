@@ -580,8 +580,16 @@ func TestHandleLogsAuthorization(t *testing.T) {
 	viewerReq = InjectTestUser(viewerReq, NewTestUser(storage.RoleViewer))
 	viewerRec := httptest.NewRecorder()
 	handleLogs(viewerRec, viewerReq)
-	if viewerRec.Code != http.StatusOK {
-		t.Fatalf("expected 200 for viewer, got %d", viewerRec.Code)
+	if viewerRec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for viewer, got %d", viewerRec.Code)
+	}
+
+	adminReq := httptest.NewRequest(http.MethodGet, "/api/logs", nil)
+	adminReq = InjectTestAdmin(adminReq)
+	adminRec := httptest.NewRecorder()
+	handleLogs(adminRec, adminReq)
+	if adminRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for admin, got %d", adminRec.Code)
 	}
 }
 

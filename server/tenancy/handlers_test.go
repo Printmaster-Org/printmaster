@@ -2,15 +2,247 @@ package tenancy
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	authz "printmaster/server/authz"
+	"printmaster/server/storage"
 )
+
+type enrollmentSubjectKey struct{}
+
+func setupEnrollmentSecurity(t *testing.T, role storage.Role) (*storage.SQLiteStore, *http.ServeMux, string) {
+	t.Helper()
+	db, err := storage.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousDB, previousAuth, previousAuthorizer, previousEnabled := dbStore, AuthMiddleware, authorizer, tenancyEnabled
+	SetEnabled(true)
+	for _, id := range []string{"tenant-a", "tenant-b"} {
+		if err := db.CreateTenant(context.Background(), &storage.Tenant{ID: id, Name: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	user := &storage.User{Username: "reviewer", Role: role, TenantIDs: []string{"tenant-a"}}
+	if err := db.CreateUser(context.Background(), user, "test-only-password"); err != nil {
+		t.Fatal(err)
+	}
+	session, err := db.CreateSession(context.Background(), user.ID, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Exercise the route middleware hook against actual persisted sessions;
+	// production main-package middleware cannot be imported by this package.
+	AuthMiddleware = func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			sess, err := db.GetSessionByToken(r.Context(), r.Header.Get("Authorization"))
+			if err != nil || sess == nil || sess.ExpiresAt.Before(time.Now()) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			persisted, err := db.GetUserByID(r.Context(), sess.UserID)
+			if err != nil {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			subject := authz.Subject{Role: persisted.Role, IsAdmin: persisted.Role == storage.RoleAdmin, AllowedTenantIDs: persisted.TenantIDs}
+			next(w, r.WithContext(context.WithValue(r.Context(), enrollmentSubjectKey{}, subject)))
+		}
+	}
+	SetAuthorizer(func(r *http.Request, action authz.Action, ref authz.ResourceRef) error {
+		subject, ok := r.Context().Value(enrollmentSubjectKey{}).(authz.Subject)
+		if !ok {
+			return authz.ErrUnauthorized
+		}
+		return authz.Authorize(subject, action, ref)
+	})
+	mux := http.NewServeMux()
+	RegisterRoutesOnMux(mux, db)
+	t.Cleanup(func() {
+		dbStore, AuthMiddleware, authorizer, tenancyEnabled = previousDB, previousAuth, previousAuthorizer, previousEnabled
+		db.Close()
+	})
+	return db, mux, session.Token
+}
+
+func TestPendingRegistrationRequiresGlobalAdmin(t *testing.T) {
+	for _, role := range []storage.Role{storage.RoleOperator, storage.RoleViewer} {
+		t.Run(string(role), func(t *testing.T) {
+			db, mux, sessionToken := setupEnrollmentSecurity(t, role)
+			for _, tc := range []struct{ method, path, body string }{
+				{http.MethodGet, "/api/v1/pending-registrations", ""},
+				{http.MethodGet, "/api/v1/pending-registrations/999", ""},
+				{http.MethodPost, "/api/v1/pending-registrations/999", `{"action":"approve","tenant_id":"tenant-b"}`},
+				{http.MethodPost, "/api/v1/pending-registrations/999", `{"action":"reject"}`},
+				{http.MethodDelete, "/api/v1/pending-registrations/999", ""},
+			} {
+				req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+				req.Header.Set("Authorization", sessionToken)
+				rr := httptest.NewRecorder()
+				mux.ServeHTTP(rr, req)
+				if rr.Code != http.StatusForbidden {
+					t.Fatalf("%s %s: got %d, want 403", tc.method, tc.path, rr.Code)
+				}
+				rr = httptest.NewRecorder()
+				mux.ServeHTTP(rr, httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body)))
+				if rr.Code != http.StatusUnauthorized {
+					t.Fatalf("anonymous %s %s: got %d, want 401", tc.method, tc.path, rr.Code)
+				}
+			}
+			tokens, err := db.ListJoinTokens(context.Background(), "tenant-b")
+			if err != nil || len(tokens) != 0 {
+				t.Fatalf("unauthorized approval issued tokens: %+v, %v", tokens, err)
+			}
+		})
+	}
+}
+
+func TestPendingApprovalRequiresExistingPendingRecord(t *testing.T) {
+	for _, status := range []string{"missing", storage.PendingStatusPending, storage.PendingStatusApproved, storage.PendingStatusRejected} {
+		t.Run(status, func(t *testing.T) {
+			db, mux, sessionToken := setupEnrollmentSecurity(t, storage.RoleAdmin)
+			ctx := context.Background()
+			id := int64(999)
+			if status != "missing" {
+				var err error
+				id, err = db.CreatePendingAgentRegistration(ctx, &storage.PendingAgentRegistration{AgentID: "new-agent", ExpiredTokenID: "expired-token", ExpiredTenantID: "tenant-a", Status: status})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			review := func(action, tenant string) *httptest.ResponseRecorder {
+				body, _ := json.Marshal(map[string]string{"action": action, "tenant_id": tenant})
+				req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/pending-registrations/%d", id), bytes.NewReader(body))
+				req.Header.Set("Authorization", sessionToken)
+				rr := httptest.NewRecorder()
+				mux.ServeHTTP(rr, req)
+				return rr
+			}
+			want := http.StatusConflict
+			if status == "missing" {
+				want = http.StatusNotFound
+			}
+			if status == storage.PendingStatusPending {
+				if rr := review("approve", "nonexistent-tenant"); rr.Code != http.StatusNotFound {
+					t.Fatalf("missing tenant returned %d: %s", rr.Code, rr.Body.String())
+				}
+				want = http.StatusOK
+			}
+			rr := review("approve", "tenant-b")
+			if rr.Code != want {
+				t.Fatalf("got %d, want %d: %s", rr.Code, want, rr.Body.String())
+			}
+			if status == storage.PendingStatusPending {
+				var response struct {
+					JoinToken string `json:"join_token"`
+				}
+				if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil || response.JoinToken == "" {
+					t.Fatalf("missing approval token: %s, %v", rr.Body.String(), err)
+				}
+				want = http.StatusConflict
+				if rr := review("approve", "tenant-b"); rr.Code != want {
+					t.Fatalf("repeat approval returned %d", rr.Code)
+				}
+			}
+			if rr := review("reject", ""); rr.Code != want {
+				t.Fatalf("review of missing/terminal record returned %d, want %d", rr.Code, want)
+			}
+			tokens, err := db.ListJoinTokens(ctx, "tenant-b")
+			count := 0
+			if status == storage.PendingStatusPending {
+				count = 1
+			}
+			if err != nil || len(tokens) != count {
+				t.Fatalf("got %d tokens, want %d: %v", len(tokens), count, err)
+			}
+		})
+	}
+}
+
+func TestRegisterWithTokenRejectsExistingIdentity(t *testing.T) {
+	for _, tenantID := range []string{"tenant-a", "tenant-b", ""} {
+		t.Run("existing-"+tenantID, func(t *testing.T) {
+			db, mux, _ := setupEnrollmentSecurity(t, storage.RoleAdmin)
+			ctx := context.Background()
+			agent := &storage.Agent{AgentID: "existing-agent", TenantID: tenantID, Token: "original-credential", Name: "Original", RegisteredAt: time.Now(), LastSeen: time.Now()}
+			if err := db.RegisterAgent(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			_, token, err := db.CreateJoinToken(ctx, "tenant-b", 60, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := json.Marshal(map[string]string{"token": token, "agent_id": "existing-agent", "name": "Attacker"})
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v1/agents/register-with-token", bytes.NewReader(body)))
+			if rr.Code != http.StatusConflict || strings.Contains(rr.Body.String(), "agent_token") {
+				t.Fatalf("collision returned %d: %s", rr.Code, rr.Body.String())
+			}
+			stored, err := db.GetAgent(ctx, agent.AgentID)
+			if err != nil || stored.TenantID != tenantID || stored.Token != agent.Token || stored.Name != agent.Name {
+				t.Fatalf("agent identity changed: %+v, %v", stored, err)
+			}
+			// The rejected collision must not consume a one-time token. A new
+			// identity can still use it, without a user-session credential.
+			body, _ = json.Marshal(map[string]string{"token": token, "agent_id": "new-agent"})
+			rr = httptest.NewRecorder()
+			mux.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v1/agents/register-with-token", bytes.NewReader(body)))
+			if rr.Code != http.StatusOK {
+				t.Fatalf("new enrollment returned %d: %s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+type enrollmentErrorStore struct {
+	storage.Store
+	lookupErr   error
+	approvalErr error
+}
+
+func (s enrollmentErrorStore) GetAgent(context.Context, string) (*storage.Agent, error) {
+	return nil, s.lookupErr
+}
+
+func (s enrollmentErrorStore) ApprovePendingRegistrationWithToken(context.Context, int64, string, string) (*storage.JoinToken, string, error) {
+	return nil, "", s.approvalErr
+}
+
+func TestEnrollmentStorageFailuresFailClosed(t *testing.T) {
+	db, mux, sessionToken := setupEnrollmentSecurity(t, storage.RoleAdmin)
+	ctx := context.Background()
+	id, err := db.CreatePendingAgentRegistration(ctx, &storage.PendingAgentRegistration{AgentID: "new-agent", ExpiredTokenID: "expired", ExpiredTenantID: "tenant-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbStore = enrollmentErrorStore{Store: db, lookupErr: errors.New("database unavailable"), approvalErr: sql.ErrNoRows}
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v1/agents/register-with-token", strings.NewReader(`{"token":"token","agent_id":"new-agent"}`)))
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("lookup failure returned %d", rr.Code)
+	}
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/pending-registrations/%d", id), strings.NewReader(`{"action":"approve","tenant_id":"tenant-a"}`))
+	req.Header.Set("Authorization", sessionToken)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("lost approval race returned %d", rr.Code)
+	}
+	tokens, err := db.ListJoinTokens(ctx, "tenant-a")
+	if err != nil || len(tokens) != 0 {
+		t.Fatalf("failed approval minted tokens: %+v, %v", tokens, err)
+	}
+}
 
 func enableTenancyForTest(t *testing.T) {
 	SetEnabled(true)

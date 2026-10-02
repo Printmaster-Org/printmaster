@@ -64,6 +64,50 @@ async function flushPromises() {
 }
 
 describe('login page behavior', () => {
+    test('OIDC carries explicit target through start request', async () => {
+        const callback = 'https://agent.example/api/v1/auth/callback?agent_id=machine-a&return_to=%2Fdevices';
+        const { window, triggerInit, navWatcher } = setupDom('?agent_id=machine-a&redirect=' + encodeURIComponent(callback));
+        queueFetchResponses(window, [mockFetchResponse({ local_login: false, providers: [{ slug: 'entra', display_name: 'Entra' }] })]);
+        triggerInit();
+        await flushPromises();
+        window.document.querySelector('#sso_buttons button').click();
+        const start = new URL(navWatcher(), 'https://pm.local');
+        expect(start.searchParams.get('agent_id')).toBe('machine-a');
+        expect(start.searchParams.get('redirect')).toBe(callback);
+    });
+
+    test.each(['machine-a', ''])('password callback carries target from request or redirect: %s', async explicit => {
+        const callback = 'https://agent.example/api/v1/auth/callback?agent_id=machine-a&return_to=%2Fdevices';
+        const { window, triggerInit, navWatcher } = setupDom('?agent_id=' + explicit + '&redirect=' + encodeURIComponent(callback));
+        queueFetchResponses(window, [
+            mockFetchResponse({ local_login: true, providers: [] }),
+            mockFetchResponse({ success: true, token: 'server-session' }),
+            mockFetchResponse({ token: 'bound-grant' }),
+        ]);
+        triggerInit();
+        await flushPromises();
+        window.document.getElementById('login_submit').click();
+        await flushPromises();
+        const [endpoint, options] = window.fetch.mock.calls[2];
+        expect(endpoint).toBe('/api/v1/auth/agent-callback');
+        expect(JSON.parse(options.body)).toEqual({ callback_url: callback, agent_id: 'machine-a' });
+        const redirected = new URL(navWatcher());
+        expect(redirected.searchParams.get('token')).toBe('bound-grant');
+        expect(redirected.searchParams.get('return_to')).toBe('/devices');
+    });
+
+    test.each(['', '?agent_id=machine-b', '?agent_id=machine-a&agent_id=machine-b'])('unsupported target never requests grant: %s', async query => {
+        const callback = 'https://agent.example/api/v1/auth/callback' + query;
+        const { window, triggerInit, navWatcher } = setupDom((query ? '?agent_id=machine-a&redirect=' : '?redirect=') + encodeURIComponent(callback));
+        queueFetchResponses(window, [mockFetchResponse({ local_login: true, providers: [] }), mockFetchResponse({ success: true })]);
+        triggerInit();
+        await flushPromises();
+        window.document.getElementById('login_submit').click();
+        await flushPromises();
+        expect(window.fetch).toHaveBeenCalledTimes(2);
+        expect(navWatcher()).toBeNull();
+    });
+
     afterEach(() => {
         jest.clearAllMocks();
         jest.resetModules();

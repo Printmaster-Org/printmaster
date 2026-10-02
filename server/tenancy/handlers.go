@@ -3,6 +3,7 @@ package tenancy
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -892,7 +893,7 @@ func handlePendingRegistrations(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if !authorizeOrReject(w, r, authz.ActionAgentsRead, authz.ResourceRef{}) {
+	if !authorizeOrReject(w, r, authz.ActionJoinTokensRead, authz.ResourceRef{}) {
 		return
 	}
 	if dbStore == nil {
@@ -937,7 +938,7 @@ func handlePendingRegistrationByID(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		if !authorizeOrReject(w, r, authz.ActionAgentsRead, authz.ResourceRef{}) {
+		if !authorizeOrReject(w, r, authz.ActionJoinTokensRead, authz.ResourceRef{}) {
 			return
 		}
 		reg, err := dbStore.GetPendingAgentRegistration(r.Context(), id)
@@ -951,7 +952,7 @@ func handlePendingRegistrationByID(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		// Approve or reject
-		if !authorizeOrReject(w, r, authz.ActionAgentsWrite, authz.ResourceRef{}) {
+		if !authorizeOrReject(w, r, authz.ActionJoinTokensWrite, authz.ResourceRef{}) {
 			return
 		}
 		var in struct {
@@ -965,26 +966,58 @@ func handlePendingRegistrationByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		username := "admin" // TODO: Extract from auth context when available
+		if in.Action != "approve" && in.Action != "reject" {
+			writeJSONError(w, http.StatusBadRequest, "action must be 'approve' or 'reject'")
+			return
+		}
+		reg, err := dbStore.GetPendingAgentRegistration(r.Context(), id)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && reg == nil) {
+			writeJSONError(w, http.StatusNotFound, "registration not found")
+			return
+		}
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "failed to get registration")
+			return
+		}
+		if reg.Status != storage.PendingStatusPending {
+			writeJSONError(w, http.StatusConflict, "registration already reviewed")
+			return
+		}
+
+		username := "admin"
+		if getUserFromContext != nil {
+			if user := getUserFromContext(r.Context()); user != nil {
+				username = user.Username
+			}
+		}
 
 		switch in.Action {
 		case "approve":
+			in.TenantID = strings.TrimSpace(in.TenantID)
 			if in.TenantID == "" {
 				w.WriteHeader(http.StatusBadRequest)
 				w.Write([]byte(`{"error":"tenant_id required for approval"}`))
 				return
 			}
-			// Get registration details before approving for SSE broadcast
-			reg, _ := dbStore.GetPendingAgentRegistration(r.Context(), id)
-			if err := dbStore.ApprovePendingRegistration(r.Context(), id, in.TenantID, username); err != nil {
+			tenant, err := dbStore.GetTenant(r.Context(), in.TenantID)
+			if errors.Is(err, sql.ErrNoRows) || (err == nil && tenant == nil) {
+				writeJSONError(w, http.StatusNotFound, "tenant not found")
+				return
+			}
+			if err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "failed to get tenant")
+				return
+			}
+			// Commit pending transition and approval credential atomically.
+			jt, rawToken, err := dbStore.ApprovePendingRegistrationWithToken(r.Context(), id, in.TenantID, username)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					writeJSONError(w, http.StatusConflict, "registration no longer pending")
+					return
+				}
 				w.WriteHeader(http.StatusInternalServerError)
 				w.Write([]byte(`{"error":"failed to approve registration"}`))
 				return
-			}
-			// Create a new join token for this agent to use
-			jt, rawToken, err := dbStore.CreateJoinToken(r.Context(), in.TenantID, 60*24, true) // 24hr one-time token
-			if err != nil {
-				logWarn("handlePendingRegistrationByID: failed to create approval token", "error", err)
 			}
 			// Broadcast pending_registration_approved event to UI via SSE
 			if agentEventSink != nil {
@@ -1015,9 +1048,12 @@ func handlePendingRegistrationByID(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(resp)
 
 		case "reject":
-			// Get registration details before rejecting for SSE broadcast
-			regForReject, _ := dbStore.GetPendingAgentRegistration(r.Context(), id)
+			regForReject := reg
 			if err := dbStore.RejectPendingRegistration(r.Context(), id, username, in.Notes); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					writeJSONError(w, http.StatusConflict, "registration no longer pending")
+					return
+				}
 				w.WriteHeader(http.StatusInternalServerError)
 				w.Write([]byte(`{"error":"failed to reject registration"}`))
 				return
@@ -1050,7 +1086,7 @@ func handlePendingRegistrationByID(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case http.MethodDelete:
-		if !authorizeOrReject(w, r, authz.ActionAgentsWrite, authz.ResourceRef{}) {
+		if !authorizeOrReject(w, r, authz.ActionJoinTokensWrite, authz.ResourceRef{}) {
 			return
 		}
 		if err := dbStore.DeletePendingAgentRegistration(r.Context(), id); err != nil {
@@ -1113,12 +1149,24 @@ func handleRegisterWithToken(w http.ResponseWriter, r *http.Request) {
 	if pkgLogger != nil {
 		pkgLogger.Info("register-with-token: request received", "agent_id", in.AgentID, "name", in.Name, "hostname", in.Hostname, "platform", in.Platform, "version", in.AgentVersion, "token_length", len(in.Token), "remote_addr", r.RemoteAddr)
 	}
+	in.AgentID = strings.TrimSpace(in.AgentID)
 	if in.Token == "" || in.AgentID == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(`{"error":"token and agent_id required"}`))
 		return
 	}
 	if dbStore != nil {
+		// A join token authorizes new enrollment, not replacement of an existing
+		// identity or credential. Check before consuming a one-time join token.
+		existing, err := dbStore.GetAgent(r.Context(), in.AgentID)
+		if err == nil && existing != nil {
+			writeJSONError(w, http.StatusConflict, "agent already registered")
+			return
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			writeJSONError(w, http.StatusInternalServerError, "failed to check agent identity")
+			return
+		}
 		if pkgLogger != nil {
 			pkgLogger.Debug("register-with-token: validating with dbStore", "agent_id", in.AgentID)
 		}
@@ -1211,7 +1259,8 @@ func handleRegisterWithToken(w http.ResponseWriter, r *http.Request) {
 			pkgLogger.Info("register-with-token: token validated successfully", "agent_id", in.AgentID, "tenant_id", jt.TenantID, "token_id", jt.ID)
 		}
 
-		// Create or update agent in server DB with tenant assignment and issue a secure token
+		// Create a new agent. Storage must also reject collisions atomically;
+		// this precheck cannot prevent concurrent enrollment of the same ID.
 		// Generate secure random token (256 bits -> base64url)
 		b := make([]byte, 32)
 		if _, err := rand.Read(b); err != nil {
@@ -1244,6 +1293,10 @@ func handleRegisterWithToken(w http.ResponseWriter, r *http.Request) {
 			TenantID:        jt.TenantID,
 		}
 		if err := dbStore.RegisterAgent(r.Context(), ag); err != nil {
+			if errors.Is(err, storage.ErrOwnershipConflict) {
+				writeJSONError(w, http.StatusConflict, "agent already registered")
+				return
+			}
 			if pkgLogger != nil {
 				pkgLogger.Error("register-with-token: failed to register agent", "agent_id", in.AgentID, "error", err)
 			}
