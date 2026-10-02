@@ -49,6 +49,18 @@ func (s *BaseStore) CreateReport(ctx context.Context, report *ReportDefinition) 
 
 // UpdateReport updates an existing report definition.
 func (s *BaseStore) UpdateReport(ctx context.Context, report *ReportDefinition) error {
+	existing, err := s.GetReport(ctx, report.ID)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return fmt.Errorf("report not found")
+	}
+	// Ownership is immutable: old results must never be reclassified by editing
+	// their parent definition. Clone the definition to change its tenant scope.
+	if existing.Scope != report.Scope || strings.Join(existing.TenantIDs, ",") != strings.Join(report.TenantIDs, ",") {
+		return fmt.Errorf("report tenant scope is immutable; create a new report")
+	}
 	tenantIDs := strings.Join(report.TenantIDs, ",")
 	siteIDs := strings.Join(report.SiteIDs, ",")
 	agentIDs := strings.Join(report.AgentIDs, ",")
@@ -56,7 +68,7 @@ func (s *BaseStore) UpdateReport(ctx context.Context, report *ReportDefinition) 
 	groupBy := strings.Join(report.GroupBy, ",")
 	emailRecipients := strings.Join(report.EmailRecipients, ",")
 
-	_, err := s.execContext(ctx, `
+	_, err = s.execContext(ctx, `
 		UPDATE reports SET
 			name = ?, description = ?, type = ?, format = ?, scope = ?,
 			tenant_ids = ?, site_ids = ?, agent_ids = ?, device_filter = ?,
@@ -100,6 +112,9 @@ func (s *BaseStore) DeleteReport(ctx context.Context, id int64) error {
 
 // ListReports lists reports matching the filter.
 func (s *BaseStore) ListReports(ctx context.Context, filter ReportFilter) ([]*ReportDefinition, error) {
+	if filter.IsBuiltIn == nil {
+		filter.IsBuiltIn = filter.BuiltIn
+	}
 	query := `
 		SELECT id, name, description, type, format, scope,
 			tenant_ids, site_ids, agent_ids, device_filter,
@@ -119,25 +134,17 @@ func (s *BaseStore) ListReports(ctx context.Context, filter ReportFilter) ([]*Re
 		query += " AND scope = ?"
 		args = append(args, filter.Scope)
 	}
-	if filter.TenantID != "" {
-		query += " AND (tenant_ids = '' OR tenant_ids LIKE ?)"
-		args = append(args, "%"+filter.TenantID+"%")
-	}
 	if filter.CreatedBy != "" {
 		query += " AND created_by = ?"
 		args = append(args, filter.CreatedBy)
 	}
 	if filter.IsBuiltIn != nil {
 		query += " AND is_built_in = ?"
-		if *filter.IsBuiltIn {
-			args = append(args, 1)
-		} else {
-			args = append(args, 0)
-		}
+		args = append(args, *filter.IsBuiltIn)
 	}
 
 	query += " ORDER BY name"
-	if filter.Limit > 0 {
+	if filter.Limit > 0 && filter.TenantID == "" {
 		query += fmt.Sprintf(" LIMIT %d", filter.Limit)
 		if filter.Offset > 0 {
 			query += fmt.Sprintf(" OFFSET %d", filter.Offset)
@@ -150,11 +157,30 @@ func (s *BaseStore) ListReports(ctx context.Context, filter ReportFilter) ([]*Re
 	}
 	defer rows.Close()
 
-	var reports []*ReportDefinition
+	reports := make([]*ReportDefinition, 0)
+	matched := 0
 	for rows.Next() {
 		r, err := s.scanReportRow(rows)
 		if err != nil {
 			return nil, err
+		}
+		if filter.TenantID != "" {
+			// Decode the existing comma-separated representation rather than using
+			// SQL LIKE (substring/wildcard matching). Empty scopes are not tenants.
+			found := false
+			for _, id := range r.TenantIDs {
+				if id == filter.TenantID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+			matched++
+			if matched <= filter.Offset || (filter.Limit > 0 && len(reports) >= filter.Limit) {
+				continue
+			}
 		}
 		reports = append(reports, r)
 	}
@@ -485,6 +511,40 @@ func (s *BaseStore) scanScheduleRow(rows *sql.Rows) (*ReportSchedule, error) {
 
 // CreateReportRun creates a new report run.
 func (s *BaseStore) CreateReportRun(ctx context.Context, run *ReportRun) error {
+	report, err := s.GetReport(ctx, run.ReportID)
+	if err != nil {
+		return err
+	}
+	if report == nil {
+		return fmt.Errorf("report not found")
+	}
+	if run.ScheduleID != nil {
+		schedule, err := s.GetReportSchedule(ctx, *run.ScheduleID)
+		if err != nil {
+			return err
+		}
+		if schedule == nil || schedule.ReportID != run.ReportID {
+			return fmt.Errorf("schedule does not belong to report")
+		}
+	}
+	// Persist an immutable execution ownership snapshot. Legacy runs without
+	// this marker cannot prove tenant isolation and remain administrator-only.
+	var params map[string]json.RawMessage
+	if run.ParametersJSON != "" {
+		if err := json.Unmarshal([]byte(run.ParametersJSON), &params); err != nil {
+			return fmt.Errorf("invalid run parameters: %w", err)
+		}
+	}
+	if params == nil {
+		params = make(map[string]json.RawMessage)
+	}
+	scope, _ := json.Marshal(reportRunScope{Version: 1, Scope: report.Scope, TenantIDs: report.TenantIDs})
+	params["report_security"] = scope
+	data, err := json.Marshal(params)
+	if err != nil {
+		return err
+	}
+	run.ParametersJSON = string(data)
 	id, err := s.insertReturningID(ctx, `
 		INSERT INTO report_runs (
 			report_id, schedule_id, status, format,
@@ -501,6 +561,38 @@ func (s *BaseStore) CreateReportRun(ctx context.Context, run *ReportRun) error {
 	run.ID = id
 	run.CreatedAt = time.Now()
 	return nil
+}
+
+type reportRunScope struct {
+	Version   int      `json:"version"`
+	Scope     string   `json:"scope"`
+	TenantIDs []string `json:"tenant_ids"`
+}
+
+// ReportRunTenantScope returns verified execution ownership, not the mutable
+// parent report's current scope. Global and pre-security runs fail closed.
+func ReportRunTenantScope(run *ReportRun) ([]string, bool) {
+	var params struct {
+		Security reportRunScope `json:"report_security"`
+	}
+	if run == nil || json.Unmarshal([]byte(run.ParametersJSON), &params) != nil {
+		return nil, false
+	}
+	s := params.Security
+	if s.Version != 1 || len(s.TenantIDs) == 0 {
+		return nil, false
+	}
+	switch s.Scope {
+	case ReportScopeTenant, ReportScopeSite, ReportScopeAgent, ReportScopeDevice:
+	default:
+		return nil, false
+	}
+	for _, id := range s.TenantIDs {
+		if id == "" || strings.Contains(id, ",") {
+			return nil, false
+		}
+	}
+	return s.TenantIDs, true
 }
 
 // UpdateReportRun updates a run (typically to set completion status).
@@ -521,13 +613,26 @@ func (s *BaseStore) UpdateReportRun(ctx context.Context, run *ReportRun) error {
 
 // GetReportRun retrieves a run by ID.
 func (s *BaseStore) GetReportRun(ctx context.Context, id int64) (*ReportRun, error) {
-	row := s.queryRowContext(ctx, `
+	return s.getReportRun(ctx, id, false)
+}
+
+// GetReportRunMetadata retrieves execution ownership without loading its result.
+func (s *BaseStore) GetReportRunMetadata(ctx context.Context, id int64) (*ReportRun, error) {
+	return s.getReportRun(ctx, id, true)
+}
+
+func (s *BaseStore) getReportRun(ctx context.Context, id int64, metadataOnly bool) (*ReportRun, error) {
+	resultColumn := "result_data"
+	if metadataOnly {
+		resultColumn = "NULL"
+	}
+	row := s.queryRowContext(ctx, fmt.Sprintf(`
 		SELECT id, report_id, schedule_id, status, format,
 			started_at, completed_at, duration_ms,
-			parameters_json, row_count, result_size_bytes, result_path, result_data,
+			parameters_json, row_count, result_size_bytes, result_path, %s,
 			error_message, run_by, created_at
 		FROM report_runs WHERE id = ?
-	`, id)
+	`, resultColumn), id)
 	return s.scanRun(row)
 }
 
@@ -539,15 +644,19 @@ func (s *BaseStore) DeleteReportRun(ctx context.Context, id int64) error {
 
 // ListReportRuns lists runs matching the filter.
 func (s *BaseStore) ListReportRuns(ctx context.Context, filter ReportRunFilter) ([]*ReportRun, error) {
-	query := `
+	resultColumn := "rr.result_data"
+	if filter.MetadataOnly {
+		resultColumn = "NULL"
+	}
+	query := fmt.Sprintf(`
 		SELECT rr.id, rr.report_id, r.name, r.type, rr.schedule_id, rr.status, rr.format,
 			rr.started_at, rr.completed_at, rr.duration_ms,
-			rr.parameters_json, rr.row_count, rr.result_size_bytes, rr.result_path, rr.result_data,
+			rr.parameters_json, rr.row_count, rr.result_size_bytes, rr.result_path, %s,
 			rr.error_message, rr.run_by, rr.created_at
 		FROM report_runs rr
 		LEFT JOIN reports r ON rr.report_id = r.id
 		WHERE 1=1
-	`
+	`, resultColumn)
 	var args []interface{}
 
 	if filter.ReportID > 0 {
@@ -567,7 +676,7 @@ func (s *BaseStore) ListReportRuns(ctx context.Context, filter ReportRunFilter) 
 		args = append(args, *filter.Since)
 	}
 
-	query += " ORDER BY rr.started_at DESC"
+	query += " ORDER BY rr.started_at DESC, rr.id DESC"
 	if filter.Limit > 0 {
 		query += fmt.Sprintf(" LIMIT %d", filter.Limit)
 		if filter.Offset > 0 {

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -14,6 +15,10 @@ import (
 
 	pmsettings "printmaster/common/settings"
 )
+
+// ErrOwnershipConflict means a machine write does not match the existing owner.
+// Callers must bind machine identifiers to authenticated credentials before writing.
+var ErrOwnershipConflict = errors.New("machine ownership conflict")
 
 // BaseStore provides shared database operations that work across SQLite and PostgreSQL.
 // It embeds a *sql.DB connection and a Dialect for handling SQL syntax differences.
@@ -137,6 +142,9 @@ func (s *BaseStore) upsertReturningID(ctx context.Context, query string, args ..
 // Note: On conflict, the 'name' field is only updated if the existing name is empty,
 // to preserve user-set display names.
 func (s *BaseStore) RegisterAgent(ctx context.Context, agent *Agent) error {
+	if agent == nil || agent.AgentID == "" || agent.Token == "" {
+		return fmt.Errorf("%w: agent ID and token are required", ErrOwnershipConflict)
+	}
 	query := `
 		INSERT INTO agents (
 			agent_id, name, hostname, ip, platform, version, protocol_version, token, tenant_id,
@@ -152,8 +160,6 @@ func (s *BaseStore) RegisterAgent(ctx context.Context, agent *Agent) error {
 			platform = excluded.platform,
 			version = excluded.version,
 			protocol_version = excluded.protocol_version,
-			token = excluded.token,
-			tenant_id = excluded.tenant_id,
 			last_seen = excluded.last_seen,
 			status = excluded.status,
 			os_version = excluded.os_version,
@@ -164,15 +170,23 @@ func (s *BaseStore) RegisterAgent(ctx context.Context, agent *Agent) error {
 			build_type = excluded.build_type,
 			git_commit = excluded.git_commit,
 			last_heartbeat = excluded.last_heartbeat
+		WHERE agents.token = excluded.token
+		  AND COALESCE(agents.tenant_id, '') = COALESCE(excluded.tenant_id, '')
+		RETURNING id
 	`
 
-	// Use upsertReturningID which handles both Postgres RETURNING and SQLite LastInsertId
-	id, err := s.upsertReturningID(ctx, query,
+	// RETURNING is supported by both backends and returns no row when the
+	// conflict guard rejects a write. LastInsertId cannot detect that case.
+	var id int64
+	err := s.queryRowContext(ctx, query,
 		agent.AgentID, agent.Name, agent.Hostname, agent.IP, agent.Platform,
 		agent.Version, agent.ProtocolVersion, agent.Token, agent.TenantID, agent.RegisteredAt,
 		agent.LastSeen, agent.Status,
 		agent.OSVersion, agent.GoVersion, agent.Architecture, agent.NumCPU,
-		agent.TotalMemoryMB, agent.BuildType, agent.GitCommit, agent.LastHeartbeat)
+		agent.TotalMemoryMB, agent.BuildType, agent.GitCommit, agent.LastHeartbeat).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: agent %s is already registered", ErrOwnershipConflict, agent.AgentID)
+	}
 	if err != nil {
 		return err
 	}
@@ -213,8 +227,8 @@ func (s *BaseStore) GetAgent(ctx context.Context, agentID string) (*Agent, error
 		&lastDeviceSync, &lastMetricsSync,
 	)
 
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("agent not found")
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("agent not found: %w", err)
 	}
 	if err != nil {
 		return nil, err
@@ -530,6 +544,9 @@ func (s *BaseStore) DeleteAgent(ctx context.Context, agentID string) error {
 
 // UpsertDevice creates or updates a device
 func (s *BaseStore) UpsertDevice(ctx context.Context, device *Device) error {
+	if device == nil || device.Serial == "" || device.AgentID == "" {
+		return fmt.Errorf("%w: device serial and agent ID are required", ErrOwnershipConflict)
+	}
 	// Serialize JSON fields
 	consumablesJSON, _ := json.Marshal(device.Consumables)
 	statusJSON, _ := json.Marshal(device.StatusMessages)
@@ -556,7 +573,6 @@ func (s *BaseStore) UpsertDevice(ctx context.Context, device *Device) error {
 			is_default, is_shared, spooler_status, usb_webui_available
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(serial) DO UPDATE SET
-			agent_id = excluded.agent_id,
 			ip = excluded.ip,
 			manufacturer = excluded.manufacturer,
 			model = excluded.model,
@@ -579,9 +595,10 @@ func (s *BaseStore) UpsertDevice(ctx context.Context, device *Device) error {
 			is_shared = excluded.is_shared,
 			spooler_status = excluded.spooler_status,
 			usb_webui_available = excluded.usb_webui_available
+		WHERE devices.agent_id = excluded.agent_id
 	`
 
-	_, err := s.execContext(ctx, query,
+	result, err := s.execContext(ctx, query,
 		device.Serial, device.AgentID, device.IP, device.Manufacturer,
 		device.Model, device.Hostname, device.Firmware, device.MACAddress,
 		device.SubnetMask, device.Gateway, string(consumablesJSON),
@@ -593,7 +610,23 @@ func (s *BaseStore) UpsertDevice(ctx context.Context, device *Device) error {
 		device.DriverName, device.IsDefault, device.IsShared, device.SpoolerStatus,
 		device.UsbWebUIAvailable)
 
-	return err
+	if err != nil {
+		return err
+	}
+	return requireMachineWrite(result, "device", device.Serial)
+}
+
+// requireMachineWrite distinguishes guarded no-ops from successful writes on
+// both SQLite and PostgreSQL. The predicate and write execute atomically.
+func requireMachineWrite(result sql.Result, kind, id string) error {
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("%w: %s %s", ErrOwnershipConflict, kind, id)
+	}
+	return nil
 }
 
 // GetDevice retrieves a device by serial number
@@ -627,7 +660,7 @@ func (s *BaseStore) GetDevice(ctx context.Context, serial string) (*Device, erro
 		&isDefault, &isShared, &spoolerStatus, &usbWebUIAvailable)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("device not found: %s", serial)
+		return nil, fmt.Errorf("device not found: %s: %w", serial, err)
 	}
 	if err != nil {
 		return nil, err
@@ -920,25 +953,66 @@ func (s *BaseStore) DeleteDevice(ctx context.Context, serial string, deleteMetri
 	return nil
 }
 
+// DeleteDeviceForAgent synchronizes a machine deletion without a read/delete
+// ownership race. Credentials cascade with the device; metrics use the existing
+// backend FK policy, just as DeleteDevice with deleteMetrics=false does.
+func (s *BaseStore) DeleteDeviceForAgent(ctx context.Context, serial, agentID string) error {
+	return s.DeleteDeviceForAgentWithMetrics(ctx, serial, agentID, false)
+}
+
+// DeleteDeviceForAgentWithMetrics binds UI deletion and optional history cleanup
+// to the authorized owner. Delete first in the transaction: a foreign/replaced
+// serial must not lose credentials or metrics before ownership is established.
+func (s *BaseStore) DeleteDeviceForAgentWithMetrics(ctx context.Context, serial, agentID string, deleteMetrics bool) error {
+	if serial == "" || agentID == "" {
+		return fmt.Errorf("%w: device serial and agent ID are required", ErrOwnershipConflict)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, s.query(`DELETE FROM devices WHERE serial = ? AND agent_id = ?`), serial, agentID)
+	if err != nil {
+		return err
+	}
+	if err := requireMachineWrite(result, "device deletion", serial); err != nil {
+		return err
+	}
+	if deleteMetrics {
+		if _, err := tx.ExecContext(ctx, s.query(`DELETE FROM metrics_history WHERE serial = ?`), serial); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // ============================================================================
 // Metrics Methods
 // ============================================================================
 
 // SaveMetrics saves a metrics snapshot
 func (s *BaseStore) SaveMetrics(ctx context.Context, metrics *MetricsSnapshot) error {
+	if metrics == nil || metrics.Serial == "" || metrics.AgentID == "" {
+		return fmt.Errorf("%w: metric serial and agent ID are required", ErrOwnershipConflict)
+	}
 	tonerJSON, _ := json.Marshal(metrics.TonerLevels)
 
 	query := `
 		INSERT INTO metrics_history (serial, agent_id, timestamp, page_count, color_pages, mono_pages, scan_count, toner_levels)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE EXISTS (SELECT 1 FROM devices WHERE serial = ? AND agent_id = ?)
 	`
 
-	_, err := s.execContext(ctx, query,
+	result, err := s.execContext(ctx, query,
 		metrics.Serial, metrics.AgentID, metrics.Timestamp,
 		metrics.PageCount, metrics.ColorPages, metrics.MonoPages,
-		metrics.ScanCount, string(tonerJSON))
+		metrics.ScanCount, string(tonerJSON), metrics.Serial, metrics.AgentID)
 
-	return err
+	if err != nil {
+		return err
+	}
+	return requireMachineWrite(result, "metrics device", metrics.Serial)
 }
 
 // GetLatestMetrics retrieves the most recent metrics for a device
@@ -2160,9 +2234,25 @@ func (s *BaseStore) ValidateJoinToken(ctx context.Context, rawToken string) (*Jo
 			logInfo("ValidateJoinToken: token matched", "token_id", id, "tenant_id", tenantID, "one_time", intToBool(oneTimeInt))
 			// If one-time token, mark as used (revoked)
 			if intToBool(oneTimeInt) {
-				markUsedQuery := fmt.Sprintf(`UPDATE join_tokens SET revoked = %s, used_at = ? WHERE id = ?`, s.dialect.BoolValue(true))
-				if _, err := s.execContext(ctx, markUsedQuery, time.Now().UTC(), id); err != nil {
+				// Release the candidate cursor before writing: a single-connection
+				// store otherwise waits on its own open rows. Consume once using
+				// current DB state, not the potentially stale candidate snapshot.
+				if err := rows.Close(); err != nil {
+					return nil, err
+				}
+				markUsedQuery := fmt.Sprintf(`UPDATE join_tokens SET revoked = %s, used_at = ? WHERE id = ? AND revoked = %s AND expires_at > ?`, s.dialect.BoolValue(true), s.dialect.BoolValue(false))
+				consumedAt := time.Now().UTC()
+				result, err := s.execContext(ctx, markUsedQuery, consumedAt, id, consumedAt)
+				if err != nil {
 					logWarn("ValidateJoinToken: failed to mark token as used", "token_id", id, "error", err)
+					return nil, err
+				}
+				n, err := result.RowsAffected()
+				if err != nil {
+					return nil, err
+				}
+				if n != 1 {
+					return nil, &TokenValidationError{Err: ErrTokenRevoked, TenantID: tenantID, TokenID: id}
 				}
 				logInfo("ValidateJoinToken: marked one-time token as used", "token_id", id)
 			}
@@ -2275,7 +2365,7 @@ func (s *BaseStore) CreatePendingAgentRegistration(ctx context.Context, reg *Pen
 		reg.Status = PendingStatusPending
 	}
 
-	result, err := s.execContext(ctx, `
+	id, err := s.insertReturningID(ctx, `
 		INSERT INTO pending_agent_registrations 
 		(agent_id, name, hostname, ip, platform, agent_version, protocol_version, expired_token_id, expired_tenant_id, status, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -2285,10 +2375,6 @@ func (s *BaseStore) CreatePendingAgentRegistration(ctx context.Context, reg *Pen
 		return 0, err
 	}
 
-	id, err := result.LastInsertId()
-	if err != nil {
-		return 0, err
-	}
 	reg.ID = id
 	reg.CreatedAt = now
 
@@ -2388,16 +2474,19 @@ func (s *BaseStore) ListPendingAgentRegistrations(ctx context.Context, status st
 	return registrations, rows.Err()
 }
 
-// ApprovePendingRegistration approves a pending registration and assigns to a tenant.
-// This creates a new join token for the agent to use.
+// ApprovePendingRegistration transitions an existing pending registration once.
+// The caller creates the join token and performs tenant assignment separately.
 func (s *BaseStore) ApprovePendingRegistration(ctx context.Context, id int64, tenantID, reviewedBy string) error {
 	now := time.Now().UTC()
-	_, err := s.execContext(ctx, `
+	result, err := s.execContext(ctx, `
 		UPDATE pending_agent_registrations 
 		SET status = ?, reviewed_at = ?, reviewed_by = ?
-		WHERE id = ?
-	`, PendingStatusApproved, now, reviewedBy, id)
+		WHERE id = ? AND status = ?
+	`, PendingStatusApproved, now, reviewedBy, id, PendingStatusPending)
 	if err != nil {
+		return err
+	}
+	if err := requirePendingTransition(result, id); err != nil {
 		return err
 	}
 	logInfo("ApprovePendingRegistration: approved", "id", id, "tenant_id", tenantID, "reviewed_by", reviewedBy)
@@ -2407,15 +2496,29 @@ func (s *BaseStore) ApprovePendingRegistration(ctx context.Context, id int64, te
 // RejectPendingRegistration rejects a pending registration with optional notes.
 func (s *BaseStore) RejectPendingRegistration(ctx context.Context, id int64, reviewedBy, notes string) error {
 	now := time.Now().UTC()
-	_, err := s.execContext(ctx, `
+	result, err := s.execContext(ctx, `
 		UPDATE pending_agent_registrations 
 		SET status = ?, reviewed_at = ?, reviewed_by = ?, notes = ?
-		WHERE id = ?
-	`, PendingStatusRejected, now, reviewedBy, notes, id)
+		WHERE id = ? AND status = ?
+	`, PendingStatusRejected, now, reviewedBy, notes, id, PendingStatusPending)
 	if err != nil {
 		return err
 	}
+	if err := requirePendingTransition(result, id); err != nil {
+		return err
+	}
 	logInfo("RejectPendingRegistration: rejected", "id", id, "reviewed_by", reviewedBy)
+	return nil
+}
+
+func requirePendingTransition(result sql.Result, id int64) error {
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("registration %d does not exist or is not pending: %w", id, sql.ErrNoRows)
+	}
 	return nil
 }
 

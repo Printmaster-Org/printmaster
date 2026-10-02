@@ -716,6 +716,8 @@ type Store interface {
 	GetPendingAgentRegistration(ctx context.Context, id int64) (*PendingAgentRegistration, error)
 	ListPendingAgentRegistrations(ctx context.Context, status string) ([]*PendingAgentRegistration, error)
 	ApprovePendingRegistration(ctx context.Context, id int64, tenantID, reviewedBy string) error
+	// ApprovePendingRegistrationWithToken commits review and token together.
+	ApprovePendingRegistrationWithToken(ctx context.Context, id int64, tenantID, reviewedBy string) (*JoinToken, string, error)
 	RejectPendingRegistration(ctx context.Context, id int64, reviewedBy, notes string) error
 	DeletePendingAgentRegistration(ctx context.Context, id int64) error
 
@@ -886,6 +888,7 @@ type Store interface {
 	CreateReportRun(ctx context.Context, run *ReportRun) error
 	UpdateReportRun(ctx context.Context, run *ReportRun) error
 	GetReportRun(ctx context.Context, id int64) (*ReportRun, error)
+	GetReportRunMetadata(ctx context.Context, id int64) (*ReportRun, error)
 	DeleteReportRun(ctx context.Context, id int64) error
 	ListReportRuns(ctx context.Context, filter ReportRunFilter) ([]*ReportRun, error)
 	GetReportSummary(ctx context.Context) (*ReportSummary, error)

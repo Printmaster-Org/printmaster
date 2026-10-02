@@ -62,6 +62,17 @@ type GenerateParams struct {
 // Generate generates a report based on its definition.
 func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*GenerateResult, error) {
 	report := params.Report
+	if report == nil {
+		return nil, fmt.Errorf("missing report definition")
+	}
+	if report.Scope != "" && report.Scope != storage.ReportScopeFleet && len(report.TenantIDs) == 0 {
+		return nil, fmt.Errorf("tenant-scoped report requires explicit tenant ownership")
+	}
+	if len(report.TenantIDs) > 0 {
+		// Restrict the data source itself. Individual generators historically
+		// ignored tenant filters (including sites and alert aggregates).
+		g = NewGenerator(&tenantReportStore{GeneratorStore: g.store, report: report})
+	}
 
 	// Normalize report type: convert dots to underscores for backwards compatibility
 	// (e.g., "usage.summary" -> "usage_summary")

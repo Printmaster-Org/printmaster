@@ -139,6 +139,9 @@ type ReportRunFilter struct {
 	Until      *time.Time `json:"until,omitempty"` // Alias for EndTime
 	Limit      int        `json:"limit,omitempty"`
 	Offset     int        `json:"offset,omitempty"`
+	// MetadataOnly excludes inline result bodies from the database projection.
+	// Default false preserves existing storage callers' result-bearing reads.
+	MetadataOnly bool `json:"-"`
 }
 
 // ReportFrequency represents how often a scheduled report runs (string type for backwards compatibility)
