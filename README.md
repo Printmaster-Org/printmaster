@@ -3,7 +3,6 @@
 
 [![CI](https://github.com/printmaster-org/printmaster/actions/workflows/ci.yml/badge.svg)](https://github.com/printmaster-org/printmaster/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/printmaster-org/printmaster)](https://github.com/printmaster-org/printmaster/releases)
-[![Go Report Card](https://goreportcard.com/badge/github.com/printmaster-org/printmaster)](https://goreportcard.com/report/github.com/printmaster-org/printmaster)
 [![Docker](https://ghcr-badge.egpl.dev/printmaster-org/printmaster-server/latest_tag?trim=major&label=latest)](https://github.com/printmaster-org/printmaster/pkgs/container/printmaster-server)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
