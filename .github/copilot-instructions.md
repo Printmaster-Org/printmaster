@@ -2,6 +2,17 @@
 
 > **Important**: Fix root causes, not symptoms. Do NOT write code "bandaids" or patches—solve the underlying problem.
 
+## Required: Keep Code and Documentation in Tandem
+
+- Every feature addition, behavior change, fix, removal, or deprecation requires a documentation-impact review before completion. Update affected docs in the same functional slice; do not defer documentation to a later cleanup.
+- The canonical user/developer documentation and published API references live in **Printmaster-Org/docs.printmaster.work**, normally at the sibling checkout `../printmaster-org/docs.printmaster.work` (this workspace: `/code/printmaster-org/docs.printmaster.work`). Its `content/` guides and `static/openapi/` contracts are the editorial targets. Keep source-local READMEs, examples, contribution/security entry points, and configuration samples accurate where they remain relevant; do not update only the old `docs/` copies.
+- Before editing code, locate affected guides, examples, and API contracts. Verify documentation against actual defaults, route registrations, handlers, authorization middleware, configuration structs, CLI flags, and serialization—not old READMEs or planned behavior.
+- For API-surface changes, update the correct reference: Server user-session APIs (`static/openapi/server.yaml`), Agent-local APIs (`static/openapi/agent.yaml`), or Agent↔Server machine/protocol guide (`content/api/protocol.md`). These have different credentials and must not be conflated. If an operation is outside the reviewed OpenAPI subset, explicitly review/document its scope rather than implying the entire API is covered.
+- Review method/path, parameters, request/response schemas, statuses/content types, pagination/filtering, authentication, role/tenant scope, limits, and compatibility. Changes to these semantics require docs/contract updates even if the URL is unchanged. Update contract coverage tests, examples, `x-source`, and the reviewed source revision for actually reviewed operations. Never imply uniform authorization or implemented features that the code does not provide.
+- Contract `info.version`, product release versions, HTTP route versions, and the Agent↔Server protocol version are independent. Do not bump one solely because another changes. Explain compatibility impact; breaking HTTP or machine changes need a deliberate migration/versioning plan. Do not manually edit product VERSION files.
+- Validate code with relevant tests, including negative authorization/tenant cases for API changes. In the docs checkout run `npm ci --ignore-scripts`, `npm test`, and a fresh Hugo/Docker build plus generated-site link/anchor checks (see its README and API_MAINTENANCE guide). Static OpenAPI validation is not proof of runtime authorization or schema conformance.
+- Coordinate program and docs commits as a linked pair and summarize both commits, updated pages/contracts, and validation. If a change truly has no documentation impact, state why. If the docs checkout is unavailable, report the blocker and exact required updates; do not claim the slice fully complete or silently leave docs stale.
+
 ## Architecture (Agent-Server Fleet Management)
 
 ```
