@@ -363,3 +363,17 @@ test('muted text meets contrast on server surfaces in both themes', async ({ pag
   expect(contrast.dark).toBeGreaterThanOrEqual(4.5);
   expect(contrast.light).toBeGreaterThanOrEqual(4.5);
 });
+
+test('main workspace shell remains stationary on hover', async ({ page }) => {
+  await loadApp(page, viewerUser);
+  const shell = page.locator('.content-container');
+  const before = await shell.boundingBox();
+  await page.mouse.move(before.x + before.width / 2, before.y + before.height / 2);
+  await expect(shell).toHaveCSS('transform', 'none');
+  const after = await shell.boundingBox();
+
+  expect(after.x).toBe(before.x);
+  expect(after.y).toBe(before.y);
+  expect(after.width).toBe(before.width);
+  expect(after.height).toBe(before.height);
+});

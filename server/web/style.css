@@ -448,7 +448,7 @@ body {
   padding: 20px;
   box-shadow: var(--shadow-lg),
     0 0 0 1px var(--border);
-  transition: box-shadow 0.3s ease, transform 0.3s ease;
+  transition: box-shadow 0.3s ease;
 }
 
 /* Medium screens - 80-90% width */
@@ -468,7 +468,6 @@ body {
 .content-container:hover {
   box-shadow: var(--shadow-xl),
     0 0 0 1px var(--border);
-  transform: translateY(-1px);
 }
 
 h1 {
