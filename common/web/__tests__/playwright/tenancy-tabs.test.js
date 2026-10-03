@@ -334,3 +334,32 @@ test('server filter drawers float over results and start closed', async ({ page 
   await page.locator('#tenants_sidebar_toggle').click();
   await expect(tenantSidebar).toBeHidden();
 });
+
+test('muted text meets contrast on server surfaces in both themes', async ({ page }) => {
+  await loadApp(page, viewerUser);
+
+  const contrast = await page.evaluate(() => {
+    const luminance = color => {
+      const channels = color.match(/[0-9a-f]{2}/gi).map(value => parseInt(value, 16) / 255);
+      const linear = channels.map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+      return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+    };
+    const ratio = (foreground, background) => {
+      const a = luminance(foreground);
+      const b = luminance(background);
+      return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+    };
+    const result = {};
+    for (const theme of ['dark', 'light']) {
+      document.body.classList.toggle('light-mode', theme === 'light');
+      const styles = getComputedStyle(document.body);
+      const muted = styles.getPropertyValue('--muted').trim();
+      const surfaces = [styles.getPropertyValue('--panel').trim(), styles.getPropertyValue('--bg').trim()];
+      result[theme] = Math.min(...surfaces.map(surface => ratio(muted, surface)));
+    }
+    return result;
+  });
+
+  expect(contrast.dark).toBeGreaterThanOrEqual(4.5);
+  expect(contrast.light).toBeGreaterThanOrEqual(4.5);
+});

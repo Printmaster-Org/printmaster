@@ -94,7 +94,7 @@
   /* Base colors - Dark Mode (default) */
   --bg: #002b36;
   --panel: #073642;
-  --muted: #586e75;
+  --muted: #8fa0a0;
   --text: #93a1a1;
   --accent: #b58900;
   --highlight: #268bd2;
@@ -363,7 +363,7 @@
 body.light-mode {
   --bg: #fdf6e3;
   --panel: #eee8d5;
-  --muted: #93a1a1;
+  --muted: #51646b;
   --text: #586e75;
   --accent: #b58900;
   --highlight: #cb4b16;
