@@ -251,26 +251,45 @@ func (g *Generator) generateSiteInventory(ctx context.Context, params GeneratePa
 	}
 
 	var rows []map[string]any
+	tenantByID := make(map[string]*storage.Tenant, len(tenants))
 	for _, t := range tenants {
-		sites, err := g.store.ListSitesByTenant(ctx, t.ID)
+		tenantByID[t.ID] = t
+	}
+
+	var sites []*storage.Site
+	if scoped, ok := g.store.(interface {
+		ListReportSites(context.Context) ([]*storage.Site, error)
+	}); ok {
+		sites, err = scoped.ListReportSites(ctx)
 		if err != nil {
+			return nil, fmt.Errorf("list report sites: %w", err)
+		}
+	} else {
+		for _, tenant := range tenants {
+			tenantSites, err := g.store.ListSitesByTenant(ctx, tenant.ID)
+			if err != nil {
+				continue
+			}
+			sites = append(sites, tenantSites...)
+		}
+	}
+
+	for _, site := range sites {
+		tenant := tenantByID[site.TenantID]
+		if tenant == nil {
 			continue
 		}
-
-		for _, s := range sites {
-			row := map[string]any{
-				"site_id":      s.ID,
-				"site_name":    s.Name,
-				"tenant_id":    t.ID,
-				"tenant_name":  t.Name,
-				"description":  s.Description,
-				"address":      s.Address,
-				"agent_count":  s.AgentCount,
-				"device_count": s.DeviceCount,
-				"created_at":   s.CreatedAt,
-			}
-			rows = append(rows, row)
-		}
+		rows = append(rows, map[string]any{
+			"site_id":      site.ID,
+			"site_name":    site.Name,
+			"tenant_id":    tenant.ID,
+			"tenant_name":  tenant.Name,
+			"description":  site.Description,
+			"address":      site.Address,
+			"agent_count":  site.AgentCount,
+			"device_count": site.DeviceCount,
+			"created_at":   site.CreatedAt,
+		})
 	}
 
 	columns := []string{

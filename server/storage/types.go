@@ -632,6 +632,8 @@ type AuditEntry struct {
 
 // Store defines the interface for server data storage
 type Store interface {
+	ReportScopedStore
+
 	// Agent management
 	RegisterAgent(ctx context.Context, agent *Agent) error
 	GetAgent(ctx context.Context, agentID string) (*Agent, error)

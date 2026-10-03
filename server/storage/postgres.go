@@ -183,6 +183,7 @@ func (s *PostgresStore) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_agents_agent_id ON agents(agent_id);
 	CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents(last_seen);
 	CREATE INDEX IF NOT EXISTS idx_agents_token ON agents(token);
+	CREATE INDEX IF NOT EXISTS idx_agents_tenant_id ON agents(tenant_id);
 
 	-- Devices discovered by agents
 	CREATE TABLE IF NOT EXISTS devices (

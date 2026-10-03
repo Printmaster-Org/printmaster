@@ -17,6 +17,30 @@ type ReportStore struct {
 	store storage.Store
 }
 
+func (rs *ReportStore) ListAgentsForReport(ctx context.Context, scope storage.ReportDataScope) ([]*storage.Agent, error) {
+	return rs.store.ListAgentsForReport(ctx, scope)
+}
+
+func (rs *ReportStore) GetAgentForReport(ctx context.Context, agentID string, scope storage.ReportDataScope) (*storage.Agent, error) {
+	return rs.store.GetAgentForReport(ctx, agentID, scope)
+}
+
+func (rs *ReportStore) ListDevicesForReport(ctx context.Context, scope storage.ReportDataScope) ([]*storage.Device, error) {
+	return rs.store.ListDevicesForReport(ctx, scope)
+}
+
+func (rs *ReportStore) ListTenantsForReport(ctx context.Context, scope storage.ReportDataScope) ([]*storage.Tenant, error) {
+	return rs.store.ListTenantsForReport(ctx, scope)
+}
+
+func (rs *ReportStore) ListSitesForReport(ctx context.Context, scope storage.ReportDataScope) ([]*storage.Site, error) {
+	return rs.store.ListSitesForReport(ctx, scope)
+}
+
+func (rs *ReportStore) ListAlertsForReport(ctx context.Context, filter storage.AlertFilter, scope storage.ReportDataScope) ([]*storage.Alert, error) {
+	return rs.store.ListAlertsForReport(ctx, filter, scope)
+}
+
 func (rs *ReportStore) ListAllDevices(ctx context.Context) ([]*storage.Device, error) {
 	return rs.store.ListAllDevices(ctx)
 }

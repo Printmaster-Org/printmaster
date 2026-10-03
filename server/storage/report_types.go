@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"time"
 )
 
@@ -114,6 +115,24 @@ type ReportDefinition struct {
 	IsBuiltIn       bool      `json:"is_built_in"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// ReportDataScope is the exact ownership filter used by scoped report queries.
+// Empty TenantIDs always means no rows, never unrestricted access.
+type ReportDataScope struct {
+	TenantIDs []string
+	SiteIDs   []string
+	AgentIDs  []string
+}
+
+// ReportScopedStore exposes DB-filtered reads for tenant-scoped report generation.
+type ReportScopedStore interface {
+	ListAgentsForReport(ctx context.Context, scope ReportDataScope) ([]*Agent, error)
+	GetAgentForReport(ctx context.Context, agentID string, scope ReportDataScope) (*Agent, error)
+	ListDevicesForReport(ctx context.Context, scope ReportDataScope) ([]*Device, error)
+	ListTenantsForReport(ctx context.Context, scope ReportDataScope) ([]*Tenant, error)
+	ListSitesForReport(ctx context.Context, scope ReportDataScope) ([]*Site, error)
+	ListAlertsForReport(ctx context.Context, filter AlertFilter, scope ReportDataScope) ([]*Alert, error)
 }
 
 // ReportFilter defines filters for listing reports

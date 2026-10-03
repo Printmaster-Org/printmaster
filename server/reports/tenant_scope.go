@@ -26,96 +26,60 @@ func reportContains(ids []string, id string) bool {
 	return false
 }
 
-func (s *tenantReportStore) agentAllowed(agent *storage.Agent) bool {
-	if agent == nil || !reportContains(s.report.TenantIDs, agent.TenantID) ||
-		(len(s.report.AgentIDs) > 0 && !reportContains(s.report.AgentIDs, agent.AgentID)) {
-		return false
+func (s *tenantReportStore) reportDataScope() storage.ReportDataScope {
+	return storage.ReportDataScope{
+		TenantIDs: s.report.TenantIDs,
+		SiteIDs:   s.report.SiteIDs,
+		AgentIDs:  s.report.AgentIDs,
 	}
-	if len(s.report.SiteIDs) == 0 {
-		return true
+}
+
+func (s *tenantReportStore) reportScopedStore() (storage.ReportScopedStore, error) {
+	scoped, ok := s.GeneratorStore.(storage.ReportScopedStore)
+	if !ok {
+		return nil, fmt.Errorf("generator store does not support scoped report queries")
 	}
-	for _, id := range agent.SiteIDs {
-		if reportContains(s.report.SiteIDs, id) {
-			return true
-		}
-	}
-	return false
+	return scoped, nil
 }
 
 func (s *tenantReportStore) ListAgents(ctx context.Context) ([]*storage.Agent, error) {
-	agents, err := s.GeneratorStore.ListAgents(ctx)
+	scoped, err := s.reportScopedStore()
 	if err != nil {
 		return nil, err
 	}
-	result := make([]*storage.Agent, 0)
-	for _, agent := range agents {
-		if len(s.report.SiteIDs) > 0 {
-			if source, ok := s.GeneratorStore.(interface {
-				GetAgentSiteIDs(context.Context, string) ([]string, error)
-			}); ok {
-				ids, err := source.GetAgentSiteIDs(ctx, agent.AgentID)
-				if err != nil {
-					return nil, err
-				}
-				copy := *agent
-				copy.SiteIDs = ids
-				agent = &copy
-			}
-		}
-		if s.agentAllowed(agent) {
-			result = append(result, agent)
-		}
-	}
-	return result, nil
+	return scoped.ListAgentsForReport(ctx, s.reportDataScope())
 }
 
 func (s *tenantReportStore) GetAgent(ctx context.Context, id string) (*storage.Agent, error) {
-	agent, err := s.GeneratorStore.GetAgent(ctx, id)
+	scoped, err := s.reportScopedStore()
 	if err != nil {
 		return nil, err
 	}
-	if !s.agentAllowed(agent) {
-		return nil, fmt.Errorf("agent outside report scope")
-	}
-	return agent, nil
+	return scoped.GetAgentForReport(ctx, id, s.reportDataScope())
 }
 
 func (s *tenantReportStore) ListAllDevices(ctx context.Context) ([]*storage.Device, error) {
-	agents, err := s.ListAgents(ctx)
+	scoped, err := s.reportScopedStore()
 	if err != nil {
 		return nil, err
 	}
-	allowed := make(map[string]bool, len(agents))
-	for _, agent := range agents {
-		allowed[agent.AgentID] = true
-	}
-	devices, err := s.GeneratorStore.ListAllDevices(ctx)
+	devices, err := scoped.ListDevicesForReport(ctx, s.reportDataScope())
 	if err != nil {
 		return nil, err
 	}
-	result := make([]*storage.Device, 0)
 	s.deviceOwners = make(map[string]string)
 	for _, device := range devices {
-		if allowed[device.AgentID] {
-			result = append(result, device)
-			s.deviceOwners[device.Serial] = device.AgentID
-		}
+		s.deviceOwners[device.Serial] = device.AgentID
 	}
-	return result, nil
+	return devices, nil
 }
 
 func (s *tenantReportStore) ListTenants(ctx context.Context) ([]*storage.Tenant, error) {
-	tenants, err := s.GeneratorStore.ListTenants(ctx)
+	scoped, err := s.reportScopedStore()
 	if err != nil {
 		return nil, err
 	}
-	result := make([]*storage.Tenant, 0)
-	for _, tenant := range tenants {
-		if reportContains(s.report.TenantIDs, tenant.ID) {
-			result = append(result, tenant)
-		}
-	}
-	return result, nil
+	return scoped.ListTenantsForReport(ctx, s.reportDataScope())
 }
 
 func (s *tenantReportStore) GetTenant(ctx context.Context, id string) (*storage.Tenant, error) {
@@ -129,35 +93,32 @@ func (s *tenantReportStore) ListSitesByTenant(ctx context.Context, id string) ([
 	if !reportContains(s.report.TenantIDs, id) {
 		return nil, fmt.Errorf("tenant outside report scope")
 	}
-	sites, err := s.GeneratorStore.ListSitesByTenant(ctx, id)
+	scoped, err := s.reportScopedStore()
 	if err != nil {
 		return nil, err
 	}
-	result := make([]*storage.Site, 0)
-	for _, site := range sites {
-		if site.TenantID == id && (len(s.report.SiteIDs) == 0 || reportContains(s.report.SiteIDs, site.ID)) {
-			result = append(result, site)
-		}
+	return scoped.ListSitesForReport(ctx, storage.ReportDataScope{
+		TenantIDs: []string{id},
+		SiteIDs:   s.report.SiteIDs,
+	})
+}
+
+func (s *tenantReportStore) ListReportSites(ctx context.Context) ([]*storage.Site, error) {
+	scoped, err := s.reportScopedStore()
+	if err != nil {
+		return nil, err
 	}
-	return result, nil
+	return scoped.ListSitesForReport(ctx, s.reportDataScope())
 }
 
 func (s *tenantReportStore) ListAlerts(ctx context.Context, filter storage.AlertFilter) ([]*storage.Alert, error) {
-	// Do not let underlying pagination exclude permitted rows before scoping.
-	filter.Limit, filter.Offset = 0, 0
-	alerts, err := s.GeneratorStore.ListAlerts(ctx, filter)
+	scoped, err := s.reportScopedStore()
 	if err != nil {
 		return nil, err
 	}
-	result := make([]*storage.Alert, 0)
-	for _, alert := range alerts {
-		if reportContains(s.report.TenantIDs, alert.TenantID) &&
-			(len(s.report.SiteIDs) == 0 || reportContains(s.report.SiteIDs, alert.SiteID)) &&
-			(len(s.report.AgentIDs) == 0 || reportContains(s.report.AgentIDs, alert.AgentID)) {
-			result = append(result, alert)
-		}
-	}
-	return result, nil
+	// Preserve report totals; the report limit is applied after generation.
+	filter.Limit, filter.Offset = 0, 0
+	return scoped.ListAlertsForReport(ctx, filter, s.reportDataScope())
 }
 
 func (s *tenantReportStore) GetAlertSummary(ctx context.Context) (*storage.AlertSummary, error) {
