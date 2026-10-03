@@ -1219,6 +1219,23 @@ function initMobileBottomTabs() {
     });
 }
 
+function syncMobileBottomTabsWidth() {
+    const bottomTabs = document.getElementById('mobile_bottom_tabs');
+    if (!bottomTabs) return;
+
+    // `window.innerWidth` includes the layout scrollbar on some mobile engines.
+    // Use the visible document width so the fixed bar never extends past the
+    // screen and hides trailing role-gated tabs such as Admin.
+    bottomTabs.style.width = `${document.documentElement.clientWidth}px`;
+    bottomTabs.style.right = 'auto';
+}
+
+syncMobileBottomTabsWidth();
+window.addEventListener('resize', syncMobileBottomTabsWidth, { passive: true });
+if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', syncMobileBottomTabsWidth, { passive: true });
+}
+
 // Update mobile bottom tabs active state when switching tabs
 function updateMobileBottomTabsActiveState(targetTab) {
     const bottomTabs = document.getElementById('mobile_bottom_tabs');

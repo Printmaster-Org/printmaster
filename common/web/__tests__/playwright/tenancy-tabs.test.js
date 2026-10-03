@@ -223,9 +223,15 @@ test('mobile admin navigation fits without horizontal scrolling', async ({ page 
 
   for (const width of [320, 390]) {
     await page.setViewportSize({ width, height: 844 });
+    await page.waitForFunction(() => {
+      const nav = document.getElementById('mobile_bottom_tabs');
+      return nav && Math.abs(nav.getBoundingClientRect().width - document.documentElement.clientWidth) < 1;
+    });
+
     const layout = await page.locator('.mobile-bottom-tabs-inner').evaluate(element => ({
       clientWidth: element.clientWidth,
       scrollWidth: element.scrollWidth,
+      viewportWidth: document.documentElement.clientWidth,
       tabs: Array.from(element.querySelectorAll('.mobile-tab-item')).map(tab => {
         const rect = tab.getBoundingClientRect();
         return { target: tab.dataset.target, left: rect.left, right: rect.right };
@@ -234,7 +240,7 @@ test('mobile admin navigation fits without horizontal scrolling', async ({ page 
 
     expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
     expect(layout.tabs.map(tab => tab.target)).toContain('admin');
-    expect(layout.tabs.every(tab => tab.left >= 0 && tab.right <= width + 1)).toBe(true);
+    expect(layout.tabs.every(tab => tab.left >= 0 && tab.right <= layout.viewportWidth + 1)).toBe(true);
     await expect(page.locator('#mobile_bottom_tabs [data-target="admin"]')).toBeVisible();
   }
 });
