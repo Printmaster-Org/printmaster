@@ -4121,28 +4121,31 @@ select:focus {
 .sidebar-layout {
   display: flex;
   gap: 0;
+  position: relative;
   min-height: calc(100vh - 200px);
   /* No max-height - let content determine height and page scroll naturally */
 }
 
 /* Base sidebar */
 .filter-sidebar {
-  width: 280px;
-  background: var(--bg-darker);
-  border-right: 1px solid var(--border);
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 40;
+  width: min(320px, calc(100vw - 24px));
+  max-height: calc(100vh - 100px);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-xl);
   display: flex;
   flex-direction: column;
-  transition: width 0.3s ease;
-  position: sticky;
-  top: 60px; /* Account for header */
-  height: fit-content;
-  max-height: calc(100vh - 80px);
-  overflow-y: auto;
+  overflow: hidden;
   align-self: flex-start;
 }
 
 .filter-sidebar.collapsed {
-  width: 48px;
+  display: none;
 }
 
 /* Sidebar header */
@@ -4175,9 +4178,9 @@ select:focus {
   background: transparent;
   border: 1px solid var(--border);
   color: var(--muted);
-  width: 24px;
-  height: 24px;
-  border-radius: 4px;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -4192,26 +4195,23 @@ select:focus {
 }
 
 .filter-sidebar-toggle span {
-  font-size: 10px;
-  transition: transform 0.3s ease;
+  font-size: 18px;
+  line-height: 1;
 }
 
-.filter-sidebar.collapsed .filter-sidebar-toggle span {
-  transform: rotate(180deg);
+.filter-sidebar-toggle,
+.filter-drawer-trigger {
+  margin: 0;
 }
 
 /* Sidebar content */
 .filter-sidebar-content {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
   padding: 12px;
-  transition: opacity 0.2s ease, visibility 0.2s ease;
-}
-
-.filter-sidebar.collapsed .filter-sidebar-content {
-  opacity: 0;
-  visibility: hidden;
-  padding: 0;
 }
 
 /* Main content area next to sidebar */
@@ -4231,45 +4231,13 @@ select:focus {
     gap: 0;
   }
   
-  .filter-sidebar {
-    width: 100%;
-    height: auto;
-    max-height: none;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg);
-    position: relative;
-    z-index: 10;
-  }
-  
-  .filter-sidebar.collapsed {
-    width: 100%;
-    border-bottom: none;
+  .filter-sidebar .filter-sidebar-content {
+    padding: 8px;
   }
 
-  .filter-sidebar .filter-sidebar-content {
-    background: var(--bg);
-    padding: 8px;
-    max-height: 280px;
-    overflow-y: auto;
-  }
-  
-  .filter-sidebar.collapsed .filter-sidebar-content {
-    display: none;
-  }
-  
-  .filter-sidebar .filter-sidebar-header h4 {
-    opacity: 1;
-    visibility: visible;
-    width: auto;
-  }
-  
-  .filter-sidebar-toggle span {
-    transform: rotate(-90deg);
-  }
-  
-  .filter-sidebar.collapsed .filter-sidebar-toggle span {
-    transform: rotate(90deg);
+  .filter-sidebar {
+    width: min(320px, calc(100vw - 24px));
+    max-height: calc(100dvh - 96px);
   }
   
   .sidebar-main {
@@ -4539,14 +4507,6 @@ select:focus {
 /* Tenants-specific overrides (inherits from .filter-sidebar) */
 .tenants-layout {
   min-height: calc(100vh - 220px);
-}
-
-.tenants-sidebar {
-  position: sticky;
-  top: 60px;
-  height: fit-content;
-  max-height: calc(100vh - 80px);
-  align-self: flex-start;
 }
 
 .tenants-main {

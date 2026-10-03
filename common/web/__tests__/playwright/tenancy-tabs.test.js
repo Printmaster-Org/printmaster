@@ -285,3 +285,52 @@ test('viewer does not see admin tab', async ({ page }) => {
   const adminTab = page.locator(getTabSelector(page, 'admin'));
   await expect(adminTab).toBeHidden();
 });
+
+test('server filter drawers float over results and start closed', async ({ page }) => {
+  await loadApp(page, adminUser);
+  const drawers = [
+    { tab: 'dashboard', sidebar: 'dashboard_sidebar', trigger: 'dashboard_filters_open', close: 'dashboard_sidebar_toggle', main: '.dashboard-main' },
+    { tab: 'agents', sidebar: 'agents_sidebar', trigger: 'agents_filters_open', close: 'agents_sidebar_toggle', main: '.agents-main' },
+    { tab: 'devices', sidebar: 'devices_sidebar', trigger: 'devices_filters_open', close: 'devices_sidebar_toggle', main: '.devices-main' },
+    { tab: 'logs', sidebar: 'logs_sidebar', trigger: 'logs_filters_open', close: 'logs_sidebar_toggle', main: '.logs-main' },
+  ];
+
+  for (const drawerConfig of drawers) {
+    await page.locator(getTabSelector(page, drawerConfig.tab)).click();
+    const sidebar = page.locator(`#${drawerConfig.sidebar}`);
+    const trigger = page.locator(`#${drawerConfig.trigger}`);
+    const main = page.locator(drawerConfig.main);
+    await expect(sidebar).toBeHidden();
+    await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+
+    const before = await main.boundingBox();
+    await trigger.click();
+    await expect(sidebar).toBeVisible();
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    await expect(sidebar).toHaveCSS('position', 'absolute');
+
+    const after = await main.boundingBox();
+    expect(after.x).toBeCloseTo(before.x, 0);
+    expect(after.width).toBeCloseTo(before.width, 0);
+
+    await page.locator(`#${drawerConfig.close}`).click();
+    await expect(sidebar).toBeHidden();
+    await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  }
+
+  await page.locator(getTabSelector(page, 'admin')).click();
+  await page.locator('.admin-subtab[data-adminview="tenants"]').click();
+  const tenantSidebar = page.locator('#tenants_sidebar');
+  const tenantTrigger = page.locator('#tenants_filters_open');
+  const tenantMain = page.locator('.tenants-main');
+  await expect(tenantSidebar).toBeHidden();
+  const tenantBefore = await tenantMain.boundingBox();
+  await tenantTrigger.click();
+  await expect(tenantSidebar).toBeVisible();
+  await expect(tenantSidebar).toHaveCSS('position', 'absolute');
+  const tenantAfter = await tenantMain.boundingBox();
+  expect(tenantAfter.x).toBeCloseTo(tenantBefore.x, 0);
+  expect(tenantAfter.width).toBeCloseTo(tenantBefore.width, 0);
+  await page.locator('#tenants_sidebar_toggle').click();
+  await expect(tenantSidebar).toBeHidden();
+});

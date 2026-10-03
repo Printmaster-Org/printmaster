@@ -94,11 +94,11 @@
         <div style="margin-top:12px;" data-tab="dashboard">
             <div class="sidebar-layout dashboard-layout">
                 <!-- Sidebar for search and filters -->
-                <aside class="filter-sidebar dashboard-sidebar" id="dashboard_sidebar">
+                <aside class="filter-sidebar dashboard-sidebar collapsed" id="dashboard_sidebar">
                     <div class="filter-sidebar-header dashboard-sidebar-header">
                         <h4>Search & Filter</h4>
-                        <button class="ghost-btn filter-sidebar-toggle dashboard-sidebar-toggle" id="dashboard_sidebar_toggle" title="Toggle sidebar">
-                            <span>◀</span>
+                        <button class="ghost-btn filter-sidebar-toggle dashboard-sidebar-toggle" id="dashboard_sidebar_toggle" type="button" title="Close filters" aria-label="Close dashboard filters" aria-controls="dashboard_sidebar">
+                            <span aria-hidden="true">×</span>
                         </button>
                     </div>
                     
@@ -215,6 +215,7 @@
                     <!-- Tree controls -->
                     <div class="dashboard-tree-controls">
                         <div class="dashboard-tree-controls-left">
+                            <button id="dashboard_filters_open" class="ghost-btn filter-drawer-trigger" type="button" aria-controls="dashboard_sidebar" aria-expanded="false">Filters</button>
                             <button id="dashboard_expand_all" class="ghost-btn" title="Expand all nodes">Expand All</button>
                             <button id="dashboard_collapse_all" class="ghost-btn" title="Collapse all nodes">Collapse All</button>
                         </div>
@@ -240,11 +241,11 @@
         <div style="margin-top:12px;" data-tab="agents" class="hidden">
             <div class="sidebar-layout agents-layout">
                 <!-- Sidebar for search and filters -->
-                <aside class="filter-sidebar agents-sidebar" id="agents_sidebar">
+                <aside class="filter-sidebar agents-sidebar collapsed" id="agents_sidebar">
                     <div class="filter-sidebar-header agents-sidebar-header">
                         <h4>Search & Filter</h4>
-                        <button class="ghost-btn filter-sidebar-toggle agents-sidebar-toggle" id="agents_sidebar_toggle" title="Toggle sidebar">
-                            <span>◀</span>
+                        <button class="ghost-btn filter-sidebar-toggle agents-sidebar-toggle" id="agents_sidebar_toggle" type="button" title="Close filters" aria-label="Close agent filters" aria-controls="agents_sidebar">
+                            <span aria-hidden="true">×</span>
                         </button>
                     </div>
                     
@@ -332,6 +333,7 @@
                             <div class="muted-text">Track connectivity, versions, and last-seen activity across every deployment.</div>
                         </div>
                         <div class="agents-main-actions">
+                            <button id="agents_filters_open" class="ghost-btn filter-drawer-trigger" type="button" aria-controls="agents_sidebar" aria-expanded="false">Filters</button>
                             <label class="field inline-check" title="Automatically check for agent updates when loading this page">
                                 <input type="checkbox" id="agents_check_updates_toggle" checked />
                                 <span>Auto-check</span>
@@ -422,11 +424,11 @@
         <div style="margin-top:12px;" data-tab="devices" class="hidden">
             <div class="sidebar-layout devices-layout">
                 <!-- Sidebar for search and filters -->
-                <aside class="filter-sidebar devices-sidebar" id="devices_sidebar">
+                <aside class="filter-sidebar devices-sidebar collapsed" id="devices_sidebar">
                     <div class="filter-sidebar-header devices-sidebar-header">
                         <h4>Search & Filter</h4>
-                        <button class="ghost-btn filter-sidebar-toggle devices-sidebar-toggle" id="devices_sidebar_toggle" title="Toggle sidebar">
-                            <span>◀</span>
+                        <button class="ghost-btn filter-sidebar-toggle devices-sidebar-toggle" id="devices_sidebar_toggle" type="button" title="Close filters" aria-label="Close device filters" aria-controls="devices_sidebar">
+                            <span aria-hidden="true">×</span>
                         </button>
                     </div>
                     
@@ -526,6 +528,7 @@
                             <div class="muted-text">Monitor connectivity, alerts, and consumables across every agent.</div>
                         </div>
                         <div class="devices-main-actions">
+                            <button id="devices_filters_open" class="ghost-btn filter-drawer-trigger" type="button" aria-controls="devices_sidebar" aria-expanded="false">Filters</button>
                             <div class="view-toggle" id="devices_view_toggle" role="group" aria-label="Devices view">
                                 <button class="ghost-btn active" data-view="cards">Cards</button>
                                 <button class="ghost-btn" data-view="table">Table</button>
@@ -764,11 +767,11 @@
                     <div class="tenants-view-panel" data-tenantsview-panel="directory">
                         <div class="sidebar-layout tenants-layout">
                             <!-- Sidebar with filters -->
-                            <aside class="filter-sidebar tenants-sidebar">
+                            <aside class="filter-sidebar tenants-sidebar collapsed" id="tenants_sidebar">
                                 <div class="filter-sidebar-header tenants-sidebar-header">
                                     <h4>Filters</h4>
-                                    <button class="filter-sidebar-toggle tenants-sidebar-toggle" id="tenants_sidebar_toggle" title="Toggle sidebar">
-                                        <span>◀</span>
+                                    <button class="filter-sidebar-toggle tenants-sidebar-toggle" id="tenants_sidebar_toggle" type="button" title="Close filters" aria-label="Close tenant filters" aria-controls="tenants_sidebar">
+                                        <span aria-hidden="true">×</span>
                                     </button>
                                 </div>
                                 <div class="filter-sidebar-content tenants-sidebar-content">
@@ -806,6 +809,7 @@
                                         <span class="count-label" style="margin-left:12px;">Showing:</span> <span id="tenants_showing_count">0</span>
                                     </div>
                                     <div class="tenants-main-actions">
+                                        <button id="tenants_filters_open" class="ghost-btn filter-drawer-trigger" type="button" aria-controls="tenants_sidebar" aria-expanded="false">Filters</button>
                                         <button id="new_tenant_btn">+ New Tenant</button>
                                     </div>
                                 </div>
@@ -1777,11 +1781,11 @@
         <div class="hidden" style="margin-top:12px;" data-tab="logs">
             <div class="sidebar-layout logs-layout">
                 <!-- Sidebar for search and filters -->
-                <aside class="filter-sidebar logs-sidebar" id="logs_sidebar">
+                <aside class="filter-sidebar logs-sidebar collapsed" id="logs_sidebar">
                     <div class="filter-sidebar-header logs-sidebar-header">
                         <h4>Search & Filter</h4>
-                        <button class="ghost-btn filter-sidebar-toggle logs-sidebar-toggle" id="logs_sidebar_toggle" title="Toggle sidebar">
-                            <span>◀</span>
+                        <button class="ghost-btn filter-sidebar-toggle logs-sidebar-toggle" id="logs_sidebar_toggle" type="button" title="Close filters" aria-label="Close log filters" aria-controls="logs_sidebar">
+                            <span aria-hidden="true">×</span>
                         </button>
                     </div>
                     
@@ -1870,6 +1874,7 @@
                             <span class="count-label" style="margin-left:12px;">Showing:</span> <span id="logs_showing_count">0</span>
                         </div>
                         <div class="logs-main-actions">
+                            <button id="logs_filters_open" class="ghost-btn filter-drawer-trigger" type="button" aria-controls="logs_sidebar" aria-expanded="false">Filters</button>
                             <button id="logs_refresh_btn" class="ghost-btn" title="Refresh logs">↻ Refresh</button>
                         </div>
                     </div>

@@ -158,6 +158,40 @@ function initAllTableScrollIndicators() {
     });
 }
 
+function initFilterDrawer(sidebarId, triggerId, closeId) {
+    const sidebar = document.getElementById(sidebarId);
+    const trigger = document.getElementById(triggerId);
+    const closeButton = document.getElementById(closeId);
+    if (!sidebar || !trigger || !closeButton) return;
+
+    const setExpanded = (expanded, restoreFocus = false) => {
+        sidebar.classList.toggle('collapsed', !expanded);
+        trigger.setAttribute('aria-expanded', String(expanded));
+        if (restoreFocus) trigger.focus();
+    };
+
+    setExpanded(false);
+    trigger.addEventListener('click', () => {
+        setExpanded(true);
+        const firstField = sidebar.querySelector('input:not(:disabled), select:not(:disabled)');
+        if (firstField) firstField.focus();
+    });
+    closeButton.addEventListener('click', () => setExpanded(false, true));
+
+    document.addEventListener('pointerdown', event => {
+        if (!sidebar.classList.contains('collapsed') &&
+            !sidebar.contains(event.target) &&
+            !trigger.contains(event.target)) {
+            setExpanded(false);
+        }
+    });
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && !sidebar.classList.contains('collapsed')) {
+            setExpanded(false, true);
+        }
+    });
+}
+
 /**
  * Check if user is a global admin (not tenant-scoped).
  */
@@ -1338,20 +1372,7 @@ function initLogSubTabs() {
 }
 
 function initLogsSidebarToggle() {
-    const sidebar = document.getElementById('logs_sidebar');
-    const toggle = document.getElementById('logs_sidebar_toggle');
-    if (!sidebar || !toggle) return;
-
-    // Restore collapsed state from localStorage
-    const savedState = localStorage.getItem('printmaster_logs_sidebar_collapsed');
-    if (savedState === 'true') {
-        sidebar.classList.add('collapsed');
-    }
-
-    toggle.addEventListener('click', () => {
-        sidebar.classList.toggle('collapsed');
-        localStorage.setItem('printmaster_logs_sidebar_collapsed', sidebar.classList.contains('collapsed'));
-    });
+    initFilterDrawer('logs_sidebar', 'logs_filters_open', 'logs_sidebar_toggle');
 }
 
 function initLogViewModeToggle() {
@@ -5239,19 +5260,7 @@ function initDashboard() {
     if (dashboardInitialized) return;
     dashboardInitialized = true;
 
-    // Sidebar toggle
-    const sidebarToggle = document.getElementById('dashboard_sidebar_toggle');
-    const sidebar = document.getElementById('dashboard_sidebar');
-    if (sidebarToggle && sidebar) {
-        sidebarToggle.addEventListener('click', () => {
-            sidebar.classList.toggle('collapsed');
-        });
-
-        // Start collapsed on mobile for cleaner UX
-        if (window.innerWidth <= 900) {
-            sidebar.classList.add('collapsed');
-        }
-    }
+    initFilterDrawer('dashboard_sidebar', 'dashboard_filters_open', 'dashboard_sidebar_toggle');
 
     // Search input
     const searchInput = document.getElementById('dashboard_search');
@@ -7097,14 +7106,7 @@ function initTenantsUI() {
     initSitesUI();
     switchTenantsView(activeTenantsView, true);
 
-    // Sidebar toggle
-    const sidebarToggle = document.getElementById('tenants_sidebar_toggle');
-    const sidebar = document.querySelector('.tenants-sidebar');
-    if (sidebarToggle && sidebar) {
-        sidebarToggle.addEventListener('click', () => {
-            sidebar.classList.toggle('collapsed');
-        });
-    }
+    initFilterDrawer('tenants_sidebar', 'tenants_filters_open', 'tenants_sidebar_toggle');
 
     // Search filter
     const searchInput = document.getElementById('tenants_search');
@@ -9554,19 +9556,7 @@ function initAgentsUI() {
     }
     agentsVM.uiInitialized = true;
 
-    // Sidebar toggle
-    const sidebarToggle = document.getElementById('agents_sidebar_toggle');
-    const sidebar = document.getElementById('agents_sidebar');
-    if (sidebarToggle && sidebar) {
-        sidebarToggle.addEventListener('click', () => {
-            sidebar.classList.toggle('collapsed');
-        });
-
-        // Start collapsed on mobile for cleaner UX
-        if (window.innerWidth <= 900) {
-            sidebar.classList.add('collapsed');
-        }
-    }
+    initFilterDrawer('agents_sidebar', 'agents_filters_open', 'agents_sidebar_toggle');
 
     const searchInput = document.getElementById('agents_search');
     if (searchInput) {
@@ -12145,19 +12135,7 @@ function initDevicesUI() {
     // Initialize Table Customizer
     initDevicesTableCustomizer();
 
-    // Sidebar toggle
-    const sidebarToggle = document.getElementById('devices_sidebar_toggle');
-    const sidebar = document.querySelector('.devices-sidebar');
-    if (sidebarToggle && sidebar) {
-        sidebarToggle.addEventListener('click', () => {
-            sidebar.classList.toggle('collapsed');
-        });
-
-        // Start collapsed on mobile for cleaner UX
-        if (window.innerWidth <= 900) {
-            sidebar.classList.add('collapsed');
-        }
-    }
+    initFilterDrawer('devices_sidebar', 'devices_filters_open', 'devices_sidebar_toggle');
 
     const searchInput = document.getElementById('devices_search');
     if (searchInput) {
