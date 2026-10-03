@@ -9191,8 +9191,8 @@ input[type="checkbox"]:indeterminate::before {
 }
 
 .mobile-tab-item {
-  flex: 1;
-  min-width: 56px;
+  flex: 1 1 0;
+  min-width: 44px;
   max-width: 80px;
   display: flex;
   flex-direction: column;
@@ -9208,6 +9208,7 @@ input[type="checkbox"]:indeterminate::before {
   cursor: pointer;
   transition: color 0.15s ease, background 0.15s ease;
   position: relative;
+  margin: 0;
   -webkit-tap-highlight-color: transparent;
 }
 

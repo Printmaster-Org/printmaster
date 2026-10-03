@@ -214,6 +214,31 @@ test('admin sees tenants in admin tab', async ({ page }) => {
   await expect(page.locator('#new_tenant_btn')).toBeVisible();
 });
 
+test('mobile admin navigation fits without horizontal scrolling', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await loadApp(page, adminUser);
+
+  const mobileTabs = page.locator('#mobile_bottom_tabs .mobile-tab-item');
+  await expect(mobileTabs).toHaveCount(7);
+
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    const layout = await page.locator('.mobile-bottom-tabs-inner').evaluate(element => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      tabs: Array.from(element.querySelectorAll('.mobile-tab-item')).map(tab => {
+        const rect = tab.getBoundingClientRect();
+        return { target: tab.dataset.target, left: rect.left, right: rect.right };
+      }),
+    }));
+
+    expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
+    expect(layout.tabs.map(tab => tab.target)).toContain('admin');
+    expect(layout.tabs.every(tab => tab.left >= 0 && tab.right <= width + 1)).toBe(true);
+    await expect(page.locator('#mobile_bottom_tabs [data-target="admin"]')).toBeVisible();
+  }
+});
+
 test('operator can see admin tab but only fleet and alerts subtabs', async ({ page }) => {
   await loadApp(page, operatorUser);
   await page.waitForLoadState('networkidle');
