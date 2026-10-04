@@ -27,20 +27,17 @@ jobs:
       checks: read
     steps:
     - name: Wait for CI checks to pass
-      uses: fountainhead/action-wait-for-check@5a908a24814494009c4bb27c242ea38c93c593be # v1.2.0
-      id: wait-for-ci
+      uses: matiasalbarello/wait-on-check-action-ts@8087812521cdb59ebc7751984b31b17209b30eeb # v1.2.0
+      timeout-minutes: 15
       with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        checkName: CI Passed
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+        check-name: CI Passed
         ref: ${{ github.sha }}
-        timeoutSeconds: 900
-        intervalSeconds: 15
-
-    - name: Fail if CI did not pass
-      if: steps.wait-for-ci.outputs.conclusion != 'success'
-      run: |
-        echo "CI check 'CI Passed' did not pass (conclusion: ${{ steps.wait-for-ci.outputs.conclusion }})"
-        exit 1
+        allowed-conclusions: success
+        wait-interval: 15
+        fail-on-no-checks: 'true'
+        # CI's aggregate job may not register immediately; allow the full wait budget.
+        checks-discovery-timeout: 900
 
   build-agent:
     name: Build Agent Binaries
