@@ -335,6 +335,69 @@ test('server filter drawers float over results and start closed', async ({ page 
   await expect(tenantSidebar).toBeHidden();
 });
 
+test('server settings navigate by category without discarding edits', async ({ page }) => {
+  await loadApp(page, adminUser);
+  await page.route('**/api/v1/server/settings', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      version: '1.2.3',
+      config_source: 'config.toml',
+      tenancy_enabled: true,
+      database: { path: '/var/lib/printmaster/server.db' },
+      server: { http_port: 9090, https_port: 9443, bind_address: '0.0.0.0', agent_timeout_minutes: 5 },
+      security: { rate_limit_enabled: true, rate_limit_max_attempts: 5, rate_limit_block_minutes: 15, rate_limit_window_minutes: 5 },
+      tls: { mode: 'self-signed' },
+      logging: { level: 'INFO' },
+      releases: { max_releases: 10, poll_interval_minutes: 60, retention_versions: 5 },
+      self_update: { enabled: false, channel: 'stable', max_artifacts: 5, check_interval_minutes: 60 },
+      smtp: { enabled: false, host: '', port: 587, user: '', from: '', email_theme: 'auto' },
+      notifications: { enabled: false, admin_emails: '', notify_on_critical: true, notify_on_warning: true, daily_summary_enabled: false },
+    }),
+  }));
+  await page.route('**/api/v1/server/settings/sources', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ locked_keys: [] }),
+  }));
+
+  await page.locator(getTabSelector(page, 'admin')).click();
+  await page.locator('.admin-subtab[data-adminview="server"]').click();
+  const navigation = page.locator('.server-settings-nav');
+  const mobileNavigation = page.locator('#server_settings_section_select');
+  const isMobile = page.viewportSize().width <= 900;
+  if (isMobile) {
+    await expect(mobileNavigation).toBeVisible();
+    await expect(mobileNavigation.locator('option')).toHaveCount(8);
+  } else {
+    await expect(navigation).toBeVisible();
+    await expect(navigation.locator('.server-settings-nav-item')).toHaveCount(8);
+  }
+  await expect(page.locator('#server_settings_section_server')).toBeVisible();
+
+  await page.locator('#server_setting_server_bind_address').fill('127.0.0.1');
+  if (isMobile) {
+    await mobileNavigation.selectOption('tls');
+  } else {
+    await navigation.locator('[data-server-settings-target="tls"]').click();
+  }
+  await expect(page.locator('#server_settings_section_tls')).toBeVisible();
+  await expect(page.locator('#server_settings_section_server')).toBeHidden();
+  if (isMobile) {
+    await mobileNavigation.selectOption('server');
+    const actions = await page.locator('.server-settings-actions').boundingBox();
+    const bottomTabs = await page.locator('#mobile_bottom_tabs').boundingBox();
+    expect(actions.height).toBeLessThanOrEqual(80);
+    expect(actions.y + actions.height).toBeLessThanOrEqual(bottomTabs.y + 1);
+  } else {
+    await navigation.locator('[data-server-settings-target="server"]').click();
+  }
+  await expect(page.locator('#server_setting_server_bind_address')).toHaveValue('127.0.0.1');
+  await expect(page.locator('#server_settings_save_btn')).toBeEnabled();
+  await page.locator('#server_settings_discard_btn').click();
+  await expect(page.locator('#server_setting_server_bind_address')).toHaveValue('0.0.0.0');
+});
+
 test('muted text meets contrast on server surfaces in both themes', async ({ page }) => {
   await loadApp(page, viewerUser);
 

@@ -577,6 +577,7 @@ const serverSettingsVM = {
     data: null,
     original: null,
     lockedKeys: new Set(),
+    activeSection: 'server',
     loading: false,
     saving: false,
     dirty: false,
@@ -4559,7 +4560,7 @@ async function loadServerSettings(forceRefresh = false) {
         serverSettingsVM.dirty = false;
         serverSettingsVM.restartRequired = false;
         serverSettingsVM.lastError = null;
-        serverSettingsVM.statusMessage = 'Fetched latest settings from server.';
+        serverSettingsVM.statusMessage = '';
         serverSettingsVM.statusTone = 'muted';
         renderServerSettingsForm();
     } catch (err) {
@@ -4663,7 +4664,12 @@ function renderServerSettingsForm() {
         container.innerHTML = '<div style="color:var(--muted);">Server settings are not available.</div>';
         return;
     }
-    const sectionsHtml = SERVER_SETTINGS_SCHEMA.map(section => renderServerSettingsSection(section)).join('');
+    const activeSection = SERVER_SETTINGS_SCHEMA.some(section => section.section === serverSettingsVM.activeSection)
+        ? serverSettingsVM.activeSection
+        : SERVER_SETTINGS_SCHEMA[0].section;
+    serverSettingsVM.activeSection = activeSection;
+    const sectionsHtml = SERVER_SETTINGS_SCHEMA.map(section => renderServerSettingsSection(section, activeSection)).join('');
+    const sectionNavigation = renderServerSettingsNavigation(activeSection);
     const metaCards = renderServerSettingsInfoCards();
     const lockSummary = renderServerSettingsLockSummary();
     const restartBanner = `<div id="server_settings_restart_banner" style="display:${(serverSettingsVM.restartRequired && !serverSettingsVM.dirty) ? 'flex' : 'none'};align-items:center;gap:8px;padding:8px 12px;border-radius:6px;background:rgba(255,153,0,0.15);color:var(--warn);font-size:13px;">
@@ -4671,15 +4677,18 @@ function renderServerSettingsForm() {
         <span>Recycle the PrintMaster server service to apply TLS or network changes.</span>
     </div>`;
     container.innerHTML = `
-        <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
-            ${metaCards}
-        </div>
         ${lockSummary}
         ${restartBanner}
-        ${sectionsHtml}
-        <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-top:24px;padding:12px;border:1px solid var(--border);border-radius:10px;background:rgba(255,255,255,0.02);">
-            <div id="server_settings_status" style="font-size:13px;color:var(--muted);"></div>
-            <div style="display:flex;gap:10px;">
+        <div class="server-settings-layout">
+            ${sectionNavigation}
+            <div class="server-settings-content">${sectionsHtml}</div>
+        </div>
+        <div class="server-settings-meta">
+            ${metaCards}
+        </div>
+        <div class="server-settings-actions">
+            <div id="server_settings_status" role="status" aria-live="polite" style="font-size:13px;color:var(--muted);"></div>
+            <div class="server-settings-action-buttons">
                 <button id="server_settings_discard_btn" class="btn btn-secondary" type="button">Discard</button>
                 <button id="server_settings_save_btn" class="btn btn-primary" type="button">Save changes</button>
             </div>
@@ -4687,6 +4696,27 @@ function renderServerSettingsForm() {
     `;
     bindServerSettingsInputs(container);
     syncServerSettingsActionState();
+}
+
+function renderServerSettingsNavigation(activeSection) {
+    const items = SERVER_SETTINGS_SCHEMA.map(section => {
+        const active = section.section === activeSection;
+        return {
+            button: `<button class="server-settings-nav-item${active ? ' active' : ''}" type="button" data-server-settings-target="${section.section}" aria-controls="server_settings_section_${section.section}" aria-pressed="${active}">${escapeHtml(section.title)}</button>`,
+            option: `<option value="${section.section}" ${active ? 'selected' : ''}>${escapeHtml(section.title)}</option>`,
+        };
+    });
+    const buttons = items.map(item => item.button).join('');
+    const options = items.map(item => item.option).join('');
+    return `
+        <div class="server-settings-navigation">
+            <nav class="server-settings-nav" aria-label="Server settings categories">${buttons}</nav>
+            <label class="server-settings-mobile-navigation" for="server_settings_section_select">
+                <span>Settings category</span>
+                <select id="server_settings_section_select">${options}</select>
+            </label>
+        </div>
+    `;
 }
 
 function renderServerSettingsInfoCards() {
@@ -4698,7 +4728,7 @@ function renderServerSettingsInfoCards() {
         { label: 'Database Path', value: meta.database_path || '(default)' },
     ];
     return cards.map(card => `
-        <div style="flex:1;min-width:180px;border:1px solid var(--border);border-radius:10px;padding:10px 12px;">
+        <div class="server-settings-meta-card">
             <div style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;">${card.label}</div>
             <div style="font-size:15px;margin-top:4px;font-family:var(--font-code,monospace);">${escapeHtml(card.value)}</div>
         </div>
@@ -4720,21 +4750,21 @@ function renderServerSettingsLockSummary() {
     `;
 }
 
-function renderServerSettingsSection(sectionDef) {
+function renderServerSettingsSection(sectionDef, activeSection) {
     const fields = sectionDef.fields || [];
     const fieldGrid = fields.map(field => renderServerSettingsField(sectionDef.section, field)).join('');
     const title = escapeHtml(sectionDef.title || '');
     const description = sectionDef.description ? escapeHtml(sectionDef.description) : '';
     return `
-        <div class="panel" style="border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:20px;">
-            <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:12px;">
-                <div style="font-size:16px;font-weight:600;">${title}</div>
-                <div style="font-size:13px;color:var(--muted);">${description}</div>
+        <section class="server-settings-section${sectionDef.section === activeSection ? '' : ' hidden'}" id="server_settings_section_${sectionDef.section}" data-server-settings-section-panel="${sectionDef.section}" aria-labelledby="server_settings_heading_${sectionDef.section}">
+            <div class="server-settings-section-header">
+                <h5 id="server_settings_heading_${sectionDef.section}">${title}</h5>
+                <p>${description}</p>
             </div>
-            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;">
+            <div class="server-settings-field-grid">
                 ${fieldGrid}
             </div>
-        </div>
+        </section>
     `;
 }
 
@@ -4788,6 +4818,26 @@ function renderServerSettingsField(sectionKey, field) {
 
 function bindServerSettingsInputs(container) {
     if (!container) return;
+    const activateSection = section => {
+        if (!SERVER_SETTINGS_SCHEMA.some(item => item.section === section)) return;
+        serverSettingsVM.activeSection = section;
+        container.querySelectorAll('[data-server-settings-target]').forEach(item => {
+            const active = item.dataset.serverSettingsTarget === section;
+            item.classList.toggle('active', active);
+            item.setAttribute('aria-pressed', String(active));
+        });
+        container.querySelectorAll('[data-server-settings-section-panel]').forEach(panel => {
+            panel.classList.toggle('hidden', panel.dataset.serverSettingsSectionPanel !== section);
+        });
+        const sectionSelect = container.querySelector('#server_settings_section_select');
+        if (sectionSelect) sectionSelect.value = section;
+    };
+
+    container.querySelectorAll('[data-server-settings-target]').forEach(button => {
+        button.addEventListener('click', () => activateSection(button.dataset.serverSettingsTarget));
+    });
+    const sectionSelect = container.querySelector('#server_settings_section_select');
+    if (sectionSelect) sectionSelect.addEventListener('change', () => activateSection(sectionSelect.value));
     container.querySelectorAll('[data-settings-input="true"]').forEach(input => {
         const section = input.dataset.section;
         const key = input.dataset.key;
@@ -4845,7 +4895,7 @@ function syncServerSettingsActionState() {
         restartBanner.style.display = (serverSettingsVM.restartRequired && !serverSettingsVM.dirty) ? 'flex' : 'none';
     }
     if (statusEl) {
-        let message = serverSettingsVM.statusMessage || 'All changes saved.';
+        let message = serverSettingsVM.statusMessage || (serverSettingsVM.dirty ? 'Unsaved changes' : '');
         let color = 'var(--muted)';
         if (serverSettingsVM.saving) {
             message = 'Saving changes…';
