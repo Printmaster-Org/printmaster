@@ -280,6 +280,13 @@ test('admin can view audit subtab in admin tab', async ({ page }) => {
   await expect(auditSubtab).toBeVisible();
 });
 
+test('Admin alert setup label differs from operator Alerts destination', async ({ page }) => {
+  await loadApp(page, adminUser);
+  await expect(page.locator(getTabSelector(page, 'alerts'))).toHaveText('Alerts');
+  await page.locator(getTabSelector(page, 'admin')).click();
+  await expect(page.locator('.admin-subtab[data-adminview="alertsconfig"]')).toHaveText('Alert Setup');
+});
+
 test('viewer does not see admin tab', async ({ page }) => {
   await loadApp(page, viewerUser);
   const adminTab = page.locator(getTabSelector(page, 'admin'));
