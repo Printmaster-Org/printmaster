@@ -399,6 +399,43 @@ test('server settings navigate by category without discarding edits', async ({ p
   await expect(page.locator('#server_setting_server_bind_address')).toHaveValue('0.0.0.0');
 });
 
+test('alert configuration keeps advanced sections collapsed by default', async ({ page }) => {
+  await page.addInitScript(() => {
+    if (!sessionStorage.getItem('alerts-collapse-test-initialized')) {
+      localStorage.removeItem('alertsSectionsCollapsed');
+      sessionStorage.setItem('alerts-collapse-test-initialized', 'true');
+    }
+  });
+  await loadApp(page, adminUser);
+  await page.locator(getTabSelector(page, 'admin')).click();
+  await page.locator('.admin-subtab[data-adminview="alertsconfig"]').click();
+
+  await expect(page.locator('#alert_rules_section')).not.toHaveClass(/collapsed/);
+  const collapsedByDefault = [
+    'notification_channels_section',
+    'escalation_policies_section',
+    'maintenance_windows_section',
+    'quiet_hours_section',
+    'flapping_section',
+    'grouping_section',
+    'dependencies_section',
+    'report_scheduling_section',
+  ];
+  for (const sectionId of collapsedByDefault) {
+    await expect(page.locator(`#${sectionId}`)).toHaveClass(/collapsed/);
+  }
+  await expect(page.locator('#new_notification_channel_btn')).toBeVisible();
+  await expect(page.locator('#new_escalation_policy_btn')).toBeVisible();
+  await expect(page.locator('#new_maintenance_window_btn')).toBeVisible();
+
+  await page.locator('#notification_channels_section .alerts-section-header').click();
+  await expect(page.locator('#notification_channels_section')).not.toHaveClass(/collapsed/);
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.locator(getTabSelector(page, 'admin')).click();
+  await page.locator('.admin-subtab[data-adminview="alertsconfig"]').click();
+  await expect(page.locator('#notification_channels_section')).not.toHaveClass(/collapsed/);
+});
+
 test('muted text meets contrast on server surfaces in both themes', async ({ page }) => {
   await loadApp(page, viewerUser);
 

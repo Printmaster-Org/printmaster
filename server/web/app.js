@@ -2653,22 +2653,46 @@ function toggleAlertsSection(sectionId) {
     section.classList.toggle('collapsed');
 
     // Persist state to localStorage
-    const collapsedSections = JSON.parse(localStorage.getItem('alertsSectionsCollapsed') || '{}');
+    const collapsedSections = getCollapsedAlertsSections();
     collapsedSections[sectionId] = section.classList.contains('collapsed');
-    localStorage.setItem('alertsSectionsCollapsed', JSON.stringify(collapsedSections));
+    try {
+        localStorage.setItem('alertsSectionsCollapsed', JSON.stringify(collapsedSections));
+    } catch (err) {
+        // Preserve interactive collapse behavior when storage is unavailable.
+    }
+}
+
+function getCollapsedAlertsSections() {
+    try {
+        const stored = JSON.parse(localStorage.getItem('alertsSectionsCollapsed') || '{}');
+        return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
+    } catch (err) {
+        return {};
+    }
 }
 
 /**
  * Restore collapsed state of alerts sections from localStorage
  */
 function restoreAlertsSectionState() {
-    const collapsedSections = JSON.parse(localStorage.getItem('alertsSectionsCollapsed') || '{}');
-    for (const [sectionId, isCollapsed] of Object.entries(collapsedSections)) {
-        const section = document.getElementById(sectionId);
-        if (section && isCollapsed) {
-            section.classList.add('collapsed');
-        }
-    }
+    const collapsedSections = getCollapsedAlertsSections();
+    const collapsedByDefault = new Set([
+        'notification_channels_section',
+        'escalation_policies_section',
+        'maintenance_windows_section',
+        'quiet_hours_section',
+        'flapping_section',
+        'grouping_section',
+        'dependencies_section',
+        'report_scheduling_section',
+    ]);
+
+    document.querySelectorAll('.alerts-section[id]').forEach(section => {
+        const isCollapsed = Object.prototype.hasOwnProperty.call(collapsedSections, section.id)
+            ? Boolean(collapsedSections[section.id])
+            : collapsedByDefault.has(section.id);
+        section.classList.toggle('collapsed', isCollapsed);
+    });
 }
 
 /**
