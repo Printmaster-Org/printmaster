@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const loginHtmlPath = path.resolve(__dirname, '../../../../server/web/login.html');
+const acceptInviteHtmlPath = path.resolve(__dirname, '../../../../server/web/accept-invite.html');
 const loginJsPath = path.resolve(__dirname, '../../../../server/web/login.js');
 const loginCssPath = path.resolve(__dirname, '../../../../server/web/style.css');
 const sharedCssPath = path.resolve(__dirname, '../../shared.css');
@@ -34,6 +35,9 @@ function startFixtureServer() {
       const url = new URL(req.url, 'http://localhost');
       if (url.pathname === '/login') {
         return serveFile(res, loginHtmlPath, 'text/html');
+      }
+      if (url.pathname === '/accept-invite') {
+        return serveFile(res, acceptInviteHtmlPath, 'text/html');
       }
       if (url.pathname === '/' || url.pathname === '/app') {
         res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -122,6 +126,55 @@ test.afterAll(async () => {
   activeConnections.clear();
   
   await new Promise(resolve => server.close(resolve));
+});
+
+test('login and invitation links retain theme contrast and keyboard focus cues', async ({ page }) => {
+  await page.route('**/api/v1/auth/options**', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ local_login: true, providers: [] }),
+  }));
+  await page.route('**/api/v1/users/invite/validate**', route => route.fulfill({
+    status: 400,
+    contentType: 'text/plain',
+    body: 'Invitation expired',
+  }));
+
+  const authPages = [
+    { url: '/login', linkName: 'Back to home' },
+    { url: '/accept-invite?token=expired', linkName: 'Go to login' },
+  ];
+
+  for (const authPage of authPages) {
+    await page.goto(`${baseURL}${authPage.url}`);
+    const link = page.getByRole('link', { name: authPage.linkName });
+    await expect(link).toBeVisible();
+
+    for (const lightMode of [false, true]) {
+      await page.locator('body').evaluate((body, isLightMode) => {
+        body.classList.toggle('light-mode', isLightMode);
+      }, lightMode);
+      const linkStyles = await link.evaluate(element => {
+        const themeColorProbe = document.createElement('span');
+        themeColorProbe.style.color = getComputedStyle(document.body).getPropertyValue('--muted').trim();
+        document.body.appendChild(themeColorProbe);
+        const themeColor = getComputedStyle(themeColorProbe).color;
+        themeColorProbe.remove();
+        return {
+          color: getComputedStyle(element).color,
+          themeColor,
+          decoration: getComputedStyle(element).textDecorationLine,
+        };
+      });
+      expect(linkStyles.color).toBe(linkStyles.themeColor);
+      expect(linkStyles.decoration).toContain('underline');
+    }
+
+    await link.focus();
+    await expect(link).toBeFocused();
+    expect(await link.evaluate(element => getComputedStyle(element).outlineStyle)).toBe('solid');
+    expect(await link.evaluate(element => getComputedStyle(element).outlineWidth)).toBe('2px');
+  }
 });
 
 test('renders SSO provider button and starts OIDC flow', async ({ page }) => {

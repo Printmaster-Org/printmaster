@@ -12411,3 +12411,20 @@ body.light-theme .pm-context-menu-item.danger:focus {
     font-size: 16px;
   }
 }
+
+/* Standalone auth pages: preserve link cues and visible keyboard focus in both themes. */
+body.auth-page a:not(.modal-button) {
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+body.auth-page a:not(.modal-button):hover {
+  text-decoration-thickness: 2px;
+}
+
+body.auth-page a:not(.modal-button):focus-visible {
+  outline: 2px solid var(--highlight);
+  outline-offset: 2px;
+  border-radius: 2px;
+}

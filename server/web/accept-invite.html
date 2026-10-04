@@ -20,7 +20,7 @@
         .password-requirements li.unmet { color: var(--muted); }
     </style>
 </head>
-<body>
+<body class="auth-page">
     <div style="display:flex;min-height:100vh;align-items:center;justify-content:center;padding:16px;">
         <div style="width:420px;max-width:100%;padding:28px;border-radius:8px;box-shadow:var(--shadow);background:var(--panel);">
             <h2 style="margin:0 0 8px 0;">Welcome to PrintMaster</h2>
@@ -32,7 +32,7 @@
 
             <div id="error_state" style="display:none;">
                 <div style="color:var(--danger);margin-bottom:12px;" id="error_message">Invalid or expired invitation.</div>
-                <a href="/login" style="color:var(--accent);">Go to login</a>
+                <a href="/login">Go to login</a>
             </div>
 
             <div id="form_state" style="display:none;">

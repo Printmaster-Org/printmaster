@@ -16,7 +16,7 @@
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     </style>
 </head>
-<body>
+<body class="auth-page">
     <div style="display:flex;min-height:100vh;align-items:center;justify-content:center;padding:16px;">
         <div style="width:420px;max-width:100%;padding:28px;border-radius:8px;box-shadow:var(--shadow);background:var(--panel);">
             <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px;">
@@ -48,7 +48,7 @@
             </div>
 
             <div id="auto_login_hint" style="display:none;margin-bottom:12px;background:rgba(103,80,164,0.08);border:1px solid rgba(103,80,164,0.4);padding:10px;border-radius:6px;font-size:13px;color:var(--muted);">
-                Redirecting to your organization’s identity provider. <a id="skip_auto_link" href="?no_auto=1" style="color:var(--accent);">Stay here</a>
+                Redirecting to your organization’s identity provider. <a id="skip_auto_link" href="?no_auto=1">Stay here</a>
             </div>
 
             <div id="sso_section" style="display:none;margin-bottom:18px;">
