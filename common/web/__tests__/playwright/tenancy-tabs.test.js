@@ -305,6 +305,26 @@ test('Audit keeps common filters visible and groups advanced filters', async ({ 
   await expect(page.locator('#audit_action_filter')).toBeVisible();
 });
 
+test('Access keeps SSO primary and collapses reference sections', async ({ page }) => {
+  await loadApp(page, adminUser);
+  await page.locator(getTabSelector(page, 'admin')).click();
+  await page.locator('.admin-subtab[data-adminview="access"]').click();
+
+  await expect(page.locator('#sso_add_provider_btn')).toBeVisible();
+  const disclosures = page.locator('.access-disclosure');
+  await expect(disclosures).toHaveCount(2);
+  await expect(disclosures.nth(0)).not.toHaveAttribute('open', '');
+  await expect(disclosures.nth(1)).not.toHaveAttribute('open', '');
+  await expect(page.locator('#roles_matrix')).toBeHidden();
+  await expect(page.locator('#sessions_refresh_btn')).toBeHidden();
+
+  await disclosures.nth(1).locator('summary').click();
+  await expect(page.locator('#sessions_refresh_btn')).toBeVisible();
+  await disclosures.nth(0).locator('summary').focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#roles_matrix')).toBeVisible();
+});
+
 test('viewer does not see admin tab', async ({ page }) => {
   await loadApp(page, viewerUser);
   const adminTab = page.locator(getTabSelector(page, 'admin'));

@@ -715,12 +715,11 @@
                         </div>
 
                         <!-- Roles Reference Section -->
-                        <div class="panel" style="margin-top:16px;">
-                            <h4 style="margin-top:0;color:var(--highlight)">Roles & Permissions</h4>
-                            <div style="color:var(--muted);font-size:13px;margin-bottom:12px;">
-                                Reference for built-in role permissions. Custom roles coming soon.
-                            </div>
-                            <div id="roles_matrix" class="card" style="padding:12px;overflow:auto;">
+                        <details class="access-disclosure">
+                            <summary><span>Roles &amp; Permissions</span><span class="muted-text">Reference</span></summary>
+                            <div class="access-disclosure-content">
+                                <p class="muted-text">Reference for built-in role permissions. Custom roles coming soon.</p>
+                                <div id="roles_matrix" class="card" style="padding:12px;overflow:auto;">
                                 <table class="roles-table">
                                     <thead>
                                         <tr>
@@ -744,12 +743,14 @@
                                     </tbody>
                                 </table>
                             </div>
-                        </div>
+                            </div>
+                        </details>
 
                         <!-- Sessions Section -->
-                        <div class="panel" style="margin-top:16px;">
-                            <h4 style="margin-top:0;color:var(--highlight)">Active Sessions</h4>
-                            <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap;">
+                        <details class="access-disclosure">
+                            <summary><span>Active Sessions</span><span class="muted-text">Review and revoke sign-ins</span></summary>
+                            <div class="access-disclosure-content">
+                            <div class="access-disclosure-toolbar">
                                 <div style="color:var(--muted);font-size:13px;">
                                     View and revoke active user sessions.
                                 </div>
@@ -758,7 +759,8 @@
                             <div id="sessions_list" class="card" style="padding:12px;overflow:auto;">
                                 <div class="muted-text">Loading sessions…</div>
                             </div>
-                        </div>
+                            </div>
+                        </details>
                     </div>
                 </div>
 
