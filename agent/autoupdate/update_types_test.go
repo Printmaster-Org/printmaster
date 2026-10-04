@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -270,6 +271,72 @@ func TestManagerConcurrentChecks(t *testing.T) {
 	// Should be serialized to max 1 concurrent check
 	if max > 1 {
 		t.Errorf("Expected max 1 concurrent check, got %d", max)
+	}
+}
+
+// TestManagerOperationOwnership holds the manifest request open so competing
+// requests are tested without relying on sleep or goroutine scheduling.
+func TestManagerOperationOwnership(t *testing.T) {
+	t.Parallel()
+	for _, firstOperation := range []string{"manual", "scheduled", "force"} {
+		for _, status := range []Status{StatusChecking, StatusPending} {
+			t.Run(firstOperation+"/"+string(status), func(t *testing.T) {
+				t.Parallel()
+				manifestErr := errors.New("manifest unavailable")
+				client := &blockedManifestClient{
+					mockUpdateClient: mockUpdateClient{err: manifestErr},
+					entered:          make(chan struct{}, 10),
+					release:          make(chan struct{}),
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				var releaseOnce sync.Once
+				release := func() { releaseOnce.Do(func() { close(client.release) }) }
+				defer release()
+				manager, err := NewManager(Options{
+					Enabled: true, CurrentVersion: "1.0.0", DataDir: t.TempDir(),
+					ServerClient: client, PolicyProvider: &mockPolicyProvider{enabled: true},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				operations := map[string]func(context.Context) error{
+					"manual":    manager.CheckNow,
+					"scheduled": manager.performCheck,
+					"force": func(ctx context.Context) error {
+						return manager.ForceInstallLatest(ctx, "test")
+					},
+				}
+				firstDone := make(chan error, 1)
+				go func() { firstDone <- operations[firstOperation](ctx) }()
+				select {
+				case <-client.entered:
+				case <-ctx.Done():
+					t.Fatal("first operation did not fetch manifest")
+				}
+				// Pending is an admissible UI state, but not a release of ownership.
+				manager.setStatus(status)
+				for name, operation := range operations {
+					competingCtx, competingCancel := context.WithTimeout(ctx, time.Second)
+					err := operation(competingCtx)
+					competingCancel()
+					if err == nil || !strings.Contains(err.Error(), "update operation already in progress") {
+						t.Errorf("%s competing operation: got %v, want busy error", name, err)
+					}
+				}
+				if got := len(client.entered); got != 0 {
+					t.Errorf("%d competing operations fetched a manifest", got)
+				}
+				release()
+				if err := <-firstDone; !errors.Is(err, manifestErr) {
+					t.Fatalf("first operation: %v", err)
+				}
+				manager.setStatus(StatusIdle)
+				if err := manager.CheckNow(ctx); !errors.Is(err, manifestErr) {
+					t.Fatalf("operation ownership not released: %v", err)
+				}
+			})
+		}
 	}
 }
 
@@ -606,6 +673,23 @@ func (c *trackingClient) DownloadArtifact(ctx context.Context, manifest *UpdateM
 
 func (c *trackingClient) DownloadArtifactWithProgress(ctx context.Context, manifest *UpdateManifest, destPath string, resumeFrom int64, progressCb DownloadProgressCallback) (int64, error) {
 	return c.inner.DownloadArtifactWithProgress(ctx, manifest, destPath, resumeFrom, progressCb)
+}
+
+// blockedManifestClient gates manifest completion for concurrency tests.
+type blockedManifestClient struct {
+	mockUpdateClient
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *blockedManifestClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel string) (*UpdateManifest, error) {
+	c.entered <- struct{}{}
+	select {
+	case <-c.release:
+		return c.mockUpdateClient.GetLatestManifest(ctx, component, platform, arch, channel)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // delayedClient adds configurable delay to manifest fetching

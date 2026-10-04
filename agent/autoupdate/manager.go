@@ -131,6 +131,9 @@ type Manager struct {
 	useMSI         bool   // True if installed via MSI
 	msiProductCode string // MSI Product Code GUID for upgrades
 
+	// operationMu owns the entire check/install lifecycle, including pending
+	// transitions where status alone does not indicate exclusive ownership.
+	operationMu    sync.Mutex
 	mu             sync.RWMutex
 	status         Status
 	lastCheck      time.Time
@@ -346,8 +349,9 @@ func (m *Manager) Status() ManagerStatus {
 func (m *Manager) CheckNow(ctx context.Context) error {
 	m.mu.Lock()
 	if m.status != StatusIdle && m.status != StatusPending {
+		status := m.status
 		m.mu.Unlock()
-		return fmt.Errorf("update operation already in progress: %s", m.status)
+		return fmt.Errorf("update operation already in progress: %s", status)
 	}
 	m.mu.Unlock()
 
@@ -357,6 +361,11 @@ func (m *Manager) CheckNow(ctx context.Context) error {
 // ForceInstallLatest downloads and installs the latest manifest even when the
 // version matches the current build or falls outside normal policy/maintenance windows.
 func (m *Manager) ForceInstallLatest(ctx context.Context, reason string) error {
+	if err := m.acquireOperation(); err != nil {
+		return err
+	}
+	defer m.operationMu.Unlock()
+
 	if !m.enabled {
 		if m.disabledReason != "" {
 			return fmt.Errorf("auto-update disabled: %s", m.disabledReason)
@@ -470,9 +479,17 @@ func (m *Manager) timeUntilNextCheck() time.Duration {
 }
 
 func (m *Manager) performCheck(ctx context.Context) error {
+	if err := m.acquireOperation(); err != nil {
+		return err
+	}
+	defer m.operationMu.Unlock()
+
 	m.setStatus(StatusChecking)
 	defer func() {
-		if m.status == StatusChecking {
+		m.mu.RLock()
+		status := m.status
+		m.mu.RUnlock()
+		if status == StatusChecking {
 			m.setStatus(StatusIdle)
 		}
 	}()
@@ -524,6 +541,18 @@ func (m *Manager) performCheck(ctx context.Context) error {
 	// Proceed with update
 	m.setStatus(StatusPending)
 	return m.executeUpdate(ctx, manifest)
+}
+
+// acquireOperation rejects overlapping manual, scheduled, and forced work.
+// Status is presentation state, not an operation lock (pending is admissible).
+func (m *Manager) acquireOperation() error {
+	if m.operationMu.TryLock() {
+		return nil
+	}
+	m.mu.RLock()
+	status := m.status
+	m.mu.RUnlock()
+	return fmt.Errorf("update operation already in progress: %s", status)
 }
 
 func (m *Manager) executeUpdate(ctx context.Context, manifest *UpdateManifest) error {

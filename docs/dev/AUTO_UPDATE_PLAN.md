@@ -152,6 +152,7 @@ This document captures the agreed strategy for server- and agent-driven updates,
    - **Check for Update**: POST `/api/autoupdate/check`, identical to the server-driven `check_update` command.
    - **Force Reinstall**: POST `/api/autoupdate/force` with reason `agent_ui_force_reinstall`, which bypasses version/policy guards but still enforces disk-space, hashing, and restart health checks.
 - Buttons automatically disable when the auto-update manager is unavailable (agent offline, policy disabled, etc.) or when a run is already in progress, preventing conflicting operations.
+- Manager operation ownership also rejects overlapping scheduled/manual checks and forced reinstalls throughout the lifecycle, including `pending`. Local POST handlers acknowledge background dispatch with HTTP `200`; later busy errors are logged, not returned synchronously. See the [canonical operation semantics](https://docs.printmaster.work/development/auto-update-plan/#agent-ui-self-update-controls).
 - Callouts highlight when a newer build is available so onsite staff know when a manual reinstall will have an effect.
 
 This plan should be treated as a living document; check off tasks as they land and adjust phases as we learn more from early prototypes.
