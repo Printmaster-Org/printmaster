@@ -287,6 +287,24 @@ test('Admin alert setup label differs from operator Alerts destination', async (
   await expect(page.locator('.admin-subtab[data-adminview="alertsconfig"]')).toHaveText('Alert Setup');
 });
 
+test('Audit keeps common filters visible and groups advanced filters', async ({ page }) => {
+  await loadApp(page, adminUser);
+  await page.locator(getTabSelector(page, 'admin')).click();
+  await page.locator('.admin-subtab[data-adminview="audit"]').click();
+
+  const advanced = page.locator('.audit-advanced-filters');
+  await expect(advanced).toBeVisible();
+  await expect(advanced).not.toHaveAttribute('open', '');
+  await expect(page.locator('#audit_time_filter')).toBeVisible();
+  await expect(page.locator('#audit_search_filter')).toBeVisible();
+  await expect(page.locator('#audit_actor_filter')).toBeHidden();
+
+  await advanced.locator('summary').click();
+  await expect(page.locator('#audit_actor_filter')).toBeVisible();
+  await expect(page.locator('#audit_tenant_filter')).toBeVisible();
+  await expect(page.locator('#audit_action_filter')).toBeVisible();
+});
+
 test('viewer does not see admin tab', async ({ page }) => {
   await loadApp(page, viewerUser);
   const adminTab = page.locator(getTabSelector(page, 'admin'));

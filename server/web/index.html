@@ -942,19 +942,6 @@
                                     </select>
                                 </label>
                                 <label class="log-control column">
-                                    <span>Actor ID</span>
-                                    <input type="text" id="audit_actor_filter" placeholder="Optional actor identifier" autocomplete="off" data-1p-ignore data-lpignore="true" />
-                                </label>
-                                <label class="log-control column">
-                                    <span>Tenant</span>
-                                    <input type="text" id="audit_tenant_filter" placeholder="Tenant ID or name" autocomplete="off" data-1p-ignore data-lpignore="true" />
-                                </label>
-                                <label class="log-control column">
-                                    <span>Action</span>
-                                    <input type="text" id="audit_action_filter" list="audit_action_suggestions" placeholder="Filter by action keyword" autocomplete="off" data-1p-ignore data-lpignore="true" />
-                                    <datalist id="audit_action_suggestions"></datalist>
-                                </label>
-                                <label class="log-control column">
                                     <span>Search</span>
                                     <input type="text" id="audit_search_filter" placeholder="Search actor, target, IP, metadata..." autocomplete="off" data-1p-ignore data-lpignore="true" />
                                 </label>
@@ -975,6 +962,24 @@
                                         </label>
                                     </div>
                                 </div>
+                                <details class="audit-advanced-filters">
+                                    <summary>More filters <span class="audit-advanced-hint">Actor, tenant, action</span></summary>
+                                    <div class="audit-advanced-filter-grid">
+                                        <label class="log-control column">
+                                            <span>Actor ID</span>
+                                            <input type="text" id="audit_actor_filter" placeholder="Optional actor identifier" autocomplete="off" data-1p-ignore data-lpignore="true" />
+                                        </label>
+                                        <label class="log-control column">
+                                            <span>Tenant</span>
+                                            <input type="text" id="audit_tenant_filter" placeholder="Tenant ID or name" autocomplete="off" data-1p-ignore data-lpignore="true" />
+                                        </label>
+                                        <label class="log-control column">
+                                            <span>Action</span>
+                                            <input type="text" id="audit_action_filter" list="audit_action_suggestions" placeholder="Filter by action keyword" autocomplete="off" data-1p-ignore data-lpignore="true" />
+                                            <datalist id="audit_action_suggestions"></datalist>
+                                        </label>
+                                    </div>
+                                </details>
                             </div>
                             <div class="audit-controls-row">
                                 <label class="log-control">
