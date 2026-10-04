@@ -333,6 +333,17 @@ test('viewer does not see admin tab', async ({ page }) => {
 
 test('server filter drawers float over results and start closed', async ({ page }) => {
   await loadApp(page, adminUser);
+  const expectStationaryControl = async control => {
+    if (isMobileViewport(page)) return;
+    const beforeHover = await control.boundingBox();
+    await control.hover();
+    await expect(control).toHaveCSS('transform', 'none');
+    await expect(control).toHaveCSS('filter', 'none');
+    const afterHover = await control.boundingBox();
+    expect(afterHover).toEqual(beforeHover);
+    // Exercise the bottom edge too: hover must not move the hit target away.
+    await control.click({ position: { x: beforeHover.width / 2, y: beforeHover.height - 2 } });
+  };
   const drawers = [
     { tab: 'dashboard', sidebar: 'dashboard_sidebar', trigger: 'dashboard_filters_open', close: 'dashboard_sidebar_toggle', main: '.dashboard-main' },
     { tab: 'agents', sidebar: 'agents_sidebar', trigger: 'agents_filters_open', close: 'agents_sidebar_toggle', main: '.agents-main' },
@@ -341,7 +352,9 @@ test('server filter drawers float over results and start closed', async ({ page 
   ];
 
   for (const drawerConfig of drawers) {
-    await page.locator(getTabSelector(page, drawerConfig.tab)).click();
+    const tab = page.locator(getTabSelector(page, drawerConfig.tab));
+    await tab.click();
+    await expect(tab).toHaveCSS('filter', 'none');
     const sidebar = page.locator(`#${drawerConfig.sidebar}`);
     const trigger = page.locator(`#${drawerConfig.trigger}`);
     const main = page.locator(drawerConfig.main);
@@ -349,7 +362,8 @@ test('server filter drawers float over results and start closed', async ({ page 
     await expect(trigger).toHaveAttribute('aria-expanded', 'false');
 
     const before = await main.boundingBox();
-    await trigger.click();
+    if (isMobileViewport(page)) await trigger.click();
+    else await expectStationaryControl(trigger);
     await expect(sidebar).toBeVisible();
     await expect(trigger).toHaveAttribute('aria-expanded', 'true');
     await expect(sidebar).toHaveCSS('position', 'absolute');
@@ -358,7 +372,9 @@ test('server filter drawers float over results and start closed', async ({ page 
     expect(after.x).toBeCloseTo(before.x, 0);
     expect(after.width).toBeCloseTo(before.width, 0);
 
-    await page.locator(`#${drawerConfig.close}`).click();
+    const close = page.locator(`#${drawerConfig.close}`);
+    if (isMobileViewport(page)) await close.click();
+    else await expectStationaryControl(close);
     await expect(sidebar).toBeHidden();
     await expect(trigger).toHaveAttribute('aria-expanded', 'false');
   }
@@ -370,13 +386,16 @@ test('server filter drawers float over results and start closed', async ({ page 
   const tenantMain = page.locator('.tenants-main');
   await expect(tenantSidebar).toBeHidden();
   const tenantBefore = await tenantMain.boundingBox();
-  await tenantTrigger.click();
+  if (isMobileViewport(page)) await tenantTrigger.click();
+  else await expectStationaryControl(tenantTrigger);
   await expect(tenantSidebar).toBeVisible();
   await expect(tenantSidebar).toHaveCSS('position', 'absolute');
   const tenantAfter = await tenantMain.boundingBox();
   expect(tenantAfter.x).toBeCloseTo(tenantBefore.x, 0);
   expect(tenantAfter.width).toBeCloseTo(tenantBefore.width, 0);
-  await page.locator('#tenants_sidebar_toggle').click();
+  const tenantClose = page.locator('#tenants_sidebar_toggle');
+  if (isMobileViewport(page)) await tenantClose.click();
+  else await expectStationaryControl(tenantClose);
   await expect(tenantSidebar).toBeHidden();
 });
 

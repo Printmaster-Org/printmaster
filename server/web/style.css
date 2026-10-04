@@ -1219,8 +1219,11 @@ button.delete:hover {
   cursor: help;
 }
 
-button:hover {
-  filter: brightness(1.08);
+button:hover,
+button:hover:not(:disabled) {
+  /* Override the shared brightness filter: combined hover filters/transforms
+     destabilize WebKit compositing and hit testing during navigation. */
+  filter: none;
   transform: translateY(-1px);
   cursor: pointer;
   box-shadow: var(--shadow-md);
@@ -4503,6 +4506,16 @@ select:focus {
 .filter-sidebar-toggle,
 .filter-drawer-trigger {
   margin: 0;
+}
+
+/* Keep drawer hit targets stationary; hover transforms/filters create
+   transient composited hit regions in WebKit. Retain color/shadow feedback. */
+.sidebar-layout button.filter-drawer-trigger,
+.sidebar-layout button.filter-sidebar-toggle {
+  transform: none;
+  filter: none;
+  transition: background-color 0.2s ease, border-color 0.2s ease,
+    color 0.2s ease, box-shadow 0.2s ease;
 }
 
 /* Sidebar content */
