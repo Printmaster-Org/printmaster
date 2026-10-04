@@ -436,6 +436,30 @@ test('alert configuration keeps advanced sections collapsed by default', async (
   await expect(page.locator('#notification_channels_section')).not.toHaveClass(/collapsed/);
 });
 
+test('metrics charts use a responsive grid', async ({ page }) => {
+  await loadApp(page, viewerUser);
+  await page.locator(getTabSelector(page, 'metrics')).click();
+
+  const grid = page.locator('#metrics_chart_grid');
+  await expect(grid).toHaveCSS('display', 'grid');
+  if (page.viewportSize().width > 900) {
+    const desktopColumns = await grid.evaluate(element => getComputedStyle(element).gridTemplateColumns.split(' ').length);
+    expect(desktopColumns).toBeGreaterThanOrEqual(2);
+  }
+  const emptyCardHeights = await grid.locator('.metric-chart-card:has(.no-data-placeholder)').evaluateAll(cards =>
+    cards.map(card => card.getBoundingClientRect().height)
+  );
+  expect(emptyCardHeights.length).toBeGreaterThan(0);
+  expect(Math.max(...emptyCardHeights)).toBeLessThanOrEqual(220);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.locator('#mobile_bottom_tabs [data-target="metrics"]').click();
+  await expect(page.locator('#metrics_chart_grid')).toHaveCSS('display', 'grid');
+  const mobileColumns = await page.locator('#metrics_chart_grid').evaluate(element => getComputedStyle(element).gridTemplateColumns.split(' ').length);
+  expect(mobileColumns).toBe(1);
+});
+
 test('muted text meets contrast on server surfaces in both themes', async ({ page }) => {
   await loadApp(page, viewerUser);
 
