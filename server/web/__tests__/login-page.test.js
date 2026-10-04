@@ -64,6 +64,12 @@ async function flushPromises() {
 }
 
 describe('login page behavior', () => {
+    test('login placeholders distinguish bootstrap username from configured secret', () => {
+        const { window } = setupDom();
+        expect(window.document.getElementById('login_username').placeholder).toBe('Default: admin');
+        expect(window.document.getElementById('login_password').placeholder).toBe('Your configured password');
+    });
+
     test('OIDC carries explicit target through start request', async () => {
         const callback = 'https://agent.example/api/v1/auth/callback?agent_id=machine-a&return_to=%2Fdevices';
         const { window, triggerInit, navWatcher } = setupDom('?agent_id=machine-a&redirect=' + encodeURIComponent(callback));
