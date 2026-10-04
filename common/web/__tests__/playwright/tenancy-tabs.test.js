@@ -382,6 +382,7 @@ test('server settings navigate by category without discarding edits', async ({ p
     await navigation.locator('[data-server-settings-target="tls"]').click();
   }
   await expect(page.locator('#server_settings_section_tls')).toBeVisible();
+  await expect(page.locator('#server_settings_section_tls label', { hasText: "Let's Encrypt Domain" })).toHaveCount(1);
   await expect(page.locator('#server_settings_section_server')).toBeHidden();
   if (isMobile) {
     await mobileNavigation.selectOption('server');
