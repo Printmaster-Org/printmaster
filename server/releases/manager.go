@@ -119,7 +119,7 @@ func (m *Manager) EnsureManifestForArtifact(ctx context.Context, artifact *stora
 		return nil, err
 	}
 	existing, err := m.store.GetReleaseManifest(ctx, artifact.Component, artifact.Version, artifact.Platform, artifact.Arch)
-	if err == nil && existing != nil && existing.SigningKeyID == key.ID && existing.Signature != "" {
+	if err == nil && existing != nil && existing.SigningKeyID == key.ID && existing.Signature != "" && existing.Channel == artifact.Channel {
 		return existing, nil
 	}
 	return m.signArtifactWithKey(ctx, artifact, key)
@@ -215,7 +215,7 @@ func (m *Manager) GetLatestManifest(ctx context.Context, component, platform, ar
 		if manifest.Platform != platform || manifest.Arch != arch {
 			continue
 		}
-		if channel != "" && manifest.Channel != channel {
+		if channel != "" && (manifest.Channel != channel || channelFromVersion(manifest.Version) != channel) {
 			continue
 		}
 		matchCount++

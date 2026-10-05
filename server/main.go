@@ -4586,6 +4586,13 @@ func handleAgentCommand(w http.ResponseWriter, r *http.Request) {
 	if !authorizeOrReject(w, r, authz.ActionAgentsWrite, authz.ResourceRef{TenantIDs: []string{agent.TenantID}}) {
 		return
 	}
+	if req.Command == "install_channel" {
+		channel, _ := req.Data["channel"].(string)
+		if channel != "stable" && channel != "beta" && channel != "dev" {
+			http.Error(w, "channel must be stable, beta, or dev", http.StatusBadRequest)
+			return
+		}
+	}
 
 	// Check if agent is connected via WebSocket
 	conn, connected := getAgentWSConnection(agentID)
@@ -4598,15 +4605,15 @@ func handleAgentCommand(w http.ResponseWriter, r *http.Request) {
 	msg := wscommon.Message{
 		Type:      wscommon.MessageTypeCommand,
 		Timestamp: time.Now(),
-		Data: map[string]interface{}{
-			"command": req.Command,
-		},
+		Data:      map[string]interface{}{},
 	}
 	if req.Data != nil {
 		for k, v := range req.Data {
 			msg.Data[k] = v
 		}
 	}
+	// Payload data cannot replace the command validated/authorized above.
+	msg.Data["command"] = req.Command
 
 	payload, err := json.Marshal(msg)
 	if err != nil {
@@ -4633,7 +4640,7 @@ func handleAgentCommand(w http.ResponseWriter, r *http.Request) {
 		meta["trigger"] = trigger
 		logAgentUpdateAuditFromRequest(r, agent, "agent.update.check",
 			fmt.Sprintf("Update check triggered for %s", displayNameForAgent(agent)), meta)
-	case "force_update":
+	case "force_update", "install_channel":
 		meta := metadataWithCommandPayload(req.Data)
 		reason := getCommandStringField(req.Data, "reason")
 		if reason != "" {
@@ -8705,9 +8712,10 @@ type serverSettingsSMTPSection struct {
 }
 
 type serverSettingsReleasesSection struct {
-	MaxReleases       *int `json:"max_releases"`
-	PollIntervalMins  *int `json:"poll_interval_minutes"`
-	RetentionVersions *int `json:"retention_versions"`
+	MaxReleases       *int    `json:"max_releases"`
+	PollIntervalMins  *int    `json:"poll_interval_minutes"`
+	RetentionVersions *int    `json:"retention_versions"`
+	IncludePrerelease *string `json:"include_prerelease"`
 }
 
 type serverSettingsSelfUpdateSection struct {
@@ -8887,6 +8895,7 @@ func buildServerSettingsResponse(cfg *Config) map[string]interface{} {
 			"daily_summary_timezone": cfg.Notifications.DailySummaryTimezone,
 		},
 		"releases": map[string]interface{}{
+			"include_prerelease":    cfg.Releases.IncludePrerelease,
 			"max_releases":          cfg.Releases.MaxReleases,
 			"poll_interval_minutes": cfg.Releases.PollIntervalMinutes,
 			"retention_versions":    cfg.Releases.RetentionVersions,
@@ -8943,6 +8952,8 @@ func getEffectiveConfigValues(keys []string) map[string]interface{} {
 			values[key] = cfg.Releases.PollIntervalMinutes
 		case "releases.retention_versions":
 			values[key] = cfg.Releases.RetentionVersions
+		case "releases.include_prerelease":
+			values[key] = cfg.Releases.IncludePrerelease
 
 		// Self update settings
 		case "self_update.channel":
@@ -9484,6 +9495,21 @@ func applyServerSettings(cfg *Config, req *serverSettingsRequest) (*serverSettin
 
 	// Handle releases section
 	if section := req.Releases; section != nil {
+		if section.IncludePrerelease != nil {
+			if err := ensureConfigKeyEditable("releases.include_prerelease"); err != nil {
+				*cfg = original
+				return nil, err
+			}
+			value := strings.ToLower(strings.TrimSpace(*section.IncludePrerelease))
+			if value != "" && value != "true" && value != "false" {
+				*cfg = original
+				return nil, fmt.Errorf("releases.include_prerelease must be true, false, or empty")
+			}
+			if cfg.Releases.IncludePrerelease != value {
+				cfg.Releases.IncludePrerelease = value
+				markChanged("releases.include_prerelease", true)
+			}
+		}
 		if section.MaxReleases != nil {
 			if err := ensureConfigKeyEditable("releases.max_releases"); err != nil {
 				*cfg = original

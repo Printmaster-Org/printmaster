@@ -70,7 +70,7 @@ type ServerConnectionConfig struct {
 // it should behave relative to the fleet's policy.
 type AutoUpdateConfig struct {
 	Mode        updatepolicy.AgentOverrideMode `toml:"mode"`
-	Channel     string                         `toml:"channel"` // Update channel: "stable", "dev", or "" (auto-detect from build type)
+	Channel     string                         `toml:"channel"` // Update channel: "stable", "beta", "dev", or "" (auto-detect from build type)
 	LocalPolicy updatepolicy.PolicySpec        `toml:"local_policy"`
 }
 

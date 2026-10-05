@@ -327,7 +327,7 @@ func handleServerCommand(ctx context.Context, command string, data map[string]in
 			sendUpdateProgress(autoupdate.StatusFailed, "", -1, "Cannot cancel: update is in a non-cancellable phase", nil)
 		}
 
-	case "force_update":
+	case "force_update", "install_channel":
 		autoUpdateManagerMu.RLock()
 		manager := autoUpdateManager
 		autoUpdateManagerMu.RUnlock()
@@ -339,10 +339,18 @@ func handleServerCommand(ctx context.Context, command string, data map[string]in
 		}
 
 		reason, _ := data["reason"].(string)
+		channel := ""
+		if command == "install_channel" {
+			channel, _ = data["channel"].(string)
+			if channel != "stable" && channel != "beta" && channel != "dev" {
+				sendUpdateProgress(autoupdate.StatusFailed, "", -1, "Invalid update channel", nil)
+				return
+			}
+		}
 
 		go func() {
 			log.Info("Triggering forced reinstall per server request", "reason", reason)
-			if err := manager.ForceInstallLatest(ctx, reason); err != nil {
+			if err := manager.ForceInstallLatestFromChannel(ctx, reason, channel); err != nil {
 				log.Error("Forced reinstall failed", "error", err)
 				sendUpdateProgress(autoupdate.StatusFailed, "", -1, err.Error(), err)
 			} else {

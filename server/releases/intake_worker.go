@@ -250,7 +250,7 @@ func (w *IntakeWorker) runOnceWithProgress(ctx context.Context, onProgress Progr
 		if rel.Draft {
 			continue
 		}
-		if rel.Prerelease && !w.includePrerelease {
+		if (rel.Prerelease || channelFromVersion(version) != "stable") && !w.includePrerelease {
 			continue
 		}
 		if processed[component] >= w.maxReleases {
@@ -544,7 +544,7 @@ func (w *IntakeWorker) runOnce(ctx context.Context) error {
 			w.logInfo("Skipping draft", "tag", rel.TagName)
 			continue
 		}
-		if rel.Prerelease && !w.includePrerelease {
+		if (rel.Prerelease || channelFromVersion(version) != "stable") && !w.includePrerelease {
 			w.logInfo("Skipping prerelease (include_prerelease disabled)", "tag", rel.TagName)
 			continue
 		}
@@ -636,8 +636,9 @@ func (w *IntakeWorker) ensureArtifact(ctx context.Context, desc artifactDescript
 		return err
 	}
 	if err == nil && existing != nil && fileExists(existing.CachePath) && existing.SHA256 != "" {
-		needsMetadataUpdate := existing.SourceURL != asset.BrowserDownloadURL || existing.ReleaseNotes != rel.Body || existing.SizeBytes != asset.Size
+		needsMetadataUpdate := existing.SourceURL != asset.BrowserDownloadURL || existing.ReleaseNotes != rel.Body || existing.SizeBytes != asset.Size || existing.Channel != channelFromVersion(desc.version)
 		if needsMetadataUpdate {
+			existing.Channel = channelFromVersion(desc.version)
 			existing.SourceURL = asset.BrowserDownloadURL
 			existing.ReleaseNotes = rel.Body
 			existing.SizeBytes = asset.Size
@@ -678,7 +679,18 @@ func (w *IntakeWorker) ensureArtifact(ctx context.Context, desc artifactDescript
 }
 
 func (w *IntakeWorker) ensureManifest(ctx context.Context, artifact *storage.ReleaseArtifact) {
-	if w.manifests == nil || artifact == nil {
+	if artifact == nil {
+		return
+	}
+	// Repair beta manifests cached as stable by older intake implementations.
+	if channel := channelFromVersion(artifact.Version); artifact.Channel != channel {
+		artifact.Channel = channel
+		if err := w.store.UpsertReleaseArtifact(ctx, artifact); err != nil {
+			w.logWarn("release channel repair failed", "version", artifact.Version, "error", err)
+			return
+		}
+	}
+	if w.manifests == nil {
 		return
 	}
 	if _, err := w.manifests.EnsureManifestForArtifact(ctx, artifact); err != nil {
@@ -906,10 +918,16 @@ func (w *IntakeWorker) logWarn(msg string, kv ...interface{}) {
 }
 
 // channelFromVersion determines the update channel based on the version string.
-// Versions containing "-dev." are assigned to the "dev" channel, all others to "stable".
+// Development builds remain separate from beta/rc/other prereleases.
 func channelFromVersion(version string) string {
-	if strings.Contains(version, "-dev.") {
+	version = strings.ToLower(strings.TrimSpace(version))
+	version = strings.SplitN(version, "+", 2)[0]
+	prerelease := strings.SplitN(version, "-", 2)
+	if len(prerelease) == 1 {
+		return "stable"
+	}
+	if prerelease[1] == "dev" || strings.HasPrefix(prerelease[1], "dev.") {
 		return "dev"
 	}
-	return "stable"
+	return "beta"
 }

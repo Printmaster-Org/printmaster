@@ -515,6 +515,7 @@ const SERVER_SETTINGS_SCHEMA = [
         title: 'Release Intake',
         description: 'Control how many GitHub releases are cached locally for auto-update and packaging.',
         fields: [
+            { key: 'include_prerelease', label: 'Include Beta / Dev Releases', type: 'select', options: [{ value: '', label: 'Automatic (based on Server build)' }, { value: 'true', label: 'Enabled' }, { value: 'false', label: 'Disabled' }], helper: 'Required to cache beta/dev releases. Restart Server after changing, then sync release artifacts.', configKey: 'releases.include_prerelease' },
             { key: 'max_releases', label: 'Max Releases per Component', type: 'number', min: 1, required: true, helper: 'Upper bound of releases ingested for each component on every sync.', configKey: 'releases.max_releases' },
             { key: 'poll_interval_minutes', label: 'Sync Interval (minutes)', type: 'number', min: 15, required: true, helper: 'How often the server polls GitHub for new releases.', configKey: 'releases.poll_interval_minutes' },
             { key: 'retention_versions', label: 'Retention (versions)', type: 'number', min: 0, required: true, helper: 'How many versions to keep per component. Set to 0 to keep all versions (no pruning).', configKey: 'releases.retention_versions' }
@@ -1579,7 +1580,6 @@ function ensureAdminViewReady(view) {
             break;
         case 'fleet':
             initSettingsUI();
-            loadAgentUpdatePolicyForUpdatesTab();
             loadReleaseArtifacts();
             break;
         case 'server':
@@ -4546,13 +4546,11 @@ function ensureSettingsViewReady(view) {
     }
     if (view === 'updates') {
         loadSelfUpdateRuns();
-        loadAgentUpdatePolicyForUpdatesTab();
         loadReleaseArtifacts();
         return;
     }
     // fleet
     initSettingsUI();
-    loadAgentUpdatePolicyForUpdatesTab();
     loadReleaseArtifacts();
 }
 
@@ -11826,12 +11824,15 @@ async function updateAgent(agentId) {
         return;
     }
 
+    const channel = await showAgentUpdateChannelConfirm();
+    if (channel === null) return;
+
     // Set initial updating state
     agentsVM.updateState[agentId] = {
         status: 'checking',
         progress: 0,
         message: 'Sending update command...',
-        targetVersion: agentsVM.latestVersion || '',
+        targetVersion: channel ? '' : (agentsVM.latestVersion || ''),
         error: '',
         timestamp: Date.now()
     };
@@ -11843,7 +11844,10 @@ async function updateAgent(agentId) {
         const response = await fetch(`/api/v1/agents/command/${agentId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ command: 'check_update' })
+            body: JSON.stringify(channel ? {
+                command: 'install_channel',
+                data: { channel, reason: 'server_ui_channel_install' }
+            } : { command: 'check_update' })
         });
 
         if (!response.ok) {
@@ -11887,6 +11891,35 @@ async function updateAgent(agentId) {
             refreshAgentVersionCell(agentId);
         }, 5000);
     }
+}
+
+function showAgentUpdateChannelConfirm() {
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.style.display = 'flex';
+        overlay.innerHTML = `
+            <div class="modal-content" style="max-width:540px;" role="dialog" aria-modal="true" aria-labelledby="agent_update_channel_title">
+                <div class="modal-header"><h3 id="agent_update_channel_title">Update Agent</h3><button class="modal-close-x" title="Close">&times;</button></div>
+                <div class="modal-body">
+                    <label class="field"><span>Release channel</span><select id="agent_update_channel">
+                        <option value="">Configured channel (respect update policy)</option>
+                        <option value="stable">Stable</option>
+                        <option value="beta">Beta / Release Candidate</option>
+                        <option value="dev">Development</option>
+                    </select></label>
+                    <p class="muted-text">An explicit channel installs its latest cached release for this Agent platform, even if this means reinstalling or downgrading. Maintenance windows and version pins are bypassed; scheduled channel settings stay unchanged.</p>
+                    <p class="muted-text">Beta/dev builds may be unstable. Enable prerelease intake in Server Settings and sync artifacts first. Channel selection requires an updated Agent; older Agents ignore this new command rather than install the wrong channel.</p>
+                </div>
+                <div class="modal-footer"><button class="modal-button modal-button-secondary" data-action="cancel">Cancel</button><button class="modal-button modal-button-danger" data-action="confirm">Update Agent</button></div>
+            </div>`;
+        document.body.appendChild(overlay);
+        const finish = value => { overlay.remove(); resolve(value); };
+        overlay.querySelector('[data-action="confirm"]').addEventListener('click', () => finish(overlay.querySelector('select').value));
+        overlay.querySelector('[data-action="cancel"]').addEventListener('click', () => finish(null));
+        overlay.querySelector('.modal-close-x').addEventListener('click', () => finish(null));
+        overlay.addEventListener('click', event => { if (event.target === overlay) finish(null); });
+    });
 }
 
 // Expose server-specific agent UI helpers to the shared namespace so the
@@ -14388,202 +14421,6 @@ async function loadGlobalUpdatePolicy() {
             return;
         }
         throw err;
-    }
-}
-
-// Load and render agent update policy in the Updates tab
-async function loadAgentUpdatePolicyForUpdatesTab() {
-    const root = document.getElementById('agent_update_policy_root');
-    if (!root) return;
-
-    root.innerHTML = '<div class="muted-text">Loading agent update policy…</div>';
-
-    try {
-        const resp = await fetchJSON('/api/v1/update-policies/global');
-        const policy = resp && resp.policy ? normalizePolicySpec(resp.policy) : clonePolicySpec(DEFAULT_UPDATE_POLICY_SPEC);
-        const enabled = resp && resp.enabled !== undefined ? resp.enabled : false;
-        renderAgentUpdatePolicyInUpdatesTab(root, enabled, policy);
-    } catch (err) {
-        if (err && err.status === 404) {
-            renderAgentUpdatePolicyInUpdatesTab(root, false, DEFAULT_UPDATE_POLICY_SPEC);
-            return;
-        }
-        root.innerHTML = `<div style="color:var(--danger);">Failed to load agent update policy: ${escapeHtml(err.message || err)}</div>`;
-    }
-}
-
-function renderAgentUpdatePolicyInUpdatesTab(root, enabled, policy) {
-    const canEdit = userCan('settings.fleet.write');
-
-    let html = `
-        <div class="settings-section-panel auto-update-policy" style="margin-bottom:0;">
-            <div class="settings-section-header">
-                <h5 style="margin:0 0 4px;">Default Agent Update Policy</h5>
-                <p style="margin:0;color:var(--muted);font-size:12px;">Control how agents check for updates, which versions they target, and how rollouts are staged. These settings apply to all tenants unless overridden in Fleet Settings.</p>
-            </div>
-            <div class="settings-field-list auto-update-field-list">
-    `;
-
-    // Policy enabled toggle
-    html += `
-        <div class="settings-field-row">
-            <div class="settings-field-label">
-                <div class="field-title">Enforce auto-update policy</div>
-                <div class="field-description">When enabled, agents will follow these update settings.</div>
-            </div>
-            <div class="settings-field-control">
-                <label class="mini-toggle-container settings-toggle">
-                    <input type="checkbox" id="updates_policy_enabled" ${enabled ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} data-policy-field="enabled">
-                    <span class="settings-toggle-state">${enabled ? 'Enabled' : 'Disabled'}</span>
-                </label>
-            </div>
-        </div>
-    `;
-
-    if (enabled) {
-        const disabled = !canEdit ? 'disabled' : '';
-
-        // Check cadence
-        html += buildUpdatesTabPolicyRow('Check cadence (days)', 'Set to 0 to pause unattended update checks.',
-            `<input type="number" class="policy-input" id="updates_policy_check_days" value="${policy.update_check_days || 1}" min="0" max="365" ${disabled} data-policy-field="update_check_days" autocomplete="off" data-1p-ignore data-lpignore="true">`);
-
-        // Version pin strategy
-        const pinOptions = POLICY_VERSION_PIN_OPTIONS.map(opt =>
-            `<option value="${opt.value}" ${policy.version_pin_strategy === opt.value ? 'selected' : ''}>${opt.label}</option>`
-        ).join('');
-        html += buildUpdatesTabPolicyRow('Version pin strategy', 'Controls whether agents stay on major, minor, or patch lines.',
-            `<select class="policy-input" id="updates_policy_pin_strategy" ${disabled} data-policy-field="version_pin_strategy">${pinOptions}</select>`);
-
-        // Allow major upgrades
-        html += buildUpdatesTabPolicyRow('Allow major upgrades', 'When disabled, agents will not cross major version boundaries unless forced manually.',
-            `<label class="mini-toggle-container settings-toggle">
-                <input type="checkbox" id="updates_policy_major" ${policy.allow_major_upgrade ? 'checked' : ''} ${disabled} data-policy-field="allow_major_upgrade">
-                <span class="settings-toggle-state">${policy.allow_major_upgrade ? 'Enabled' : 'Disabled'}</span>
-            </label>`);
-
-        // Target version
-        html += buildUpdatesTabPolicyRow('Target version (optional)', 'Provide an exact semantic version to pin the fleet.',
-            `<input type="text" class="policy-input" id="updates_policy_target" value="${policy.target_version || ''}" placeholder="e.g., 1.2.3" ${disabled} data-policy-field="target_version" autocomplete="off" data-1p-ignore data-lpignore="true">`);
-
-        // Collect telemetry
-        html += buildUpdatesTabPolicyRow('Collect telemetry during rollout', 'Allows the server to gather anonymized update metrics.',
-            `<label class="mini-toggle-container settings-toggle">
-                <input type="checkbox" id="updates_policy_telemetry" ${policy.collect_telemetry ? 'checked' : ''} ${disabled} data-policy-field="collect_telemetry">
-                <span class="settings-toggle-state">${policy.collect_telemetry ? 'Enabled' : 'Disabled'}</span>
-            </label>`);
-    } else {
-        html += `<div class="muted-text" style="padding:8px 0;">No global auto-update policy is currently enforced. Agents will rely on their local override settings.</div>`;
-    }
-
-    html += `
-            </div>
-        </div>
-    `;
-
-    // Action buttons
-    if (canEdit) {
-        html += `
-            <div class="settings-actions" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
-                <div class="settings-status" id="updates_policy_status"></div>
-                <div class="settings-action-buttons">
-                    <button id="updates_policy_save_btn" class="primary" style="min-width:120px;">Save Policy</button>
-                </div>
-            </div>
-        `;
-    }
-
-    root.innerHTML = html;
-
-    // Bind events
-    const enabledToggle = document.getElementById('updates_policy_enabled');
-    if (enabledToggle) {
-        enabledToggle.addEventListener('change', () => {
-            const stateSpan = enabledToggle.parentElement.querySelector('.settings-toggle-state');
-            if (stateSpan) stateSpan.textContent = enabledToggle.checked ? 'Enabled' : 'Disabled';
-            // Re-render to show/hide policy fields
-            loadAgentUpdatePolicyForUpdatesTab();
-        });
-    }
-
-    // Bind toggle state updates for checkboxes
-    root.querySelectorAll('input[type="checkbox"][data-policy-field]').forEach(cb => {
-        if (cb.id === 'updates_policy_enabled') return; // Already handled
-        cb.addEventListener('change', () => {
-            const stateSpan = cb.parentElement.querySelector('.settings-toggle-state');
-            if (stateSpan) stateSpan.textContent = cb.checked ? 'Enabled' : 'Disabled';
-        });
-    });
-
-    // Bind save button
-    const saveBtn = document.getElementById('updates_policy_save_btn');
-    if (saveBtn) {
-        saveBtn.addEventListener('click', () => saveAgentUpdatePolicyFromUpdatesTab());
-    }
-}
-
-function buildUpdatesTabPolicyRow(label, description, controlHtml) {
-    return `
-        <div class="settings-field-row">
-            <div class="settings-field-label">
-                <div class="field-title">${escapeHtml(label)}</div>
-                <div class="field-description">${escapeHtml(description)}</div>
-            </div>
-            <div class="settings-field-control">
-                ${controlHtml}
-            </div>
-        </div>
-    `;
-}
-
-async function saveAgentUpdatePolicyFromUpdatesTab() {
-    const statusEl = document.getElementById('updates_policy_status');
-    const saveBtn = document.getElementById('updates_policy_save_btn');
-
-    if (saveBtn) saveBtn.disabled = true;
-    if (statusEl) {
-        statusEl.textContent = 'Saving…';
-        statusEl.style.color = 'var(--muted)';
-    }
-
-    try {
-        const enabled = document.getElementById('updates_policy_enabled')?.checked || false;
-
-        const policy = {
-            update_check_days: parseInt(document.getElementById('updates_policy_check_days')?.value || '1', 10),
-            version_pin_strategy: document.getElementById('updates_policy_pin_strategy')?.value || 'latest',
-            allow_major_upgrade: document.getElementById('updates_policy_major')?.checked || false,
-            target_version: document.getElementById('updates_policy_target')?.value || '',
-            collect_telemetry: document.getElementById('updates_policy_telemetry')?.checked || false,
-            maintenance_window: DEFAULT_UPDATE_POLICY_SPEC.maintenance_window,
-            rollout_control: DEFAULT_UPDATE_POLICY_SPEC.rollout_control
-        };
-
-        await fetchJSON('/api/v1/update-policies/global', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enabled, policy })
-        });
-
-        if (statusEl) {
-            statusEl.textContent = 'Saved successfully';
-            statusEl.style.color = 'var(--success)';
-        }
-
-        // Also update the fleet settings state if loaded
-        if (settingsUIState.updatePolicy && settingsUIState.updatePolicy.global) {
-            applyPolicySnapshot('global', enabled, policy);
-        }
-
-        setTimeout(() => {
-            if (statusEl) statusEl.textContent = '';
-        }, 3000);
-    } catch (err) {
-        if (statusEl) {
-            statusEl.textContent = `Error: ${err.message || err}`;
-            statusEl.style.color = 'var(--danger)';
-        }
-    } finally {
-        if (saveBtn) saveBtn.disabled = false;
     }
 }
 

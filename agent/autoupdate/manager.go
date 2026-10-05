@@ -361,6 +361,21 @@ func (m *Manager) CheckNow(ctx context.Context) error {
 // ForceInstallLatest downloads and installs the latest manifest even when the
 // version matches the current build or falls outside normal policy/maintenance windows.
 func (m *Manager) ForceInstallLatest(ctx context.Context, reason string) error {
+	return m.ForceInstallLatestFromChannel(ctx, reason, "")
+}
+
+type manualUpdateChannelKey struct{}
+
+// ForceInstallLatestFromChannel selects a channel for this operation only.
+// Scheduled policy and the configured channel are not changed by a manual install.
+func (m *Manager) ForceInstallLatestFromChannel(ctx context.Context, reason, channel string) error {
+	channel = strings.ToLower(strings.TrimSpace(channel))
+	if channel != "" && channel != "stable" && channel != "beta" && channel != "dev" {
+		return fmt.Errorf("invalid update channel: %s", channel)
+	}
+	if channel != "" {
+		ctx = context.WithValue(ctx, manualUpdateChannelKey{}, channel)
+	}
 	if err := m.acquireOperation(); err != nil {
 		return err
 	}
@@ -395,13 +410,16 @@ func (m *Manager) ForceInstallLatest(ctx context.Context, reason string) error {
 		}
 	}()
 
-	manifest, err := m.client.GetLatestManifest(ctx, "agent", m.platform, m.arch, m.channel)
+	manifest, err := m.client.GetLatestManifest(ctx, "agent", m.platform, m.arch, m.operationChannel(ctx))
 	if err != nil {
 		m.reportTelemetry(ctx, StatusFailed, ErrCodeServerError, err.Error())
 		return fmt.Errorf("failed to fetch manifest: %w", err)
 	}
 	if manifest == nil {
 		return fmt.Errorf("no manifest available")
+	}
+	if channel != "" && manifest.Channel != channel {
+		return fmt.Errorf("manifest channel %q does not match requested channel %q", manifest.Channel, channel)
 	}
 
 	m.mu.Lock()
@@ -567,7 +585,7 @@ func (m *Manager) executeUpdate(ctx context.Context, manifest *UpdateManifest) e
 		RequestedAt:    m.clock(),
 		CurrentVersion: m.currentVersion,
 		TargetVersion:  manifest.Version,
-		Channel:        m.channel,
+		Channel:        m.operationChannel(ctx),
 		Platform:       m.platform,
 		Arch:           m.arch,
 		SizeBytes:      manifest.SizeBytes,
@@ -722,6 +740,13 @@ func (m *Manager) executeUpdate(ctx context.Context, manifest *UpdateManifest) e
 	return m.restartService()
 }
 
+func (m *Manager) operationChannel(ctx context.Context) string {
+	if channel, _ := ctx.Value(manualUpdateChannelKey{}).(string); channel != "" {
+		return channel
+	}
+	return m.channel
+}
+
 // executeUpdateViaPackageManager performs an update using apt-get/dnf/yum.
 // This skips download/staging phases since the package manager handles everything.
 func (m *Manager) executeUpdateViaPackageManager(ctx context.Context, manifest *UpdateManifest) error {
@@ -731,7 +756,7 @@ func (m *Manager) executeUpdateViaPackageManager(ctx context.Context, manifest *
 		RequestedAt:    m.clock(),
 		CurrentVersion: m.currentVersion,
 		TargetVersion:  manifest.Version,
-		Channel:        m.channel,
+		Channel:        m.operationChannel(ctx),
 		Platform:       m.platform,
 		Arch:           m.arch,
 	}

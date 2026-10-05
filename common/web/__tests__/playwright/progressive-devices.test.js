@@ -69,6 +69,56 @@ async function openFilters(page) {
     await expect(page.locator('#devices_search')).toBeVisible();
 }
 
+test('Agent update channel modal dispatches exact selection and cancels without command', async ({ page }) => {
+    await open(page, { devices: [] });
+    const commands = [];
+    await page.route('**/api/v1/agents/command/**', route => {
+        commands.push(route.request().postDataJSON());
+        return route.fulfill({ json: { success: true } });
+    });
+    for (const channel of ['beta', 'dev', 'stable', '']) {
+        await page.evaluate(() => { window.__pm_shared.updateAgent('agent-1'); });
+        await expect(page.locator('#agent_update_channel')).toBeVisible();
+        await page.locator('#agent_update_channel').selectOption(channel);
+        await page.locator('.modal-overlay [data-action="confirm"]').click();
+        await expect.poll(() => commands.length).toBe(['beta', 'dev', 'stable', ''].indexOf(channel) + 1);
+        expect(commands.at(-1)).toEqual(channel ? { command: 'install_channel', data: { channel, reason: 'server_ui_channel_install' } } : { command: 'check_update' });
+    }
+    await page.evaluate(() => { window.__pm_shared.updateAgent('agent-1'); });
+    await page.locator('.modal-overlay [data-action="cancel"]').click();
+    expect(commands).toHaveLength(4);
+    expect(await page.locator('#agent_update_policy_root').count()).toBe(0);
+    expect(await page.evaluate(() => typeof saveAgentUpdatePolicyFromUpdatesTab)).toBe('undefined');
+});
+
+test('Fleet has one policy editor; cadence edits preserve maintenance and rollout', async ({ page }) => {
+    await open(page, { devices: [] });
+    const writes = [];
+    await page.route('**/api/v1/update-policies/global', route => {
+        writes.push(route.request().postDataJSON());
+        return route.fulfill({ json: { success: true } });
+    });
+    await page.evaluate(() => {
+        settingsUIState.scope = 'global';
+        applyPolicySnapshot('global', true, {
+            ...DEFAULT_UPDATE_POLICY_SPEC,
+            update_check_days: 7,
+            maintenance_window: { ...DEFAULT_UPDATE_POLICY_SPEC.maintenance_window, enabled: true, start_hour: 3, end_hour: 4 },
+            rollout_control: { ...DEFAULT_UPDATE_POLICY_SPEC.rollout_control, batch_size: 12, jitter_seconds: 123 }
+        });
+        refreshPolicyPanel();
+        const input = document.querySelector('#auto_update_policy_section [data-policy-path="update_check_days"]');
+        input.value = '14';
+        handlePolicyFieldChange({ target: input });
+    });
+    expect(await page.locator('.auto-update-policy').count()).toBe(1);
+    await page.evaluate(() => savePolicyChanges('global'));
+    expect(writes).toHaveLength(1);
+    expect(writes[0].policy.update_check_days).toBe(14);
+    expect(writes[0].policy.maintenance_window).toMatchObject({ enabled: true, start_hour: 3, end_hour: 4 });
+    expect(writes[0].policy.rollout_control).toMatchObject({ batch_size: 12, jitter_seconds: 123 });
+});
+
 test('last-seen aging marks temporary printers offline; filters, table and recovery agree', async ({ page }) => {
     const now = Date.now();
     await page.clock.install({ time: new Date(now) });

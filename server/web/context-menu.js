@@ -54,7 +54,6 @@
             icon: '⬆️',
             action: 'update-agent',
             requiresWs: true,
-            requiresUpdate: true
         },
         {
             id: 'restart',
