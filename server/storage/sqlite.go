@@ -159,6 +159,7 @@ func (s *SQLiteStore) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_devices_agent_id ON devices(agent_id);
 	CREATE INDEX IF NOT EXISTS idx_devices_ip ON devices(ip);
 	CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen);
+	CREATE INDEX IF NOT EXISTS idx_devices_owner_order ON devices(agent_id, last_seen DESC, serial);
 	CREATE INDEX IF NOT EXISTS idx_devices_tenant_id ON devices(tenant_id);
 
 	-- Metrics history
@@ -182,6 +183,7 @@ func (s *SQLiteStore) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON metrics_history(timestamp);
 	CREATE INDEX IF NOT EXISTS idx_metrics_tenant_id ON metrics_history(tenant_id);
 	CREATE INDEX IF NOT EXISTS idx_metrics_serial_timestamp ON metrics_history(serial, timestamp);
+	CREATE INDEX IF NOT EXISTS idx_metrics_owner_latest ON metrics_history(serial, agent_id, timestamp DESC, page_count DESC);
 
 	-- Server metrics history for Netdata-style dashboards (tiered storage)
 	CREATE TABLE IF NOT EXISTS server_metrics_history (

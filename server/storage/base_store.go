@@ -1031,48 +1031,20 @@ func (s *BaseStore) GetLatestMetricsBatch(ctx context.Context, serials []string)
 		return result, nil
 	}
 
-	// Use a subquery to get the latest timestamp for each serial, then join back
-	// This is more efficient than N separate queries.
-	placeholders := make([]string, len(serials))
-	args := make([]interface{}, len(serials))
-	for i, s := range serials {
-		placeholders[i] = "?"
-		args[i] = s
-	}
-
-	// Note: id column is not included - it may not exist after TimescaleDB hypertable conversion
-	query := fmt.Sprintf(`
-		SELECT m.serial, m.agent_id, m.timestamp, m.page_count, m.color_pages, m.mono_pages, m.scan_count, m.toner_levels
-		FROM metrics_history m
-		INNER JOIN (
-			SELECT serial, MAX(timestamp) as max_ts
-			FROM metrics_history
-			WHERE serial IN (%s)
-			GROUP BY serial
-		) latest ON m.serial = latest.serial AND m.timestamp = latest.max_ts
-	`, strings.Join(placeholders, ","))
-
-	rows, err := s.queryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var m MetricsSnapshot
-		var tonerJSON sql.NullString
-		err := rows.Scan(&m.Serial, &m.AgentID, &m.Timestamp,
-			&m.PageCount, &m.ColorPages, &m.MonoPages, &m.ScanCount, &tonerJSON)
+	for start := 0; start < len(serials); start += 100 {
+		end := start + 100
+		if end > len(serials) {
+			end = len(serials)
+		}
+		metrics, err := s.InventoryMetrics(ctx, InventoryScope{Unrestricted: true}, serials[start:end])
 		if err != nil {
 			return nil, err
 		}
-		if tonerJSON.Valid {
-			json.Unmarshal([]byte(tonerJSON.String), &m.TonerLevels)
+		for _, m := range metrics {
+			result[m.Serial] = m
 		}
-		result[m.Serial] = &m
 	}
-
-	return result, rows.Err()
+	return result, nil
 }
 
 // GetMetricsHistory retrieves metrics history for a device since a given time

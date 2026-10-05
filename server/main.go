@@ -3691,6 +3691,9 @@ func setupRoutes(cfg *Config) {
 
 	http.HandleFunc("/api/v1/devices/batch", requireAuth(handleDevicesBatch))
 	http.HandleFunc("/api/v1/devices/list", requireWebAuth(handleDevicesList)) // List all devices (for UI)
+	http.HandleFunc("/api/v1/devices/index", requireWebAuth(handleDevicesIndex))
+	http.HandleFunc("/api/v1/devices/rows", requireWebAuth(handleDevicesRows))
+	http.HandleFunc("/api/v1/devices/metrics/query", requireWebAuth(handleDevicesMetricsQuery))
 	http.HandleFunc("/api/v1/metrics/batch", requireAuth(handleMetricsBatch))
 
 	// Dashboard API - hierarchical tenant/agent/device tree view
@@ -6794,18 +6797,8 @@ func handleDevicesList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
-	if !authorizeOrReject(w, r, authz.ActionDevicesRead, authz.ResourceRef{}) {
-		return
-	}
-
-	principal := getPrincipal(r)
-	if principal == nil {
-		http.Error(w, "unauthenticated", http.StatusUnauthorized)
-		return
-	}
-	scope, ok := tenantScope(principal)
+	inventory, scope, ok := inventoryRequestScope(w, r)
 	if !ok {
-		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -6814,14 +6807,6 @@ func handleDevicesList(w http.ResponseWriter, r *http.Request) {
 	// Parse pagination params
 	limitStr := r.URL.Query().Get("limit")
 	offsetStr := r.URL.Query().Get("offset")
-
-	selection, err := resolveInventoryAgentScope(ctx, scope)
-	if err != nil {
-		logError("Failed to list agents for scope filter", "error", err)
-		http.Error(w, "Failed to list devices", http.StatusInternalServerError)
-		return
-	}
-	allowedAgentIDs := selection.agentIDs
 
 	// If pagination is requested, use paginated endpoint
 	if limitStr != "" {
@@ -6837,17 +6822,8 @@ func handleDevicesList(w http.ResponseWriter, r *http.Request) {
 			offset = 0
 		}
 
-		if selection.empty() {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"devices": []*storage.DeviceWithMetrics{}, "total_count": 0,
-				"has_more": false, "limit": limit, "offset": offset,
-			})
-			return
-		}
-
 		// Get total count
-		totalCount, err := serverStore.CountDevices(ctx, allowedAgentIDs)
+		totalCount, err := inventory.InventoryCount(ctx, scope)
 		if err != nil {
 			logError("Failed to count devices", "error", err)
 			http.Error(w, "Failed to count devices", http.StatusInternalServerError)
@@ -6855,7 +6831,7 @@ func handleDevicesList(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Get paginated results
-		devices, err := serverStore.ListAllDevicesPaginated(ctx, limit, offset, allowedAgentIDs)
+		devices, err := inventory.InventoryRows(ctx, scope, nil, limit, offset)
 		if err != nil {
 			logError("Failed to list devices", "error", err)
 			http.Error(w, "Failed to list devices", http.StatusInternalServerError)
@@ -6863,7 +6839,7 @@ func handleDevicesList(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Enrich with metrics
-		enriched := enrichDevicesWithMetrics(ctx, devices)
+		enriched := enrichInventoryRows(ctx, inventory, scope, devices)
 		hasMore := int64(offset+len(devices)) < totalCount
 
 		w.Header().Set("Content-Type", "application/json")
@@ -6877,40 +6853,16 @@ func handleDevicesList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if selection.empty() {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode([]*storage.DeviceWithMetrics{})
-		return
-	}
-
 	// Legacy: return all devices (for backwards compatibility)
-	devices, err := serverStore.ListAllDevices(ctx)
+	devices, err := inventory.InventoryRows(ctx, scope, nil, 0, 0)
 	if err != nil {
 		logError("Failed to list devices", "error", err)
 		http.Error(w, "Failed to list devices", http.StatusInternalServerError)
 		return
 	}
 
-	// If scoped, filter devices to tenant scope
-	if !selection.unrestricted {
-		agentAllowed := make(map[string]struct{}, len(allowedAgentIDs))
-		for _, id := range allowedAgentIDs {
-			agentAllowed[id] = struct{}{}
-		}
-		fDevices := make([]*storage.Device, 0)
-		for _, d := range devices {
-			if d == nil {
-				continue
-			}
-			if _, ok := agentAllowed[d.AgentID]; ok {
-				fDevices = append(fDevices, d)
-			}
-		}
-		devices = fDevices
-	}
-
 	// Enrich devices with latest metrics (toner levels, page counts)
-	enriched := enrichDevicesWithMetrics(ctx, devices)
+	enriched := enrichInventoryRows(ctx, inventory, scope, devices)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(enriched)
@@ -6945,7 +6897,7 @@ func enrichDevicesWithMetrics(ctx context.Context, devices []*storage.Device) []
 			continue
 		}
 		enriched := &storage.DeviceWithMetrics{Device: *d}
-		if m, ok := metricsMap[d.Serial]; ok && m != nil {
+		if m, ok := metricsMap[d.Serial]; ok && m != nil && m.AgentID == d.AgentID {
 			enriched.TonerLevels = m.TonerLevels
 			enriched.PageCount = m.PageCount
 			enriched.ColorPages = m.ColorPages
