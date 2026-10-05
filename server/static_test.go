@@ -17,6 +17,7 @@ func TestHandleStatic_SharedBundles(t *testing.T) {
 	}{
 		{"/static/metrics.js", []byte("loadDeviceMetrics")},
 		{"/static/cards.js", []byte("renderSavedCard")},
+		{"/static/progressive-loader.js", []byte("createLoader")},
 	}
 
 	for _, c := range cases {
@@ -32,6 +33,10 @@ func TestHandleStatic_SharedBundles(t *testing.T) {
 		if res.StatusCode != 200 {
 			t.Fatalf("expected 200 for %s, got %d", c.path, res.StatusCode)
 		}
+
+			if res.Header.Get("Content-Type") != "application/javascript; charset=utf-8" {
+				t.Fatalf("expected JavaScript MIME type for %s", c.path)
+			}
 
 		if !bytes.Contains(body, c.marker) {
 			t.Fatalf("%s did not contain expected marker %q", c.path, string(c.marker))

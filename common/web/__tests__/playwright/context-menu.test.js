@@ -21,6 +21,7 @@ const sharedCss = path.resolve(__dirname, '../../shared.css');
 const sharedJs = path.resolve(__dirname, '../../shared.js');
 const cardsJs = path.resolve(__dirname, '../../cards.js');
 const metricsJs = path.resolve(__dirname, '../../metrics.js');
+const { inventoryResponse } = require('./inventory-fixture');
 
 function serveFile(res, filePath, contentType) {
   const payload = fs.readFileSync(filePath);
@@ -51,6 +52,7 @@ function startAppFixtureServer() {
         '/static/shared.css': { file: sharedCss, type: 'text/css' },
         '/static/shared.js': { file: sharedJs, type: 'application/javascript' },
         '/static/cards.js': { file: cardsJs, type: 'application/javascript' },
+        '/static/progressive-loader.js': { file: path.resolve(__dirname, '../../progressive-loader.js'), type: 'application/javascript' },
         '/static/metrics.js': { file: metricsJs, type: 'application/javascript' },
         '/static/utils/charts.js': { file: chartsJs, type: 'application/javascript' },
         '/static/utils/formatters.js': { file: formattersJs, type: 'application/javascript' },
@@ -181,6 +183,8 @@ function createApiHandler(apiCalls = []) {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, deleted_from_agent: true }) });
     }
     if (url.includes('/api/v1/devices')) {
+      const response = inventoryResponse(route, sampleDevices);
+      if (response) return response;
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(sampleDevices) });
     }
     if (url.includes('/api/v1/tenants')) {

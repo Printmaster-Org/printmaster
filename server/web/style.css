@@ -3920,12 +3920,43 @@ select:focus {
 
 .metrics-overview-grid.compact {
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 8px;
+  gap: 10px;
 }
 
 /* Compact KPI cards - smaller values and tighter spacing */
 .metrics-overview-grid.compact .metric-card {
   padding: 10px 12px;
+}
+
+.devices-summary-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  min-height: 108px !important;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 140ms ease, background-color 140ms ease, transform 140ms ease;
+}
+
+.devices-summary-card:hover {
+  border-color: var(--highlight);
+  background: color-mix(in srgb, var(--panel) 90%, var(--highlight));
+  transform: translateY(-1px);
+}
+
+.devices-summary-card:focus-visible {
+  outline: 2px solid var(--highlight);
+  outline-offset: 2px;
+}
+
+.devices-summary-hint {
+  margin-top: auto;
+  color: var(--highlight);
+  font-size: 11px;
+  opacity: 0.85;
 }
 
 .metrics-overview-grid.compact .card-title {
@@ -4022,9 +4053,8 @@ select:focus {
     font-size: 12px;
   }
 
-  /* Hide metrics overview cards entirely on mobile to show content immediately */
+  /* Keep Devices summary actions available at mobile breakpoints. */
   .agents-main .metrics-overview-grid,
-  .devices-main .metrics-overview-grid,
   .logs-main .metrics-overview-grid {
     display: none;
   }

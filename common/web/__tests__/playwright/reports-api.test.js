@@ -46,6 +46,7 @@ function startAppFixtureServer() {
         '/static/shared.css': { file: sharedCss, type: 'text/css' },
         '/static/shared.js': { file: sharedJs, type: 'application/javascript' },
         '/static/cards.js': { file: cardsJs, type: 'application/javascript' },
+        '/static/progressive-loader.js': { file: path.resolve(__dirname, '../../progressive-loader.js'), type: 'application/javascript' },
         '/static/metrics.js': { file: metricsJs, type: 'application/javascript' },
         '/static/utils/charts.js': { file: chartsJs, type: 'application/javascript' },
         '/static/utils/formatters.js': { file: formattersJs, type: 'application/javascript' },

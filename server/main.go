@@ -8119,6 +8119,12 @@ func handleStatic(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(sharedweb.MetricsJS))
 		return
 	}
+	if fileName == "progressive-loader.js" {
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.Write([]byte(sharedweb.ProgressiveLoaderJS))
+		return
+	}
 	if fileName == "cards.js" {
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 		w.Header().Set("Cache-Control", "public, max-age=3600")

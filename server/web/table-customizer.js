@@ -73,6 +73,9 @@
             filterType: 'select',
             filterOptions: ['critical', 'low', 'medium', 'high', 'unknown'],
             render: (device, meta) => {
+                if (meta.metricsState && meta.metricsState !== 'ready') {
+                    return window.__pm_shared?.renderTonerBars?.(meta.tonerData) || '<span class="muted-text">Loading supplies…</span>';
+                }
                 if (meta.tonerData && meta.tonerData.length > 0) {
                     return window.__pm_shared?.renderTonerBars?.(meta.tonerData) || '<span class="muted-text">—</span>';
                 }
@@ -165,8 +168,8 @@
             filterable: false,
             defaultHidden: true,
             render: (device, meta) => {
-                const pageCount = device.raw_data?.total_pages || device.raw_data?.page_count_total || device.raw_data?.page_count || device.page_count;
-                return pageCount ? escapeHtml(pageCount.toLocaleString()) : '<span class="muted-text">—</span>';
+                const pageCount = device.page_count;
+                return pageCount != null ? escapeHtml(pageCount.toLocaleString()) : '<span class="muted-text">—</span>';
             }
         },
         {
@@ -313,6 +316,27 @@
         }
         // Actions column removed - using context menu instead
     ];
+
+    // Only indexed metadata can be sorted fleet-wide. Hydrated-only fields must
+    // not silently sort a mixed loaded/unloaded subset. Snapshot fields paint
+    // pending/error separately from a genuinely absent counter (including zero).
+    const indexedSortKeys = new Set(['manufacturer', 'status', 'consumables', 'agent', 'tenant', 'ip', 'location', 'page_count', 'last_seen']);
+    const snapshotColumns = new Set(['color_pages', 'mono_pages', 'copy_pages', 'print_pages', 'scan_count', 'fax_pages', 'duplex_sheets']);
+    DEVICES_COLUMN_DEFINITIONS.forEach(column => {
+        if (!indexedSortKeys.has(column.sortKey)) delete column.sortKey;
+        if (snapshotColumns.has(column.id)) column.render = (device, meta) => {
+            if (meta.metricsState && !['ready', 'missing'].includes(meta.metricsState)) {
+                return `<span class="muted-text" role="status">${meta.metricsState === 'error' ? 'Unavailable' : 'Loading…'}</span>`;
+            }
+            const count = device.raw_data?.[column.id];
+            return count != null ? escapeHtml(count.toLocaleString()) : '<span class="muted-text">—</span>';
+        };
+        if (['mac', 'firmware'].includes(column.id)) {
+            const render = column.render;
+            column.render = (device, meta) => meta.rowState && !['ready', 'missing'].includes(meta.rowState)
+                ? `<span class="muted-text">${meta.rowState === 'error' ? 'Unavailable' : 'Loading…'}</span>` : render(device, meta);
+        }
+    });
 
     /**
      * Default column definitions for the agents table

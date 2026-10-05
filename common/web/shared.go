@@ -28,6 +28,11 @@ var MetricsJS string
 //go:embed cards.js
 var CardsJS string
 
+// ProgressiveLoaderJS is the framework-free demand-driven inventory controller.
+//
+//go:embed progressive-loader.js
+var ProgressiveLoaderJS string
+
 // For CSP and offline scenarios we now vendor flatpickr under static/flatpickr
 // and embed the files into the binary so they are served with correct MIME
 // types. These variables expose the embedded assets which are served as

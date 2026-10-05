@@ -44,6 +44,7 @@ function startAppFixtureServer() {
         '/static/shared.css': { file: sharedCss, type: 'text/css' },
         '/static/shared.js': { file: sharedJs, type: 'application/javascript' },
         '/static/cards.js': { file: cardsJs, type: 'application/javascript' },
+        '/static/progressive-loader.js': { file: path.resolve(__dirname, '../../progressive-loader.js'), type: 'application/javascript' },
         '/static/metrics.js': { file: metricsJs, type: 'application/javascript' },
         '/static/utils/charts.js': { file: chartsJs, type: 'application/javascript' },
         '/static/utils/formatters.js': { file: formattersJs, type: 'application/javascript' },
@@ -75,6 +76,9 @@ function startAppFixtureServer() {
 async function mockApi(page, user) {
   await page.route('**/api/**', route => {
     const url = route.request().url();
+    if (url.includes('/api/v1/devices/rows') || url.includes('/api/v1/devices/metrics/query')) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    }
     if (url.includes('/api/v1/auth/me')) {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(user) });
     }

@@ -19,6 +19,7 @@
     <link rel="stylesheet" href="/static/style.css{{if .AssetVersion}}?v={{.AssetVersion}}{{end}}">
     <script src="/static/shared.js{{if .AssetVersion}}?v={{.AssetVersion}}{{end}}"></script>
     <script src="/static/cards.js{{if .AssetVersion}}?v={{.AssetVersion}}{{end}}"></script>
+    <script src="/static/progressive-loader.js{{if .AssetVersion}}?v={{.AssetVersion}}{{end}}"></script>
     <script src="/static/report.js{{if .AssetVersion}}?v={{.AssetVersion}}{{end}}"></script>
     <script src="/static/metrics.js{{if .AssetVersion}}?v={{.AssetVersion}}{{end}}"></script>
     <script src="/static/table-customizer.js{{if .AssetVersion}}?v={{.AssetVersion}}{{end}}"></script>
@@ -474,6 +475,8 @@
                                         <select id="devices_sort_select">
                                             <option value="last_seen">Last Seen</option>
                                             <option value="manufacturer">Manufacturer</option>
+                                            <option value="page_count">Total Pages</option>
+                                            <option value="consumables">Consumables</option>
                                             <option value="agent">Agent</option>
                                             <option value="tenant">Tenant</option>
                                             <option value="status">Status</option>
@@ -541,6 +544,8 @@
                     </div>
 
                     <div id="devices_stats" class="devices-inline-stats"></div>
+                    <div id="devices_loading_status" role="status" aria-live="polite"></div>
+                    <button id="devices_retry_loading" type="button" class="ghost-btn hidden">Retry device loading</button>
 
                     <div class="device-cards-container" id="devices_cards"></div>
                     <div id="devices_table_wrapper" class="hidden">
