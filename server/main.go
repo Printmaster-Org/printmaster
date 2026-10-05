@@ -7357,6 +7357,28 @@ func deriveDeviceStatus(d *storage.Device) string {
 	if d == nil {
 		return "unknown"
 	}
+	if strings.Contains(strings.ToLower(d.SpoolerStatus), "offline") {
+		return "offline"
+	}
+	if d.LastSeen.IsZero() || d.LastSeen.After(time.Now().Add(time.Minute)) {
+		return "unknown"
+	}
+	if time.Since(d.LastSeen) >= 15*time.Minute {
+		return "offline"
+	}
+	statusText := strings.ToLower(strings.Join(d.StatusMessages, " "))
+	if strings.Contains(statusText, "offline") || strings.Contains(statusText, "down") {
+		return "offline"
+	}
+	if strings.Contains(statusText, "jam") {
+		return "jam"
+	}
+	if strings.Contains(statusText, "error") {
+		return "error"
+	}
+	if strings.Contains(statusText, "warn") || strings.Contains(statusText, "degraded") {
+		return "warning"
+	}
 	// Check for explicit status fields in raw data if available
 	if d.RawData != nil {
 		if errStr, ok := d.RawData["error"].(string); ok && errStr != "" {
@@ -7366,8 +7388,7 @@ func deriveDeviceStatus(d *storage.Device) string {
 			return "jam"
 		}
 	}
-	// Default to healthy for now - more sophisticated status could be derived
-	// from printer-specific OIDs
+	// Recent observation with no known printer fault.
 	return "healthy"
 }
 

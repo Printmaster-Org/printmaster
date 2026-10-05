@@ -293,8 +293,9 @@ const metricsVM = {
     },
 };
 
-const DEVICE_STATUS_KEYS = ['healthy', 'warning', 'error', 'jam'];
-const DEVICE_STATUS_ORDER = { healthy: 0, warning: 1, error: 2, jam: 3 };
+const DEVICE_STATUS_KEYS = ['healthy', 'warning', 'error', 'jam', 'offline', 'unknown'];
+const DEVICE_STATUS_ORDER = { healthy: 0, warning: 1, error: 2, jam: 3, offline: 4, unknown: 5 };
+const DEVICE_OFFLINE_AFTER_MS = 15 * 60 * 1000;
 const DEVICE_CONSUMABLE_KEYS = ['critical', 'low', 'medium', 'high', 'unknown'];
 const DEVICE_CONSUMABLE_ORDER = { critical: 4, low: 3, medium: 2, high: 1, unknown: 0 };
 const DEVICE_CONSUMABLE_LABELS = {
@@ -5329,7 +5330,7 @@ let dashboardFilters = {
     showDevices: true,
     agentStatus: new Set(['active', 'degraded', 'offline']),
     supplyBand: new Set(['critical', 'low', 'medium', 'high', 'unknown']),
-    deviceStatus: new Set(['healthy', 'warning', 'error', 'jam'])
+    deviceStatus: new Set(DEVICE_STATUS_KEYS)
 };
 
 function initDashboard() {
@@ -5428,7 +5429,7 @@ function resetDashboardFilters() {
         showDevices: true,
         agentStatus: new Set(['active', 'degraded', 'offline']),
         supplyBand: new Set(['critical', 'low', 'medium', 'high', 'unknown']),
-        deviceStatus: new Set(['healthy', 'warning', 'error', 'jam'])
+        deviceStatus: new Set(DEVICE_STATUS_KEYS)
     };
 
     // Update checkboxes
@@ -5867,7 +5868,7 @@ function buildAgentNodeHTML(agent, tenantId, siteId) {
     // Filter devices
     const filteredDevices = (agent.devices || []).filter(device => {
         if (!dashboardFilters.supplyBand.has(device.supply_status)) return false;
-        if (!dashboardFilters.deviceStatus.has(device.status)) return false;
+        if (!dashboardFilters.deviceStatus.has(classifyDeviceStatus(device).code)) return false;
         return true;
     });
 
@@ -5930,7 +5931,7 @@ function buildAgentNodeHTML(agent, tenantId, siteId) {
 function buildDeviceNodeHTML(device, agentId, isMatch) {
     const supplyLevel = device.lowest_supply >= 0 ? device.lowest_supply : -1;
     const supplyStatus = device.supply_status || 'unknown';
-    const deviceStatus = device.status || 'healthy';
+    const deviceStatus = classifyDeviceStatus(device).code;
     const displayName = [device.manufacturer, device.model].filter(Boolean).join(' ') || 'Unknown Device';
 
     let html = `<li class="dashboard-tree-node">`;
@@ -12523,6 +12524,12 @@ const deviceSupplyBands = new Map();
 let devicesDemand = [];
 let devicesPaintFrame = null;
 
+// Re-evaluate age without fetching full inventory or metrics. A printer must
+// expire even when no new device_updated event arrives after it powers off.
+setInterval(() => {
+    if (devicesVM.loaded && isDevicesTabActive()) applyDeviceFilters(true);
+}, 60 * 1000);
+
 async function fetchDeviceInventory(path, keys, { signal }) {
     const response = await fetch('/api/v1/devices/' + path, keys ? {
         method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
@@ -13284,6 +13291,8 @@ function renderDevicesStats() {
             <span class="status-pill warning">Warning ${formatNumber(statuses.warning || 0)}</span>
             <span class="status-pill error">Error ${formatNumber(statuses.error || 0)}</span>
             <span class="status-pill jam">Jam ${formatNumber(statuses.jam || 0)}</span>
+            <span class="status-pill offline">Offline ${formatNumber(statuses.offline || 0)}</span>
+            <span class="status-pill unknown">Unknown ${formatNumber(statuses.unknown || 0)}</span>
         </div>
     `;
 }
@@ -13603,14 +13612,26 @@ function buildDeviceSearchBlob(device, agentName, tenantLabel) {
     return parts.join(' ').toLowerCase();
 }
 
-function classifyDeviceStatus(device) {
+function classifyDeviceStatus(device, now = Date.now()) {
     const meta = { code: 'healthy', label: 'Healthy' };
     const severity = (device.status_severity || device.health_state || '').toLowerCase();
     const composite = [device.status, device.state, device.health, device.connection_state, device.spooler_status, ...(device.status_messages || [])].filter(Boolean).join(' ').toLowerCase();
+    // Reachability takes precedence over cached printer faults. Upload time and
+    // metrics time are not evidence that the physical printer is still alive.
+    const seen = Date.parse(device.last_seen || device.lastSeen || device.last_seen_at || '');
+    if (composite.includes('offline') || composite.includes('down')) {
+        return { code: 'offline', label: 'Offline' };
+    }
+    if (!Number.isFinite(seen) || seen <= 0 || seen > now + 60 * 1000) {
+        return { code: 'unknown', label: 'Unknown' };
+    }
+    if (now - seen >= DEVICE_OFFLINE_AFTER_MS) {
+        return { code: 'offline', label: 'Offline' };
+    }
     if (composite.includes('jam')) {
         return { code: 'jam', label: 'Paper Jam' };
     }
-    if (severity.includes('error') || composite.includes('error') || composite.includes('offline') || composite.includes('down')) {
+    if (severity.includes('error') || composite.includes('error')) {
         return { code: 'error', label: 'Error' };
     }
     if (severity.includes('warn') || composite.includes('warn') || composite.includes('degraded')) {

@@ -1,3 +1,12 @@
+.status-pill.offline {
+  color: var(--danger);
+  background: rgba(220, 50, 47, 0.12);
+}
+
+.status-pill.unknown {
+  color: var(--muted);
+  background: var(--bg-tertiary);
+}
 .settings-grid {
   display: grid;
   grid-template-columns: 1fr;

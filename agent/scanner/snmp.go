@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -155,6 +156,14 @@ func GetSNMPConfig() (*SNMPConfig, error) {
 
 // newSNMPClientImpl is the actual implementation of NewSNMPClient.
 func newSNMPClientImpl(cfg *SNMPConfig, target string, timeoutSeconds int) (SNMPClient, error) {
+	return NewSNMPClientWithContext(context.Background(), cfg, target, timeoutSeconds, 3)
+}
+
+// NewSNMPClientWithContext bounds compact monitoring requests and their retries.
+func NewSNMPClientWithContext(ctx context.Context, cfg *SNMPConfig, target string, timeoutSeconds, retries int) (SNMPClient, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if cfg == nil {
 		return nil, fmt.Errorf("SNMP config required")
 	}
@@ -168,11 +177,12 @@ func newSNMPClientImpl(cfg *SNMPConfig, target string, timeoutSeconds int) (SNMP
 	}
 
 	conn := &gosnmp.GoSNMP{
+		Context: ctx,
 		Target:  target,
 		Port:    161,
 		Version: cfg.Version,
 		Timeout: time.Duration(timeout) * time.Second,
-		Retries: 3,
+		Retries: retries,
 	}
 
 	// Configure based on SNMP version

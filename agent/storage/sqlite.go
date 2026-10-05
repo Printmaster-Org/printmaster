@@ -1527,13 +1527,32 @@ func (s *SQLiteStore) List(ctx context.Context, filter DeviceFilter) ([]*Device,
 	return devices, rows.Err()
 }
 
-// MarkSaved sets is_saved=true for a device
+// TouchDeviceSeen records confirmed identity without rewriting scan data or
+// resurrecting a deleted device. An IP change or newer observation wins.
+func (s *SQLiteStore) TouchDeviceSeen(ctx context.Context, serial, ip string, observedAt time.Time) error {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE devices SET last_seen = ? WHERE serial = ? AND ip = ? AND last_seen <= ?`,
+		observedAt, serial, ip, observedAt)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// MarkSaved sets is_saved=true for a device; saving is not a liveness observation.
 func (s *SQLiteStore) MarkSaved(ctx context.Context, serial string) error {
 	if serial == "" {
 		return ErrInvalidSerial
 	}
 
-	result, err := s.db.ExecContext(ctx, "UPDATE devices SET is_saved = 1, last_seen = ? WHERE serial = ?", time.Now(), serial)
+	result, err := s.db.ExecContext(ctx, "UPDATE devices SET is_saved = 1 WHERE serial = ?", serial)
 	if err != nil {
 		return fmt.Errorf("failed to mark device as saved: %w", err)
 	}
@@ -1549,8 +1568,7 @@ func (s *SQLiteStore) MarkSaved(ctx context.Context, serial string) error {
 // MarkAllSaved sets is_saved=true for all visible, unsaved devices
 func (s *SQLiteStore) MarkAllSaved(ctx context.Context) (int, error) {
 	result, err := s.db.ExecContext(ctx,
-		"UPDATE devices SET is_saved = 1, last_seen = ? WHERE is_saved = 0 AND visible = 1",
-		time.Now())
+		"UPDATE devices SET is_saved = 1 WHERE is_saved = 0 AND visible = 1")
 	if err != nil {
 		return 0, fmt.Errorf("failed to mark all devices as saved: %w", err)
 	}
@@ -1565,7 +1583,7 @@ func (s *SQLiteStore) MarkDiscovered(ctx context.Context, serial string) error {
 		return ErrInvalidSerial
 	}
 
-	result, err := s.db.ExecContext(ctx, "UPDATE devices SET is_saved = 0, last_seen = ? WHERE serial = ?", time.Now(), serial)
+	result, err := s.db.ExecContext(ctx, "UPDATE devices SET is_saved = 0 WHERE serial = ?", serial)
 	if err != nil {
 		return fmt.Errorf("failed to mark device as discovered: %w", err)
 	}

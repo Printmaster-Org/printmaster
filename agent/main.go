@@ -4429,6 +4429,25 @@ func runInteractive(ctx context.Context, configFlag string) {
 		}
 	}
 
+	// Start only after SNMP/environment settings are initialized. Reachability
+	// is independent of optional heavy metrics collection and auto-discovery.
+	stopLiveness := startDeviceLivenessMonitor(ctx, deviceStore.(deviceLivenessStore), func() bool {
+		base := pmsettings.DefaultSettings()
+		managed := false
+		if settingsManager != nil {
+			base, managed = settingsManager.baseSettings()
+		}
+		if !managed {
+			var discovery map[string]interface{}
+			if err := agentConfigStore.GetConfigValue("discovery_settings", &discovery); err != nil {
+				return false
+			}
+			mapIntoStruct(discovery, &base.Discovery)
+		}
+		return base.Discovery.IPScanningEnabled && base.Discovery.SNMPEnabled
+	})
+	defer stopLiveness()
+
 	// Ensure key handlers are registered (register sandbox explicitly so it's
 	// always present regardless of init ordering in other files). Use a
 	// Start web UI

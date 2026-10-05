@@ -69,6 +69,41 @@ async function openFilters(page) {
     await expect(page.locator('#devices_search')).toBeVisible();
 }
 
+test('last-seen aging marks temporary printers offline; filters, table and recovery agree', async ({ page }) => {
+    const now = Date.now();
+    await page.clock.install({ time: new Date(now) });
+    const inventory = [
+        { ...devices[0], serial: 'LIVE', last_seen: new Date(now - 1000).toISOString(), status_messages: ['Ready'] },
+        { ...devices[1], serial: 'REMOVED', last_seen: new Date(now - 60 * 60 * 1000).toISOString(), status_messages: ['Ready'] },
+        { ...devices[2], serial: 'STALE-JAM', last_seen: new Date(now - 60 * 60 * 1000).toISOString(), status_messages: ['Paper jam'] },
+        { ...devices[3], serial: 'NO-SEEN', last_seen: '0001-01-01T00:00:00Z', status_messages: [] },
+        { ...devices[4], serial: 'EXPIRING', last_seen: new Date(now - 14.5 * 60 * 1000).toISOString(), status_messages: [] },
+    ];
+    await open(page, { devices: inventory });
+    const card = serial => page.locator(`#devices_cards [data-serial="${serial}"]`).first();
+    await expect(card('LIVE').locator('.status-pill')).toHaveText('Ready');
+    await expect(card('REMOVED').locator('.status-pill')).toHaveText('Offline');
+    await expect(card('STALE-JAM').locator('.status-pill')).toHaveText('Offline');
+    await expect(card('NO-SEEN').locator('.status-pill')).toHaveText('Unknown');
+    await expect(card('EXPIRING').locator('.status-pill')).toHaveText('Healthy');
+    await page.clock.fastForward(60 * 1000);
+    await expect(card('EXPIRING').locator('.status-pill')).toHaveText('Offline');
+    expect(await page.evaluate(() => devicesVM.stats.totalStatuses.offline)).toBe(3);
+
+    await openFilters(page);
+    await page.locator('#devices_status_filter [data-status="offline"]').click();
+    await expect(card('REMOVED')).not.toBeVisible();
+    await page.locator('#devices_status_filter [data-status="offline"]').click();
+    await expect(card('REMOVED')).toBeVisible();
+    await page.locator('#devices_sidebar_toggle').click();
+    await page.evaluate(() => { devicesVM.view = 'table'; applyDeviceFilters(true); });
+    await expect(page.locator('#devices_table tr[data-serial="REMOVED"] .status-pill')).toHaveText('Offline');
+
+    inventory[1].last_seen = new Date(now + 60 * 1000).toISOString();
+    await page.evaluate(() => loadDevices(true));
+    await expect(page.locator('#devices_table tr[data-serial="REMOVED"] .status-pill')).toHaveText('Ready');
+});
+
 test('index previews precede rows, metrics and directories; viewport bounds then scroll expands', async ({ page }, testInfo) => {
     const index = gate(), rows = gate(), metrics = gate(), directories = gate();
     try {
