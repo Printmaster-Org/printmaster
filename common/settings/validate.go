@@ -63,6 +63,9 @@ func Sanitize(s *Settings) {
 func Validate(s Settings) []ValidationError {
 	Sanitize(&s)
 	var issues []ValidationError
+	if channel := s.Features.AgentUpdateChannel; channel != "" && channel != "stable" && channel != "beta" && channel != "dev" {
+		issues = append(issues, ValidationError{Field: "features.agent_update_channel", Message: "channel must be empty, stable, beta, or dev"})
+	}
 	if s.Discovery.ManualRanges && s.Discovery.RangesText == "" {
 		issues = append(issues, ValidationError{Field: "discovery.ranges_text", Message: "manual ranges enabled but no ranges text provided"})
 	}

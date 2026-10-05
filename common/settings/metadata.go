@@ -277,6 +277,16 @@ func DefaultSchema() Schema {
 		},
 		// ========== Features (fleet-managed) ==========
 		{
+			Path:        "features.agent_update_channel",
+			Type:        FieldTypeSelect,
+			Title:       "Agent Update Channel",
+			Description: "Persistent Server-selected update channel. Empty uses Agent configuration. Applies to old Agents too; enable prerelease intake and sync before choosing beta/dev. Force install Fleet channel bypasses version pins for bootstrap.",
+			Scope:       ScopeTenant,
+			EditableBy:  []EditableRole{RoleServerAdmin, RoleTenantAdmin},
+			Default:     "",
+			Enum:        []string{"", "stable", "beta", "dev"},
+		},
+		{
 			Path:        "features.epson_remote_mode_enabled",
 			Type:        FieldTypeBool,
 			Title:       "Enable Epson Remote Mode",

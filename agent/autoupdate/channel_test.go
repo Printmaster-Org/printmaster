@@ -66,3 +66,32 @@ func TestManualChannelRejectsInvalidOrMismatchedManifest(t *testing.T) {
 		t.Fatal("failed selection kept operation busy")
 	}
 }
+
+func TestManagedChannelUpdatesChecksAndStatusWithoutRestart(t *testing.T) {
+	t.Parallel()
+	managedChannel := "dev"
+	client := &channelTestClient{mockUpdateClient: mockUpdateClient{err: errors.New("fixture stops before install")}}
+	manager, err := NewManager(Options{Enabled: true, CurrentVersion: "0.31.1", Channel: "stable", ChannelProvider: func() string { return managedChannel }, DataDir: t.TempDir(), ServerClient: client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, channel := range []string{"dev", "beta", "stable"} {
+		managedChannel = channel
+		if manager.Status().Channel != channel {
+			t.Fatal("managed channel status stale")
+		}
+		_ = manager.CheckNow(context.Background())
+		if client.channel != channel {
+			t.Fatalf("check used %s want %s", client.channel, channel)
+		}
+	}
+	managedChannel = "dev"
+	_ = manager.ForceInstallLatestFromChannel(context.Background(), "test", "stable")
+	if client.channel != "stable" || manager.Status().Channel != "dev" {
+		t.Fatal("explicit operation changed managed default")
+	}
+	managedChannel = ""
+	if manager.Status().Channel != "stable" {
+		t.Fatal("empty managed selection did not use Agent config")
+	}
+}

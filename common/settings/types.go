@@ -101,6 +101,7 @@ type SNMPSettings struct {
 
 // FeaturesSettings toggle optional features (fleet-managed).
 type FeaturesSettings struct {
+	AgentUpdateChannel     string `json:"agent_update_channel"`
 	EpsonRemoteModeEnabled bool   `json:"epson_remote_mode_enabled"`
 	CredentialsEnabled     bool   `json:"credentials_enabled"`
 	AssetIDRegex           string `json:"asset_id_regex"`

@@ -66,6 +66,7 @@ type Options struct {
 	Platform         string
 	Arch             string
 	Channel          string
+	ChannelProvider  func() string // Optional managed channel, read at each operation.
 	BinaryPath       string
 	ServiceName      string
 	IsService        bool // True if running as a Windows service (determines update restart method)
@@ -109,6 +110,7 @@ type Manager struct {
 	platform         string
 	arch             string
 	channel          string
+	channelProvider  func() string
 	binaryPath       string
 	serviceName      string
 	isService        bool
@@ -267,6 +269,7 @@ func NewManager(opts Options) (*Manager, error) {
 		platform:          platform,
 		arch:              arch,
 		channel:           channel,
+		channelProvider:   opts.ChannelProvider,
 		binaryPath:        binaryPath,
 		serviceName:       opts.ServiceName,
 		isService:         opts.IsService,
@@ -336,7 +339,7 @@ func (m *Manager) Status() ManagerStatus {
 		NextCheckAt:       ptrIfNonZero(m.nextCheck),
 		PolicySource:      policySource,
 		CheckIntervalDays: checkIntervalDays,
-		Channel:           m.channel,
+		Channel:           m.operationChannel(context.Background()),
 		Platform:          m.platform,
 		Arch:              m.arch,
 		UsePackageManager: m.usePackageManager,
@@ -375,6 +378,7 @@ func (m *Manager) ForceInstallLatestFromChannel(ctx context.Context, reason, cha
 	}
 	if channel != "" {
 		ctx = context.WithValue(ctx, manualUpdateChannelKey{}, channel)
+		ctx = updatepolicy.WithExplicitChannel(ctx)
 	}
 	if err := m.acquireOperation(); err != nil {
 		return err
@@ -530,7 +534,7 @@ func (m *Manager) performCheck(ctx context.Context) error {
 	}
 
 	// Fetch latest manifest from server
-	manifest, err := m.client.GetLatestManifest(ctx, "agent", m.platform, m.arch, m.channel)
+	manifest, err := m.client.GetLatestManifest(ctx, "agent", m.platform, m.arch, m.operationChannel(ctx))
 	if err != nil {
 		m.reportTelemetry(ctx, Status(StatusFailed), ErrCodeServerError, err.Error())
 		return fmt.Errorf("failed to fetch manifest: %w", err)
@@ -743,6 +747,11 @@ func (m *Manager) executeUpdate(ctx context.Context, manifest *UpdateManifest) e
 func (m *Manager) operationChannel(ctx context.Context) string {
 	if channel, _ := ctx.Value(manualUpdateChannelKey{}).(string); channel != "" {
 		return channel
+	}
+	if m.channelProvider != nil {
+		if channel := m.channelProvider(); channel == "stable" || channel == "beta" || channel == "dev" {
+			return channel
+		}
 	}
 	return m.channel
 }

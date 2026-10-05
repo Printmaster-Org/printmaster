@@ -11844,7 +11844,10 @@ async function updateAgent(agentId) {
         const response = await fetch(`/api/v1/agents/command/${agentId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(channel ? {
+            body: JSON.stringify(channel === 'fleet' ? {
+                command: 'force_update',
+                data: { reason: 'server_ui_force_fleet_channel' }
+            } : channel ? {
                 command: 'install_channel',
                 data: { channel, reason: 'server_ui_channel_install' }
             } : { command: 'check_update' })
@@ -11904,12 +11907,13 @@ function showAgentUpdateChannelConfirm() {
                 <div class="modal-body">
                     <label class="field"><span>Release channel</span><select id="agent_update_channel">
                         <option value="">Configured channel (respect update policy)</option>
+                        <option value="fleet">Force install Fleet channel (supports older Agents)</option>
                         <option value="stable">Stable</option>
                         <option value="beta">Beta / Release Candidate</option>
                         <option value="dev">Development</option>
                     </select></label>
                     <p class="muted-text">An explicit channel installs its latest cached release for this Agent platform, even if this means reinstalling or downgrading. Maintenance windows and version pins are bypassed; scheduled channel settings stay unchanged.</p>
-                    <p class="muted-text">Beta/dev builds may be unstable. Enable prerelease intake in Server Settings and sync artifacts first. Channel selection requires an updated Agent; older Agents ignore this new command rather than install the wrong channel.</p>
+                    <p class="muted-text">Set persistent Agent Update Channel under Fleet Settings → Features. To bootstrap older Agents (including 0.31.1), save dev there, then choose Force install Fleet channel. Beta/dev requires prerelease intake and cached artifacts. Explicit Stable/Beta/Dev choices still require an updated Agent.</p>
                 </div>
                 <div class="modal-footer"><button class="modal-button modal-button-secondary" data-action="cancel">Cancel</button><button class="modal-button modal-button-danger" data-action="confirm">Update Agent</button></div>
             </div>`;
@@ -15459,7 +15463,7 @@ function createInputForField(field, value) {
         field.enum.forEach(optionValue => {
             const opt = document.createElement('option');
             opt.value = optionValue;
-            opt.textContent = optionValue;
+            opt.textContent = field.path === 'features.agent_update_channel' && optionValue === '' ? 'Use Agent configuration' : optionValue;
             if (optionValue === resolvedValue) {
                 opt.selected = true;
             }

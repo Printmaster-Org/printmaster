@@ -151,11 +151,26 @@ func startAutoUpdateManager(
 	policyAdapter := autoupdate.NewPolicyAdapter(configProvider, fleetProvider)
 
 	opts := autoupdate.Options{
-		Enabled:          true,
-		CurrentVersion:   currentVersion,
-		Platform:         runtime.GOOS,
-		Arch:             runtime.GOARCH,
-		Channel:          channel,
+		Enabled:        true,
+		CurrentVersion: currentVersion,
+		Platform:       runtime.GOOS,
+		Arch:           runtime.GOARCH,
+		Channel:        channel,
+		ChannelProvider: func() string {
+			if settingsManager == nil {
+				return ""
+			}
+			cfg, managed := settingsManager.baseSettings()
+			if !managed {
+				return ""
+			}
+			for _, section := range settingsManager.ManagedSections() {
+				if section == "features" {
+					return cfg.Features.AgentUpdateChannel
+				}
+			}
+			return ""
+		},
 		DataDir:          dataDir,
 		IsService:        isService,
 		ServerClient:     clientAdapter,

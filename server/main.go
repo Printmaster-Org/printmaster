@@ -9682,11 +9682,12 @@ func handleAgentUpdateManifest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		AgentID   string `json:"agent_id"`
-		Component string `json:"component"`
-		Platform  string `json:"platform"`
-		Arch      string `json:"arch"`
-		Channel   string `json:"channel"`
+		AgentID         string `json:"agent_id"`
+		Component       string `json:"component"`
+		Platform        string `json:"platform"`
+		Arch            string `json:"arch"`
+		Channel         string `json:"channel"`
+		ExplicitChannel bool   `json:"explicit_channel"`
 	}
 	if err := decodeJSONBody(r, &req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -9696,8 +9697,41 @@ func handleAgentUpdateManifest(w http.ResponseWriter, r *http.Request) {
 	if req.Component == "" {
 		req.Component = "agent"
 	}
+	// Resolve only the token-authenticated Agent's saved settings; a payload
+	// agent_id cannot select another tenant's release channel.
+	agent, authenticated := r.Context().Value(agentContextKey).(*storage.Agent)
+	if !authenticated || agent == nil || agent.AgentID == "" {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
+	if req.AgentID != agent.AgentID {
+		http.Error(w, "agent_id does not match authenticated agent", http.StatusForbidden)
+		return
+	}
+	if req.Component == "agent" && !req.ExplicitChannel {
+		if settingsResolver == nil {
+			http.Error(w, "Agent update settings unavailable", http.StatusInternalServerError)
+			return
+		}
+		snapshot, err := settingsResolver.ResolveForAgent(r.Context(), agent.AgentID)
+		if err != nil {
+			http.Error(w, "failed to resolve Agent update channel", http.StatusInternalServerError)
+			return
+		}
+		featuresManaged := false
+		for _, section := range snapshot.ManagedSections {
+			featuresManaged = featuresManaged || section == "features"
+		}
+		if channel := snapshot.Settings.Features.AgentUpdateChannel; featuresManaged && channel != "" {
+			req.Channel = channel
+		}
+	}
 	if req.Channel == "" {
 		req.Channel = "stable"
+	}
+	if req.Channel != "stable" && req.Channel != "beta" && req.Channel != "dev" {
+		http.Error(w, "channel must be stable, beta, or dev", http.StatusBadRequest)
+		return
 	}
 
 	logDebug("Agent update manifest request",

@@ -76,17 +76,18 @@ test('Agent update channel modal dispatches exact selection and cancels without 
         commands.push(route.request().postDataJSON());
         return route.fulfill({ json: { success: true } });
     });
-    for (const channel of ['beta', 'dev', 'stable', '']) {
+    const channels = ['beta', 'dev', 'stable', '', 'fleet'];
+    for (const channel of channels) {
         await page.evaluate(() => { window.__pm_shared.updateAgent('agent-1'); });
         await expect(page.locator('#agent_update_channel')).toBeVisible();
         await page.locator('#agent_update_channel').selectOption(channel);
         await page.locator('.modal-overlay [data-action="confirm"]').click();
-        await expect.poll(() => commands.length).toBe(['beta', 'dev', 'stable', ''].indexOf(channel) + 1);
-        expect(commands.at(-1)).toEqual(channel ? { command: 'install_channel', data: { channel, reason: 'server_ui_channel_install' } } : { command: 'check_update' });
+        await expect.poll(() => commands.length).toBe(channels.indexOf(channel) + 1);
+        expect(commands.at(-1)).toEqual(channel === 'fleet' ? { command: 'force_update', data: { reason: 'server_ui_force_fleet_channel' } } : channel ? { command: 'install_channel', data: { channel, reason: 'server_ui_channel_install' } } : { command: 'check_update' });
     }
     await page.evaluate(() => { window.__pm_shared.updateAgent('agent-1'); });
     await page.locator('.modal-overlay [data-action="cancel"]').click();
-    expect(commands).toHaveLength(4);
+    expect(commands).toHaveLength(5);
     expect(await page.locator('#agent_update_policy_root').count()).toBe(0);
     expect(await page.evaluate(() => typeof saveAgentUpdatePolicyFromUpdatesTab)).toBe('undefined');
 });
@@ -117,6 +118,23 @@ test('Fleet has one policy editor; cadence edits preserve maintenance and rollou
     expect(writes[0].policy.update_check_days).toBe(14);
     expect(writes[0].policy.maintenance_window).toMatchObject({ enabled: true, start_hour: 3, end_hour: 4 });
     expect(writes[0].policy.rollout_control).toMatchObject({ batch_size: 12, jitter_seconds: 123 });
+});
+
+test('Fleet persistent channel selector renders and saves through existing settings draft', async ({ page }) => {
+    await open(page, { devices: [] });
+    const selected = await page.evaluate(() => {
+        settingsUIState.scope = 'global';
+        settingsUIState.globalDraft = { features: { agent_update_channel: '' } };
+        const field = { path: 'features.agent_update_channel', type: 'select', title: 'Agent Update Channel', enum: ['', 'stable', 'beta', 'dev'], default: '', editable_by: ['server_admin'] };
+        const row = renderSettingsFieldRow(field, '', 'global', true);
+        document.getElementById('settings_form_root').appendChild(row);
+        const input = row.querySelector('select');
+        input.value = 'dev';
+        handleSettingsFieldChange({ target: input });
+        return { labels: Array.from(input.options).map(option => option.textContent), draft: settingsUIState.globalDraft.features.agent_update_channel };
+    });
+    expect(selected.labels).toEqual(['Use Agent configuration', 'stable', 'beta', 'dev']);
+    expect(selected.draft).toBe('dev');
 });
 
 test('last-seen aging marks temporary printers offline; filters, table and recovery agree', async ({ page }) => {

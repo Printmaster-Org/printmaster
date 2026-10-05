@@ -18,6 +18,7 @@ import (
 	"time"
 
 	pmsettings "printmaster/common/settings"
+	"printmaster/common/updatepolicy"
 )
 
 // ServerClient handles uploading agent data to the central PrintMaster server
@@ -682,11 +683,12 @@ type UpdateManifest struct {
 // GetLatestManifest fetches the latest update manifest from the server.
 func (c *ServerClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel string) (*UpdateManifest, error) {
 	type ManifestRequest struct {
-		AgentID   string `json:"agent_id"`
-		Component string `json:"component"`
-		Platform  string `json:"platform"`
-		Arch      string `json:"arch"`
-		Channel   string `json:"channel"`
+		AgentID         string `json:"agent_id"`
+		Component       string `json:"component"`
+		Platform        string `json:"platform"`
+		Arch            string `json:"arch"`
+		Channel         string `json:"channel"`
+		ExplicitChannel bool   `json:"explicit_channel,omitempty"`
 	}
 
 	type ManifestResponse struct {
@@ -696,11 +698,12 @@ func (c *ServerClient) GetLatestManifest(ctx context.Context, component, platfor
 	}
 
 	req := ManifestRequest{
-		AgentID:   c.AgentID,
-		Component: component,
-		Platform:  platform,
-		Arch:      arch,
-		Channel:   channel,
+		AgentID:         c.AgentID,
+		Component:       component,
+		Platform:        platform,
+		Arch:            arch,
+		Channel:         channel,
+		ExplicitChannel: updatepolicy.HasExplicitChannel(ctx),
 	}
 
 	var resp ManifestResponse
