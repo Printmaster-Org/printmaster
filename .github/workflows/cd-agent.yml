@@ -638,7 +638,9 @@ jobs:
   release-agent-dev:
     name: Create Agent Dev Release
     if: github.ref == 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/')
-    needs: [build-agent, merge-docker, build-rpm]
+    # RPM packaging is tag-only. A skipped RPM dependency would implicitly
+    # skip this job on every main push, even when all dev binaries succeeded.
+    needs: [build-agent, merge-docker]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -668,18 +670,9 @@ jobs:
         echo "git_commit=$GIT_COMMIT" >> $GITHUB_OUTPUT
     
     - name: Prepare release binaries
-      run: |
-        cd artifacts
-        for dir in */; do
-          name="${dir%/}"
-          binary=$(find "$dir" -maxdepth 1 -type f -name "printmaster-*" | head -n 1)
-          if [ -n "$binary" ]; then
-            cp "$binary" "./$(basename "$binary")"
-            echo "Prepared: $(basename "$binary")"
-          fi
-        done
-        echo "=== Release Binaries ==="
-        ls -lh printmaster-* 2>/dev/null || true
+      env:
+        DEV_VERSION: ${{ steps.version.outputs.version }}
+      run: bash scripts/prepare-agent-dev-release.sh artifacts "$DEV_VERSION"
     
     - name: Delete existing dev release (if any)
       env:
@@ -700,6 +693,7 @@ jobs:
       uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
       with:
         tag_name: ${{ steps.version.outputs.tag }}
+        target_commitish: ${{ github.sha }}
         name: PrintMaster Agent v${{ steps.version.outputs.version }} (Dev)
         body: |
           ## PrintMaster Agent v${{ steps.version.outputs.version }} (Development Build)
@@ -717,11 +711,11 @@ jobs:
           - **Workflow run:** ${{ github.run_id }}
           
           ### 🔗 Links
-          - [Documentation](https://github.com/printmaster-org/printmaster/tree/main/docs)
+          - [Documentation](https://docs.printmaster.work/)
           - [Docker Images](https://github.com/printmaster-org/printmaster/pkgs/container/printmaster-agent)
           - [Issue Tracker](https://github.com/printmaster-org/printmaster/issues)
         files: artifacts/printmaster-*
-        fail_on_unmatched_files: false
+        fail_on_unmatched_files: true
         draft: false
         prerelease: true
 

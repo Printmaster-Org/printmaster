@@ -193,6 +193,8 @@ During `0.x.x` versions, breaking changes are acceptable in MINOR releases since
 
 ## CI/CD Integration (Future)
 
+> This imported example is historical. Agent delivery/dev prereleases are implemented; current dependency gates, packaging coverage and skipped-release diagnosis are maintained in the [canonical build/release guide](https://docs.printmaster.work/development/build-workflow/#agent-development-release-publication).
+
 When you add GitHub Actions:
 
 ```yaml
