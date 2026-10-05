@@ -6724,34 +6724,6 @@ func handleDevicesBatch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// inventoryAgentScope keeps an empty tenant selection distinct from unrestricted
-// admin access. Storage list/count methods treat empty ID filters as unrestricted.
-type inventoryAgentScope struct {
-	unrestricted bool
-	agentIDs     []string
-}
-
-func (s inventoryAgentScope) empty() bool {
-	return !s.unrestricted && len(s.agentIDs) == 0
-}
-
-func resolveInventoryAgentScope(ctx context.Context, scope map[string]struct{}) (inventoryAgentScope, error) {
-	if scope == nil {
-		return inventoryAgentScope{unrestricted: true}, nil
-	}
-	selection := inventoryAgentScope{agentIDs: []string{}}
-	agents, err := serverStore.ListAgents(ctx)
-	if err != nil {
-		return selection, err
-	}
-	for _, agent := range agents {
-		if agent != nil && tenantAllowed(scope, agent.TenantID) {
-			selection.agentIDs = append(selection.agentIDs, agent.AgentID)
-		}
-	}
-	return selection, nil
-}
-
 // authorizeInventoryAgent checks role and owning tenant before metrics,
 // credentials, connection diagnostics, or device management side effects.
 func authorizeInventoryAgent(w http.ResponseWriter, r *http.Request, agentID string, action authz.Action) (*storage.Agent, bool) {
