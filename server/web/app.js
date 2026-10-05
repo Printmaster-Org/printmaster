@@ -12004,6 +12004,23 @@ try {
 } catch (e) { console.warn('Failed to expose restartAgent to shared namespace', e); }
 
 // ====== Delete Device ======
+async function requestDeviceDelete(serial, agentId, options) {
+    const response = await fetch('/api/v1/devices/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            serial,
+            agent_id: agentId,
+            delete_metrics: options.deleteMetrics,
+            delete_from_agent: options.deleteFromAgent
+        })
+    });
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${(await response.text()).trim()}`);
+    }
+    return response.json();
+}
+
 /**
  * Delete a device from the server (and optionally from the agent).
  * Shows a confirmation modal with options to delete metrics history
@@ -12028,24 +12045,7 @@ async function deleteDevice(serial, agentId) {
             delete_from_agent: result.deleteFromAgent
         });
 
-        const response = await fetch('/api/v1/devices/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                serial: serial,
-                agent_id: agentId,
-                delete_metrics: result.deleteMetrics,
-                delete_from_agent: result.deleteFromAgent
-            })
-        });
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            window.__pm_shared.error('Delete failed:', errorText);
-            throw new Error(`HTTP ${response.status}: ${errorText}`);
-        }
-
-        const responseData = await response.json();
+        const responseData = await requestDeviceDelete(serial, agentId, result);
         window.__pm_shared.log('Delete successful:', responseData);
 
         let message = `Device "${serial}" deleted successfully`;
@@ -12089,9 +12089,10 @@ async function deleteDevice(serial, agentId) {
  * Show custom delete device confirmation modal with checkboxes
  * @param {string} serial - Device serial number
  * @param {string} agentId - ID of the agent that owns the device
+ * @param {number} count - Number of devices for a bulk confirmation
  * @returns {Promise<{confirmed: boolean, deleteMetrics: boolean, deleteFromAgent: boolean}>}
  */
-function showDeleteDeviceConfirm(serial, agentId) {
+function showDeleteDeviceConfirm(serial, agentId, count = 1) {
     return new Promise((resolve) => {
         // Helper to escape HTML
         const safeEscape = (s) => (typeof escapeHtml === 'function' ? escapeHtml(s) : String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;"));
@@ -12103,18 +12104,20 @@ function showDeleteDeviceConfirm(serial, agentId) {
         wrapper.id = uid;
 
         const hasAgent = agentId && agentId !== '';
+        const title = count > 1 ? `Delete ${count} Devices` : 'Delete Device';
+        const subject = count > 1 ? `${count} selected devices` : `device <strong>${safeEscape(serial)}</strong>`;
         const deleteMetricsId = `${uid}_delete_metrics`;
         const deleteFromAgentId = `${uid}_delete_from_agent`;
 
         wrapper.innerHTML = `
             <div class="modal-content" style="max-width:520px;">
                 <div class="modal-header">
-                    <h3 class="modal-title">Delete Device</h3>
+                    <h3 class="modal-title">${title}</h3>
                     <button class="modal-close-x" title="Close">&times;</button>
                 </div>
                 <div class="modal-body">
-                    <p style="margin-bottom:16px;">Are you sure you want to delete device <strong>${safeEscape(serial)}</strong>?</p>
-                    <p style="margin-bottom:16px;color:var(--text-muted);font-size:13px;">This will permanently remove the device from the server database.</p>
+                    <p style="margin-bottom:16px;">Are you sure you want to delete ${subject}?</p>
+                    <p style="margin-bottom:16px;color:var(--text-muted);font-size:13px;">This will permanently remove ${count > 1 ? 'the devices' : 'the device'} from the server database.</p>
                     
                     <div style="background:var(--bg-tertiary);border-radius:8px;padding:12px;margin-bottom:12px;">
                         <div style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;margin-bottom:10px;width:100%;">
@@ -12122,7 +12125,7 @@ function showDeleteDeviceConfirm(serial, agentId) {
                             <label for="${deleteMetricsId}" style="cursor:pointer;">
                                 <span style="font-weight:500;">Also delete metrics history</span>
                                 <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">
-                                    Remove all historical page counts, toner levels, and other metrics data for this device
+                                    Remove all historical page counts, toner levels, and other metrics data for ${count > 1 ? 'these devices' : 'this device'}
                                 </div>
                             </label>
                         </div>
@@ -12133,20 +12136,20 @@ function showDeleteDeviceConfirm(serial, agentId) {
                             <label for="${deleteFromAgentId}" style="cursor:pointer;">
                                 <span style="font-weight:500;">Also delete from agent</span>
                                 <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">
-                                    Remove the device from the agent's local database as well. The device may be re-discovered on the next scan.
+                                    Remove ${count > 1 ? 'the devices from their agents’ local databases' : "the device from the agent's local database"} as well. Devices may be re-discovered on the next scan.
                                 </div>
                             </label>
                         </div>
                         ` : `
                         <div style="font-size:12px;color:var(--text-muted);font-style:italic;">
-                            This device has no associated agent, so it will only be deleted from the server.
+                            ${count > 1 ? 'These devices have no associated agents, so they' : 'This device has no associated agent, so it'} will only be deleted from the server.
                         </div>
                         `}
                     </div>
                 </div>
                 <div class="modal-footer">
                     <button class="modal-button modal-button-secondary" data-action="cancel">Cancel</button>
-                    <button class="modal-button modal-button-danger" data-action="confirm">Delete Device</button>
+                    <button class="modal-button modal-button-danger" data-action="confirm">${title}</button>
                 </div>
             </div>
         `;
@@ -12199,6 +12202,9 @@ function showDeleteDeviceConfirm(serial, agentId) {
 // Expose deleteDevice to shared namespace
 try {
     window.__pm_shared.deleteDevice = deleteDevice;
+    window.__pm_shared.showDeleteDeviceConfirm = showDeleteDeviceConfirm;
+    window.__pm_shared.requestDeviceDelete = requestDeviceDelete;
+    window.__pm_shared.fetchDevices = () => loadDevices();
 } catch (e) { console.warn('Failed to expose deleteDevice to shared namespace', e); }
 
 // ====== Devices Management ======

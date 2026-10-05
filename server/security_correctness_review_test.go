@@ -3,15 +3,96 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	wscommon "printmaster/common/ws"
 	"printmaster/server/storage"
+
+	"github.com/gorilla/websocket"
 )
+
+func TestServerInitiatedDeviceDeleteSuppressesAgentNotification(t *testing.T) {
+	for _, deleteMetrics := range []bool{false, true} {
+		t.Run(map[bool]string{false: "retain-metrics", true: "delete-metrics"}[deleteMetrics], func(t *testing.T) {
+			f := newBoundaryFixture(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handleAgentWebSocket(w, r, f.store)
+			}))
+			defer srv.Close()
+			conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http")+"?token=boundary-machine-a", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			// A heartbeat round-trip ensures the authenticated connection is registered.
+			if err := conn.WriteJSON(wscommon.Message{Type: wscommon.MessageTypeHeartbeat}); err != nil {
+				t.Fatal(err)
+			}
+			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			var msg wscommon.Message
+			if err := conn.ReadJSON(&msg); err != nil || msg.Type != wscommon.MessageTypePong {
+				t.Fatalf("heartbeat: %+v, %v", msg, err)
+			}
+			body, _ := json.Marshal(map[string]interface{}{
+				"serial": "boundary-device-a", "delete_from_agent": true, "delete_metrics": deleteMetrics,
+			})
+			r := InjectTestUser(httptest.NewRequest(http.MethodPost, "/api/v1/devices/delete", strings.NewReader(string(body))), f.users["operator"])
+			w := httptest.NewRecorder()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				handleDeviceDelete(w, r)
+			}()
+			// Keep fixture globals alive even if the wire assertions fail.
+			defer func() { <-done }()
+			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			if err := conn.ReadJSON(&msg); err != nil {
+				t.Fatal(err)
+			}
+			if msg.Type != wscommon.MessageTypeProxyRequest || msg.Data["url"] != "http://localhost:8080/devices/delete" {
+				t.Fatalf("unexpected proxy request: %+v", msg)
+			}
+			headers, _ := msg.Data["headers"].(map[string]interface{})
+			if headers["X-PrintMaster-Server-Request"] != "true" {
+				// Simulate the Agent's existing behavior when the marker is missing:
+				// it syncs deletion before returning the proxy response.
+				if err := conn.WriteJSON(wscommon.Message{Type: wscommon.MessageTypeDeviceDeleted, Data: map[string]interface{}{"serial": "boundary-device-a"}}); err != nil {
+					t.Fatal(err)
+				}
+				t.Error("trusted deletion marker missing; Agent would send a duplicate deletion")
+			}
+			payload, err := base64.StdEncoding.DecodeString(msg.Data["body"].(string))
+			if err != nil || !strings.Contains(string(payload), "boundary-device-a") {
+				t.Fatalf("delete body: %s, %v", payload, err)
+			}
+			if err := conn.WriteJSON(wscommon.Message{Type: wscommon.MessageTypeProxyResponse, Data: map[string]interface{}{
+				"request_id": msg.Data["request_id"], "status_code": 200, "body": "",
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			<-done
+			if w.Code != http.StatusOK {
+				t.Fatalf("delete returned %d: %s", w.Code, w.Body.String())
+			}
+			var response struct {
+				DeletedFromAgent bool `json:"deleted_from_agent"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || !response.DeletedFromAgent {
+				t.Fatalf("agent deletion response: %s, %v", w.Body.String(), err)
+			}
+			if _, err := f.store.GetDevice(context.Background(), "boundary-device-a"); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("server device still exists: %v", err)
+			}
+		})
+	}
+}
 
 type reviewEventStore struct {
 	storage.Store

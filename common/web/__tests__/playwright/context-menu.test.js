@@ -162,7 +162,7 @@ const sampleDevices = [
   }
 ];
 
-function createApiHandler(apiCalls = []) {
+function createApiHandler(apiCalls = [], devices = sampleDevices) {
   return route => {
     const url = route.request().url();
     const method = route.request().method();
@@ -183,9 +183,9 @@ function createApiHandler(apiCalls = []) {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, deleted_from_agent: true }) });
     }
     if (url.includes('/api/v1/devices')) {
-      const response = inventoryResponse(route, sampleDevices);
+      const response = inventoryResponse(route, devices);
       if (response) return response;
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(sampleDevices) });
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(devices) });
     }
     if (url.includes('/api/v1/tenants')) {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 't1', name: 'Test Tenant' }]) });
@@ -410,6 +410,76 @@ test('device context menu: appearance, actions, delete flow', async ({ page, bro
   expect(deleteCall.body.delete_metrics).toBe(true);
   expect(deleteCall.body.delete_from_agent).toBe(true);
   expect(deleteCall.body.agent_id).toBe('agent-001');
+});
+
+test('bulk device deletion uses options modal and canonical API', async ({ page }) => {
+  test.skip(isMobileViewport(page), 'Context menus are desktop-only');
+  const devices = [...sampleDevices, { ...sampleDevices[0], serial: 'DEF456', agent_id: 'agent-002' }];
+  const apiCalls = [];
+  const dialogs = [];
+  page.on('dialog', async dialog => {
+    dialogs.push(dialog.message());
+    await dialog.dismiss();
+  });
+  await page.addInitScript(() => {
+    window.EventSource = class { addEventListener() {} close() {} };
+    window.WebSocket = class { addEventListener() {} close() {} };
+  });
+  await page.route('**/api/**', createApiHandler(apiCalls, devices));
+  await page.goto(`${global.__PM_BASE_URL__}/app`, { waitUntil: 'domcontentloaded' });
+  await page.locator('#desktop_tabs [data-target="devices"]').first().click();
+  const firstDevice = page.locator('.device-card[data-serial="ABC123"], tr[data-serial="ABC123"]').first();
+  await expect(firstDevice).toBeVisible();
+  await page.waitForFunction(() => document.getElementById('devices_table')?.dataset.contextMenuBound === 'true');
+  await page.evaluate(() => {
+    devicesVM.selection.selectedIds = new Set(['ABC123', 'DEF456']);
+    devicesVM.selection.lastSelected = 'DEF456';
+  });
+  const menu = page.locator('.pm-context-menu');
+  await openContextMenuAndClickAction(page, firstDevice, menu, 'delete-devices');
+  const modal = page.locator('.modal-overlay:visible');
+  await expect(modal.locator('.modal-title')).toHaveText('Delete 2 Devices');
+  await expect(modal.locator('input[id$="_delete_metrics"]')).not.toBeChecked();
+  await expect(modal.locator('input[id$="_delete_from_agent"]')).not.toBeChecked();
+  await modal.locator('[data-action="cancel"]').click();
+  await expect(modal).not.toBeVisible();
+  expect(apiCalls.filter(call => call.url.endsWith('/devices/delete'))).toHaveLength(0);
+  expect(await page.evaluate(() => devicesVM.selection.selectedIds.size)).toBe(2);
+
+  await openContextMenuAndClickAction(page, firstDevice, menu, 'delete-devices');
+  await modal.locator('input[id$="_delete_metrics"]').check();
+  await modal.locator('input[id$="_delete_from_agent"]').check();
+  await modal.locator('[data-action="confirm"]').click();
+  await expect.poll(() => apiCalls.filter(call => call.url.endsWith('/devices/delete')).length).toBe(2);
+  const deletes = apiCalls.filter(call => call.url.endsWith('/devices/delete'));
+  expect(deletes.map(call => call.body)).toEqual([
+    { serial: 'ABC123', agent_id: 'agent-001', delete_metrics: true, delete_from_agent: true },
+    { serial: 'DEF456', agent_id: 'agent-002', delete_metrics: true, delete_from_agent: true }
+  ]);
+  await expect(page.locator('.toast:visible').filter({ hasText: 'Deleted 2 devices' })).toBeVisible();
+  expect(await page.evaluate(() => devicesVM.selection.selectedIds.size)).toBe(0);
+  expect(dialogs).toEqual([]);
+
+  // A failed item must not abort the batch; unchecked options stay false.
+  await page.route('**/api/v1/devices/delete', route => {
+    const body = route.request().postDataJSON();
+    apiCalls.push({ url: route.request().url(), method: route.request().method(), body });
+    return route.fulfill(body.serial === 'ABC123'
+      ? { status: 409, contentType: 'text/plain', body: 'Device ownership changed' }
+      : { status: 200, contentType: 'application/json', body: '{}' });
+  });
+  await expect(firstDevice).toBeVisible();
+  await page.evaluate(() => {
+    devicesVM.selection.selectedIds = new Set(['ABC123', 'DEF456']);
+  });
+  await openContextMenuAndClickAction(page, firstDevice, menu, 'delete-devices');
+  await modal.locator('[data-action="confirm"]').click();
+  await expect(page.locator('.toast:visible').filter({ hasText: 'Deleted 1 devices, 1 failed' })).toBeVisible();
+  expect(apiCalls.filter(call => call.url.endsWith('/devices/delete')).slice(2).map(call => call.body)).toEqual([
+    { serial: 'ABC123', agent_id: 'agent-001', delete_metrics: false, delete_from_agent: false },
+    { serial: 'DEF456', agent_id: 'agent-002', delete_metrics: false, delete_from_agent: false }
+  ]);
+  expect(dialogs).toEqual([]);
 });
 
 // ========== Agent Context Menu - Single Page Load ==========

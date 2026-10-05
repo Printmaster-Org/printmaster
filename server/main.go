@@ -5216,6 +5216,9 @@ func appendQueryToPath(path, rawQuery string) string {
 	return path + separator + rawQuery
 }
 
+// serverInitiatedProxyKey is internal request metadata, never a browser header.
+type serverInitiatedProxyKey struct{}
+
 // outgoingProxyHeaders never relays central credentials or browser-supplied
 // identity/trust headers. The agent transport supplies its own trusted marker.
 func outgoingProxyHeaders(r *http.Request, deviceCookies bool) map[string]string {
@@ -5364,6 +5367,9 @@ func proxyThroughWebSocketWithTimeout(w http.ResponseWriter, r *http.Request, ag
 
 	// Only device proxy requests may retain non-central device cookies.
 	headers := outgoingProxyHeaders(r, isAgentDeviceProxy)
+	if initiated, _ := r.Context().Value(serverInitiatedProxyKey{}).(bool); initiated {
+		headers["X-PrintMaster-Server-Request"] = "true"
+	}
 
 	// Add principal info for the agent to use when returning auth/me responses
 	// This allows the proxied agent UI to know who the server-authenticated user is
@@ -6491,8 +6497,9 @@ func handleDeviceDelete(w http.ResponseWriter, r *http.Request) {
 			// Create a new request for the agent
 			agentR, _ := http.NewRequest(http.MethodPost, "/devices/delete", bytes.NewReader(agentReqBytes))
 			agentR.Header.Set("Content-Type", "application/json")
-			// Mark as server-initiated so agent doesn't send redundant device_deleted notification
-			agentR.Header.Set("X-PrintMaster-Server-Request", "true")
+			// Set trusted metadata, not a header that proxy sanitization must strip.
+			// The dispatcher inserts the marker after sanitizing browser headers.
+			agentR = agentR.WithContext(context.WithValue(r.Context(), serverInitiatedProxyKey{}, true))
 
 			// Use a buffer to capture the agent response
 			agentW := &responseCapture{headers: make(http.Header)}

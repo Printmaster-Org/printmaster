@@ -451,29 +451,21 @@
     async function deleteMultipleDevices(deviceIds) {
         const shared = window.__pm_shared || {};
         const count = deviceIds.length;
-        
-        // Get confirmation
-        const confirmed = await (shared.confirm ? 
-            shared.confirm(`Delete ${count} devices?`, `This will permanently remove ${count} devices from the server. This action cannot be undone.`) :
-            confirm(`Delete ${count} devices? This action cannot be undone.`));
-        
-        if (!confirmed) return;
+
+        // Snapshot owners before opening the same options modal as single delete.
+        const devices = deviceIds.map(serial => ({ serial, agentId: getDeviceBySerial(serial)?.agent_id || '' }));
+        const result = await shared.showDeleteDeviceConfirm('', devices.some(device => device.agentId) ? 'bulk' : '', count);
+        if (!result.confirmed) return;
 
         let successCount = 0;
         let failCount = 0;
 
-        for (const deviceId of deviceIds) {
+        for (const device of devices) {
             try {
-                const response = await fetch(`/api/v1/devices/${encodeURIComponent(deviceId)}`, {
-                    method: 'DELETE'
-                });
-                if (response.ok) {
-                    successCount++;
-                } else {
-                    failCount++;
-                }
+                await shared.requestDeviceDelete(device.serial, device.agentId, result);
+                successCount++;
             } catch (e) {
-                console.error('Failed to delete device:', deviceId, e);
+                shared.error('Failed to delete device:', device.serial, e);
                 failCount++;
             }
         }
