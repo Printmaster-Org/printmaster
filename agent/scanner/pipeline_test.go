@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -32,11 +33,11 @@ func TestDetectionPool_ProcessesJobsWithDetectFunc(t *testing.T) {
 	defer cancel()
 	in := make(chan LivenessResult)
 	// simple detect func that treats any job with an open port as a printer
-	detectCalled := 0
+	var detectCalled atomic.Int32
 	cfg := ScannerConfig{
 		DetectionWorkers: 2,
 		DetectFunc: func(ctx context.Context, job ScanJob, openPorts []int) (interface{}, bool, error) {
-			detectCalled++
+			detectCalled.Add(1)
 			if len(openPorts) > 0 {
 				return map[string]interface{}{"ip": job.IP}, true, nil
 			}
@@ -65,7 +66,7 @@ func TestDetectionPool_ProcessesJobsWithDetectFunc(t *testing.T) {
 	if count != 2 {
 		t.Fatalf("expected 2 results, got %d", count)
 	}
-	if detectCalled == 0 {
-		t.Fatalf("detect func was not called")
+	if detectCalled.Load() != 2 {
+		t.Fatalf("detect func calls = %d, want 2", detectCalled.Load())
 	}
 }
