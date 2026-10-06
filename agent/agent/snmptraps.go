@@ -2,8 +2,12 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"printmaster/agent/scanner"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gosnmp/gosnmp"
@@ -17,147 +21,242 @@ import (
 // - Change status (errors, warnings, ready)
 // - Experience supply issues (toner low, paper jam, etc.)
 //
-// Note: Port 162 requires elevated privileges on most systems (admin/root)
+// Note: Port 162 requires elevated privileges on most systems (admin/root).
+// Deprecated: use StartSNMPTrapObservationListener to retain trap metadata.
 func StartSNMPTrapListener(ctx context.Context, enqueue func(string) bool, port uint16) error {
+	return StartSNMPTrapObservationListener(ctx, func(o scanner.Observation) bool { return enqueue(o.IP.String()) }, port)
+}
+
+// StartSNMPTrapObservationListener retains PDUs from eligible IPv4 traps.
+// Printer-MIB OIDs or known vendor OIDs admit work, never establish identity.
+// Listen errors are returned; the browser API reports/retries them.
+func StartSNMPTrapObservationListener(ctx context.Context, submit ObservationCallback, port uint16) error {
+	if ctx.Err() != nil {
+		return nil
+	}
 	if port == 0 {
-		port = 162 // Standard SNMP trap port
+		port = 162
 	}
-
-	// Create trap listener
 	tl := gosnmp.NewTrapListener()
+	// A fresh client avoids mutating defaults or copying GoSNMP's internal lock.
+	tl.Params = &gosnmp.GoSNMP{Version: gosnmp.Version2c, Community: "public", Context: ctx}
 	tl.OnNewTrap = func(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) {
-		handleTrap(packet, addr, enqueue)
+		submitTrapObservation(ctx, packet, addr, submit)
 	}
+	return runTrapObservationListener(ctx, tl, fmt.Sprintf("0.0.0.0:%d", port))
+}
 
-	// Set listener parameters
-	tl.Params = gosnmp.Default
-	tl.Params.Version = gosnmp.Version2c // Support both v1 and v2c
-	tl.Params.Community = "public"       // Most printers use "public" for traps
-
-	listenAddr := fmt.Sprintf("0.0.0.0:%d", port)
-
-	Info(fmt.Sprintf("SNMP Traps: listening on %s (requires admin/root privileges)", listenAddr))
-
-	// Listen on specified port
-	if err := tl.Listen(listenAddr); err != nil {
-		return fmt.Errorf("failed to start trap listener: %w", err)
+func submitTrapObservation(ctx context.Context, packet *gosnmp.SnmpPacket, addr *net.UDPAddr, submit ObservationCallback) {
+	receivedAt := time.Now() // Local GoSNMP callback receipt, before copying PDUs.
+	if ctx.Err() != nil || submit == nil {
+		return
 	}
-	defer tl.Close()
+	if o, ok := trapObservation(packet, addr); ok && o.Hints.Trap.Eligibility != "unknown" {
+		if ctx.Err() == nil {
+			submit(sourceReceipt(o, receivedAt))
+		}
+	}
+}
 
-	Info("SNMP Traps: listener started successfully")
+type sourceTrapListener interface {
+	Listen(string) error
+	Listening() <-chan bool
+	Close()
+}
 
-	// Block until context is canceled
-	<-ctx.Done()
+func runTrapObservationListener(ctx context.Context, listener sourceTrapListener, address string) error {
+	if ctx.Err() != nil {
+		return nil
+	}
+	done := make(chan error, 1)
+	go func() { done <- listener.Listen(address) }()
+	// Close must not race socket initialization: readiness publishes the socket.
+	select {
+	case err := <-done:
+		return err
+	case <-listener.Listening():
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		listener.Close()
+		<-done
+		return nil
+	}
+}
 
-	Info("SNMP Traps: stopping listener")
+func oidUnder(oid, root string) bool { return oid == root || strings.HasPrefix(oid, root+".") }
 
-	return nil
+func sourceOIDValid(oid string) bool {
+	parts := strings.Split(strings.TrimPrefix(oid, "."), ".")
+	if len(parts) < 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, ch := range part {
+			if ch < '0' || ch > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func trapReceiptCredible(o scanner.Observation) bool {
+	h := o.Hints.Trap
+	if h.Sender != o.IP || h.Packet == nil || (h.Eligibility != "printer-oid" && h.Eligibility != "vendor-hint") {
+		return false
+	}
+	eligible := func(oid string) bool {
+		oid = strings.TrimPrefix(oid, ".")
+		return sourceOIDValid(oid) && ((h.Eligibility == "printer-oid" && oidUnder(oid, "1.3.6.1.2.1.43")) || (h.Eligibility == "vendor-hint" && trapVendor(oid) != ""))
+	}
+	matched := eligible(h.TrapOID) || eligible(h.EnterpriseOID)
+	for _, pdu := range h.Packet.PDUs {
+		matched = matched || eligible(pdu.Name)
+	}
+	if !matched {
+		return false
+	}
+	p := h.Packet
+	if p.PDUType == gosnmp.Trap {
+		if p.Version != gosnmp.Version1 || !sourceOIDValid(h.EnterpriseOID) || p.GenericTrap < 0 || p.GenericTrap > 6 || p.SpecificTrap < 0 {
+			return false
+		}
+		oid := fmt.Sprintf("1.3.6.1.6.3.1.1.5.%d", p.GenericTrap+1)
+		if p.GenericTrap == 6 {
+			oid = fmt.Sprintf("%s.0.%d", h.EnterpriseOID, p.SpecificTrap)
+		}
+		return h.TrapOID == oid
+	}
+	if (p.PDUType != gosnmp.SNMPv2Trap && p.PDUType != gosnmp.InformRequest) || (p.Version != gosnmp.Version2c && p.Version != gosnmp.Version3) {
+		return false
+	}
+	for _, pdu := range p.PDUs {
+		if strings.TrimPrefix(pdu.Name, ".") == "1.3.6.1.6.3.1.1.4.1.0" && pdu.Type == gosnmp.ObjectIdentifier {
+			if oid, ok := pdu.Value.(string); ok && sourceOIDValid(oid) && strings.TrimPrefix(oid, ".") == h.TrapOID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func trapVendor(oid string) string {
+	for _, vendor := range []struct{ root, name string }{
+		{"1.3.6.1.4.1.11", "hp"}, {"1.3.6.1.4.1.1602", "canon"}, {"1.3.6.1.4.1.1248", "epson"},
+		{"1.3.6.1.4.1.2435", "brother"}, {"1.3.6.1.4.1.253", "xerox"}, {"1.3.6.1.4.1.367", "ricoh"},
+		{"1.3.6.1.4.1.1347", "kyocera"}, {"1.3.6.1.4.1.641", "lexmark"},
+	} {
+		if oidUnder(oid, vendor.root) {
+			return vendor.name
+		}
+	}
+	return ""
+}
+
+func trapObservation(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) (scanner.Observation, bool) {
+	ip := senderIPv4(addr)
+	if packet == nil || len(uniqueSourceTargets(ip)) == 0 {
+		return scanner.Observation{}, false
+	}
+	if packet.PDUType != gosnmp.Trap && packet.PDUType != gosnmp.SNMPv2Trap && packet.PDUType != gosnmp.InformRequest {
+		return scanner.Observation{}, false
+	}
+	h := scanner.TrapHint{Sender: ip, EnterpriseOID: strings.TrimPrefix(packet.Enterprise, "."), Eligibility: "unknown",
+		Packet: &scanner.TrapPacket{GenericTrap: packet.GenericTrap, SpecificTrap: packet.SpecificTrap, Version: packet.Version, PDUType: packet.PDUType}}
+	for _, pdu := range packet.Variables {
+		copyPDU := pdu
+		if bytes, ok := pdu.Value.([]byte); ok {
+			copyPDU.Value = append([]byte(nil), bytes...)
+		}
+		if values, ok := pdu.Value.([]int); ok {
+			copyPDU.Value = append([]int(nil), values...)
+		}
+		h.Packet.PDUs = append(h.Packet.PDUs, copyPDU)
+		name := strings.TrimPrefix(pdu.Name, ".")
+		if name == "1.3.6.1.6.3.1.1.4.1.0" {
+			if value, ok := pdu.Value.(string); ok {
+				h.TrapOID = strings.TrimPrefix(value, ".")
+			}
+		}
+		if oidUnder(name, "1.3.6.1.2.1.43") {
+			h.Eligibility = "printer-oid"
+		}
+		if h.Vendor == "" {
+			h.Vendor = trapVendor(name)
+		}
+	}
+	// SNMPv1 carries the notification identifier in the header rather than a
+	// snmpTrapOID varbind. Map it per RFC 3584, without assuming printer status.
+	if h.TrapOID == "" && packet.PDUType == gosnmp.Trap {
+		if packet.GenericTrap >= 0 && packet.GenericTrap <= 5 {
+			h.TrapOID = fmt.Sprintf("1.3.6.1.6.3.1.1.5.%d", packet.GenericTrap+1)
+		} else if packet.GenericTrap == 6 && h.EnterpriseOID != "" {
+			h.TrapOID = fmt.Sprintf("%s.0.%d", h.EnterpriseOID, packet.SpecificTrap)
+		}
+	}
+	if oidUnder(h.TrapOID, "1.3.6.1.2.1.43") || oidUnder(h.EnterpriseOID, "1.3.6.1.2.1.43") {
+		h.Eligibility = "printer-oid"
+	}
+	if h.Vendor == "" {
+		h.Vendor = trapVendor(h.TrapOID)
+	}
+	if h.Vendor == "" {
+		h.Vendor = trapVendor(h.EnterpriseOID)
+	}
+	if h.Vendor != "" && h.Eligibility == "unknown" {
+		h.Eligibility = "vendor-hint"
+	}
+	return scanner.Observation{IP: ip, Source: scanner.SourceTrap, Hints: scanner.ProtocolHints{Trap: h}}, true
 }
 
 // handleTrap processes incoming SNMP trap notifications
 func handleTrap(packet *gosnmp.SnmpPacket, addr *net.UDPAddr, enqueue func(string) bool) {
-	if addr == nil {
+	if packet == nil || addr == nil || enqueue == nil {
 		return
 	}
 
 	ip := addr.IP.String()
-
-	// Log trap reception
-	trapType := "Generic"
-	trapOID := ""
-
-	// Extract trap information from PDUs
-	for _, pdu := range packet.Variables {
-		oidStr := pdu.Name
-
-		// SNMPv2-MIB::snmpTrapOID (identifies the trap type)
-		if oidStr == "1.3.6.1.6.3.1.1.4.1.0" {
-			trapOID = fmt.Sprintf("%v", pdu.Value)
-
-			// Common printer trap OIDs
-			switch trapOID {
-			case "1.3.6.1.2.1.43.18.2.0.1":
-				trapType = "Printer Status Change"
-			case "1.3.6.1.2.1.43.18.2.0.2":
-				trapType = "Printer Warming Up"
-			case "1.3.6.1.2.1.43.18.2.0.3":
-				trapType = "Printer Supply Low"
-			case "1.3.6.1.2.1.43.18.2.0.4":
-				trapType = "Printer Cover Open"
-			case "1.3.6.1.2.1.43.18.2.0.5":
-				trapType = "Printer Configuration Change"
-			default:
-				trapType = "Printer Event"
-			}
-		}
-	}
-
-	Info(fmt.Sprintf("SNMP Trap: received %s from %s (OID: %s)", trapType, ip, trapOID))
+	InfoCtx("SNMP trap received", "source", "snmptrap", "ip", ip)
 
 	// Enqueue device IP for discovery
 	if enqueue(ip) {
-		Info(fmt.Sprintf("SNMP Trap: enqueued %s for discovery", ip))
+		InfoCtx("SNMP trap enqueued", "source", "snmptrap", "ip", ip)
 	}
 }
 
 // StartSNMPTrapBrowser is a wrapper that handles the trap listener lifecycle
 // with automatic restart on errors and throttling to prevent duplicate discoveries
+// Deprecated: use StartSNMPTrapObservationBrowser. seen is retained only for
+// signature compatibility; throttle state is private to this invocation.
 func StartSNMPTrapBrowser(ctx context.Context, enqueue func(string) bool, seen map[string]time.Time, throttleWindow time.Duration) {
-	port := uint16(162) // Standard SNMP trap port
+	StartSNMPTrapObservationBrowser(ctx, throttleObservations(func(o scanner.Observation) bool { return enqueue(o.IP.String()) }, throttleWindow), logSourceError)
+}
 
-	// Try to start trap listener
-	// Note: This will fail if not running with elevated privileges
-	for {
-		select {
-		case <-ctx.Done():
-			Info("SNMP Trap Browser: stopped")
+// StartSNMPTrapObservationBrowser retries non-permission listener errors with
+// cancellable delay. Admission and deduplication belong to the callback owner.
+func StartSNMPTrapObservationBrowser(ctx context.Context, submit ObservationCallback, report SourceErrorCallback) {
+	runTrapObservationBrowser(ctx, submit, report, StartSNMPTrapObservationListener)
+}
+
+func runTrapObservationBrowser(ctx context.Context, submit ObservationCallback, report SourceErrorCallback,
+	listen func(context.Context, ObservationCallback, uint16) error) {
+	for ctx.Err() == nil {
+		err := listen(ctx, submit, 162)
+		if ctx.Err() != nil {
 			return
-		default:
 		}
-
-		// Wrap enqueue with throttling logic
-		throttledEnqueue := func(ip string) bool {
-			now := time.Now()
-
-			// Check if we've seen this IP recently
-			if lastSeen, exists := seen[ip]; exists {
-				if now.Sub(lastSeen) < throttleWindow {
-					return false // Skip, too soon
-				}
-			}
-
-			// Update last seen time
-			seen[ip] = now
-
-			// Call original enqueue
-			return enqueue(ip)
-		}
-
-		// Start trap listener (blocking)
-		err := StartSNMPTrapListener(ctx, throttledEnqueue, port)
-
-		if err != nil {
-			Info("SNMP Trap Browser: " + err.Error())
-
-			// Check if it's a permission error
-			if netErr, ok := err.(*net.OpError); ok {
-				if netErr.Op == "listen" {
-					Info("SNMP Trap Browser: Port 162 requires administrator/root privileges")
-					Info("SNMP Trap Browser: Run as admin or disable trap monitoring")
-					return // Don't retry if it's a permission issue
-				}
-			}
-		}
-
-		// If context was canceled, exit immediately
-		select {
-		case <-ctx.Done():
+		reportSourceError(report, err)
+		if errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) {
 			return
-		default:
 		}
-
-		// Otherwise, wait a bit before retrying
-		Info("SNMP Trap Browser: restarting in 30 seconds...")
-		time.Sleep(30 * time.Second)
+		if !waitSourceDelay(ctx, 30*time.Second) {
+			return
+		}
 	}
 }

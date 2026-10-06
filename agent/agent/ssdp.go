@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
+	"net/url"
+	"printmaster/agent/scanner"
 	"strings"
 	"time"
 )
@@ -14,162 +17,205 @@ const (
 	ssdpSearchTarget  = "upnp:rootdevice" // Could also use "ssdp:all" for broader discovery
 )
 
-// StartSSDPBrowser listens for SSDP NOTIFY messages (device announcements) and
-// optionally sends M-SEARCH to discover existing devices. Invokes enqueue for
-// each discovered IPv4 address. Runs until context is canceled.
+// StartSSDPBrowser preserves the IPv4 enqueue API.
+// Deprecated: use StartSSDPObservationBrowser to retain protocol metadata.
 func StartSSDPBrowser(ctx context.Context, enqueue func(string) bool) {
-	addr, err := net.ResolveUDPAddr("udp4", ssdpMulticastAddr)
-	if err != nil {
-		Info("SSDP: failed to resolve multicast address: " + err.Error())
+	StartSSDPObservationBrowser(ctx, func(o scanner.Observation) bool { return enqueue(o.IP.String()) }, logSourceError)
+}
+
+// StartSSDPObservationBrowser emits accepted alive/response targets with raw
+// sender and headers. A Location target is not evidence its host responded.
+func StartSSDPObservationBrowser(ctx context.Context, submit ObservationCallback, report SourceErrorCallback) {
+	browseSourceMulticast(ctx, "SSDP", ssdpMulticastAddr, submit, report, ssdpObservations,
+		func() error { return sendSourceDatagram(ctx, ssdpMulticastAddr, ssdpSearchMessage()) }, 5*time.Minute)
+}
+
+func ssdpSearchMessage() string {
+	return "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 3\r\nST: " + ssdpSearchTarget + "\r\n\r\n"
+}
+
+func ssdpObservations(data []byte, src *net.UDPAddr) []scanner.Observation {
+	message := string(data)
+	line := strings.TrimSpace(strings.SplitN(message, "\r\n", 2)[0])
+	headers := parseSSDPHeaders(message)
+	h := scanner.SSDPHint{Sender: senderIPv4(src), Location: headers["location"], USN: headers["usn"],
+		SearchTarget: headers["st"], NotificationType: headers["nt"], NotificationSubtype: headers["nts"], FilterDecision: "accepted"}
+	filterType := h.SearchTarget
+	switch line {
+	case "NOTIFY * HTTP/1.1":
+		if h.NotificationSubtype != "ssdp:alive" {
+			return nil
+		}
+		h.Message = "alive"
+		filterType = h.NotificationType // NOTIFY carries NT, not ST.
+	case "HTTP/1.1 200 OK":
+		h.Message = "response"
+	default:
+		return nil
+	}
+	if isNonPrinterDevice(filterType, h.USN) {
+		return nil
+	}
+	var out []scanner.Observation
+	for _, ip := range uniqueSourceTargets(h.Sender, sourceURLIPv4(h.Location)) {
+		out = append(out, scanner.Observation{IP: ip, Source: scanner.SourceSSDP, Hints: scanner.ProtocolHints{SSDP: h}})
+	}
+	return out
+}
+
+func sourceURLValid(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Hostname() != "" && u.User == nil
+}
+
+func ssdpReceiptCredible(o scanner.Observation) bool {
+	h := o.Hints.SSDP
+	return h.Sender == o.IP && h.Message == "response" && h.FilterDecision == "accepted" &&
+		h.USN != "" && h.SearchTarget != "" && sourceURLValid(h.Location) && !isNonPrinterDevice(h.SearchTarget, h.USN)
+}
+
+// Strict URI decoder for new adapters only; characterized legacy helpers stay.
+func sourceURLIPv4(raw string) netip.Addr {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil {
+		return netip.Addr{}
+	}
+	ip, err := netip.ParseAddr(u.Hostname())
+	if err != nil || !ip.Unmap().Is4() {
+		return netip.Addr{}
+	}
+	return ip.Unmap()
+}
+
+func uniqueSourceTargets(ips ...netip.Addr) []netip.Addr {
+	var out []netip.Addr
+	seen := make(map[netip.Addr]bool)
+	for _, ip := range ips {
+		if ip.IsValid() && ip.Is4() && !ip.IsUnspecified() && !ip.IsMulticast() && !seen[ip] {
+			seen[ip] = true
+			out = append(out, ip)
+		}
+	}
+	return out
+}
+
+type sourcePacketConn interface {
+	ReadFromUDP([]byte) (int, *net.UDPAddr, error)
+	SetReadDeadline(time.Time) error
+	Close() error
+}
+
+func browseSourceMulticast(ctx context.Context, name, address string, submit ObservationCallback, report SourceErrorCallback,
+	decode func([]byte, *net.UDPAddr) []scanner.Observation, probe func() error, interval time.Duration) {
+	if ctx.Err() != nil {
 		return
 	}
-
+	addr, err := net.ResolveUDPAddr("udp4", address)
+	if err != nil {
+		reportSourceError(report, fmt.Errorf("%s resolve: %w", name, err))
+		return
+	}
 	conn, err := net.ListenMulticastUDP("udp4", nil, addr)
 	if err != nil {
-		Info("SSDP: failed to join multicast group: " + err.Error())
+		reportSourceError(report, fmt.Errorf("%s listen: %w", name, err))
 		return
 	}
 	defer conn.Close()
+	if err := conn.SetReadBuffer(65536); err != nil {
+		reportSourceError(report, fmt.Errorf("%s buffer: %w", name, err))
+	}
+	readSourceDatagrams(ctx, conn, func(data []byte, src *net.UDPAddr, receivedAt time.Time) {
+		submitSourceDatagram(ctx, data, src, receivedAt, decode, submit)
+	}, func(err error) { reportSourceError(report, fmt.Errorf("%s: %w", name, err)) }, probe, interval)
+}
 
-	Info("SSDP: listening on " + ssdpMulticastAddr)
+func submitSourceDatagram(ctx context.Context, data []byte, src *net.UDPAddr, receivedAt time.Time,
+	decode func([]byte, *net.UDPAddr) []scanner.Observation, submit ObservationCallback) {
+	if ctx.Err() != nil || submit == nil {
+		return
+	}
+	for _, o := range decode(data, src) {
+		if ctx.Err() != nil {
+			return
+		}
+		submit(sourceReceipt(o, receivedAt))
+	}
+}
 
-	// Set read buffer size
-	conn.SetReadBuffer(65536)
-
-	// Send initial M-SEARCH to discover existing devices
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		sendMSearch()
-		// Repeat M-SEARCH periodically (every 5 minutes) to catch devices that weren't responding
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				sendMSearch()
-			}
+func readSourceDatagrams(ctx context.Context, conn sourcePacketConn, consume func([]byte, *net.UDPAddr, time.Time), report SourceErrorCallback, probe func() error, interval time.Duration) {
+	closed := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { conn.Close(); close(closed) })
+	defer func() {
+		if !stop() {
+			<-closed
 		}
 	}()
-
-	buf := make([]byte, 8192)
-	for {
-		select {
-		case <-ctx.Done():
-			Info("SSDP: stopping listener")
+	var nextProbe time.Time
+	if probe != nil {
+		nextProbe = time.Now().Add(500 * time.Millisecond)
+	}
+	buf := make([]byte, 65536)
+	for ctx.Err() == nil {
+		now := time.Now()
+		if !nextProbe.IsZero() && !now.Before(nextProbe) {
+			reportSourceError(report, probe())
+			if interval > 0 {
+				nextProbe = time.Now().Add(interval)
+			} else {
+				nextProbe = time.Time{}
+			}
+		}
+		deadline := time.Now().Add(time.Second)
+		if !nextProbe.IsZero() && nextProbe.Before(deadline) {
+			deadline = nextProbe
+		}
+		if err := conn.SetReadDeadline(deadline); err != nil {
+			if ctx.Err() == nil {
+				reportSourceError(report, err)
+			}
 			return
-		default:
-			// Set read deadline to allow periodic context checks
-			conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-			n, src, err := conn.ReadFromUDP(buf)
-			if err != nil {
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					continue
-				}
-				Info("SSDP: read error: " + err.Error())
+		}
+		n, src, err := conn.ReadFromUDP(buf)
+		receivedAt := time.Now() // Capture before decoding, callbacks, or enqueue.
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				continue
 			}
-
-			message := string(buf[:n])
-
-			// Parse SSDP message headers
-			headers := parseSSDPHeaders(message)
-
-			// Check if this is a NOTIFY (device announcement) or M-SEARCH response
-			if strings.Contains(message, "NOTIFY * HTTP/1.1") {
-				// NOTIFY message - device announcing presence
-				nts := headers["nts"]
-				switch nts {
-				case "ssdp:alive":
-					location := headers["location"]
-					usn := headers["usn"]
-					st := headers["st"]
-
-					// Filter out non-printer device types
-					if isNonPrinterDevice(st, usn) {
-						// Silently ignore gateways, routers, media renderers, etc.
-						continue
-					}
-
-					Debug(fmt.Sprintf("SSDP: NOTIFY alive from %s (ST: %s, USN: %s, Location: %s)",
-						src.IP.String(), st, usn, location))
-
-					// Enqueue the source IP
-					if src.IP.To4() != nil {
-						enqueue(src.IP.String())
-					}
-
-					// Also try to extract IP from Location header
-					if location != "" {
-						if ip := extractIPFromURL(location); ip != "" {
-							enqueue(ip)
-						}
-					}
-				case "ssdp:byebye":
-					// Device leaving
-					Debug(fmt.Sprintf("SSDP: NOTIFY byebye from %s", src.IP.String()))
-				}
-			} else if strings.Contains(message, "HTTP/1.1 200 OK") {
-				// M-SEARCH response
-				location := headers["location"]
-				usn := headers["usn"]
-				st := headers["st"]
-
-				// Filter out non-printer device types
-				if isNonPrinterDevice(st, usn) {
-					// Silently ignore gateways, routers, media renderers, etc.
-					continue
-				}
-
-				Info(fmt.Sprintf("SSDP: M-SEARCH response from %s (ST: %s, USN: %s, Location: %s)",
-					src.IP.String(), st, usn, location))
-
-				// Enqueue the source IP
-				if src.IP.To4() != nil {
-					enqueue(src.IP.String())
-				}
-
-				// Also try to extract IP from Location header
-				if location != "" {
-					if ip := extractIPFromURL(location); ip != "" {
-						enqueue(ip)
-					}
-				}
-			}
+			reportSourceError(report, err)
+			return // No spinning on permanently failed sockets.
+		}
+		if ctx.Err() == nil && consume != nil {
+			consume(buf[:n], src, receivedAt)
 		}
 	}
 }
 
-// sendMSearch sends an SSDP M-SEARCH message to discover existing devices
-func sendMSearch() {
-	searchMsg := "M-SEARCH * HTTP/1.1\r\n" +
-		"HOST: 239.255.255.250:1900\r\n" +
-		"MAN: \"ssdp:discover\"\r\n" +
-		"MX: 3\r\n" +
-		"ST: " + ssdpSearchTarget + "\r\n" +
-		"\r\n"
-
-	addr, err := net.ResolveUDPAddr("udp4", ssdpMulticastAddr)
+func sendSourceDatagram(ctx context.Context, address, message string) error {
+	conn, err := (&net.Dialer{}).DialContext(ctx, "udp4", address)
 	if err != nil {
-		Info("SSDP M-SEARCH: failed to resolve address: " + err.Error())
-		return
-	}
-
-	conn, err := net.DialUDP("udp4", nil, addr)
-	if err != nil {
-		Info("SSDP M-SEARCH: failed to dial: " + err.Error())
-		return
+		return err
 	}
 	defer conn.Close()
-
-	_, err = conn.Write([]byte(searchMsg))
-	if err != nil {
-		Info("SSDP M-SEARCH: failed to send: " + err.Error())
-		return
+	closed := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { conn.Close(); close(closed) })
+	defer func() {
+		if !stop() {
+			<-closed
+		}
+	}()
+	if err := conn.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
+		return err
 	}
+	_, err = conn.Write([]byte(message))
+	return err
+}
 
-	Info("SSDP: M-SEARCH sent to discover existing devices")
+// sendMSearch sends an SSDP M-SEARCH message to discover existing devices
+func sendMSearch() {
+	reportSourceError(logSourceError, sendSourceDatagram(context.Background(), ssdpMulticastAddr, ssdpSearchMessage()))
 }
 
 // parseSSDPHeaders parses HTTP-style headers from SSDP message

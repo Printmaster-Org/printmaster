@@ -8,6 +8,8 @@ import (
 	"printmaster/agent/scanner"
 	"strings"
 	"time"
+
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 // LLMNR (Link-Local Multicast Name Resolution) constants
@@ -22,95 +24,59 @@ const (
 //
 // LLMNR is a Windows protocol for hostname resolution in networks without DNS.
 // Useful for discovering printers by hostname in Windows-only environments.
+// Deprecated: use StartLLMNRObservationBrowser. seen is retained only for
+// signature compatibility; private throttling records accepted work only.
 func StartLLMNRBrowser(ctx context.Context, enqueue func(scanner.ScanJob) bool, seen map[string]time.Time, throttleWindow time.Duration) {
-	addr, err := net.ResolveUDPAddr("udp4", llmnrMulticastAddr)
-	if err != nil {
-		Info("LLMNR: failed to resolve multicast address: " + err.Error())
-		return
+	StartLLMNRObservationBrowser(ctx, throttleObservations(func(o scanner.Observation) bool { return enqueue(llmnrLegacyJob(o)) }, throttleWindow), logSourceError)
+}
+
+func llmnrLegacyJob(o scanner.Observation) scanner.ScanJob {
+	// A typed scanner hint, not agent.ScanMeta (which main cannot type assert).
+	return scanner.ScanJob{IP: o.IP.String(), Source: "llmnr", Meta: o.Hints.LLMNR}
+}
+
+// StartLLMNRObservationBrowser retains hostname/answer/sender hints, not identity.
+// Existing hostname heuristics and query-source fallback remain admission policy.
+func StartLLMNRObservationBrowser(ctx context.Context, submit ObservationCallback, report SourceErrorCallback) {
+	browseSourceMulticast(ctx, "LLMNR", llmnrMulticastAddr, submit, report, llmnrObservations, nil, 0)
+}
+
+func llmnrObservations(data []byte, src *net.UDPAddr) []scanner.Observation {
+	// Use a bounded DNS decoder on untrusted traffic.
+	var message dnsmessage.Message
+	if err := message.Unpack(data); err != nil || message.OpCode != 0 || message.RCode != dnsmessage.RCodeSuccess || message.Truncated || len(message.Questions) != 1 {
+		return nil
 	}
-
-	conn, err := net.ListenMulticastUDP("udp4", nil, addr)
-	if err != nil {
-		Info("LLMNR: failed to join multicast group: " + err.Error())
-		return
+	if message.Questions[0].Class != dnsmessage.ClassINET || (message.Questions[0].Type != dnsmessage.TypeA && message.Questions[0].Type != dnsmessage.TypeALL) {
+		return nil
 	}
-	defer conn.Close()
-
-	Info("LLMNR: listening on " + llmnrMulticastAddr)
-
-	conn.SetReadBuffer(65536)
-
-	buf := make([]byte, 1500)
-	for {
-		select {
-		case <-ctx.Done():
-			Info("LLMNR: stopping listener")
-			return
-		default:
-			// Set read deadline to allow periodic context checks
-			conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-			n, src, err := conn.ReadFromUDP(buf)
-			if err != nil {
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					continue
-				}
-				Info("LLMNR: read error: " + err.Error())
+	host := strings.TrimSuffix(message.Questions[0].Name.String(), ".")
+	if !isPrinterHostname(host) {
+		return nil
+	}
+	h := scanner.LLMNRHint{Hostname: host, Sender: senderIPv4(src), Message: "query"}
+	target := h.Sender
+	if message.Response {
+		h.Message = "response"
+		for _, answer := range message.Answers {
+			if !strings.EqualFold(answer.Header.Name.String(), message.Questions[0].Name.String()) || answer.Header.Class != dnsmessage.ClassINET {
 				continue
 			}
-
-			// Parse LLMNR packet
-			if n < 12 { // Minimum DNS header size
-				continue
-			}
-
-			hostname, isResponse, hasIPv4 := parseLLMNRPacket(buf[:n])
-			if hostname == "" {
-				continue
-			}
-
-			// Filter for printer-related hostnames
-			if !isPrinterHostname(hostname) {
-				continue
-			}
-
-			msgType := "query"
-			if isResponse {
-				msgType = "response"
-			}
-			Info(fmt.Sprintf("LLMNR: %s for %s from %s", msgType, hostname, src.IP))
-
-			// If it's a response with an IPv4 address, use the address from the packet
-			// Otherwise, use the source IP
-			var targetIP string
-			if isResponse && hasIPv4 != "" {
-				targetIP = hasIPv4
-			} else {
-				targetIP = src.IP.String()
-			}
-
-			// Check throttling
-			now := time.Now()
-			if lastSeen, exists := seen[targetIP]; exists {
-				if now.Sub(lastSeen) < throttleWindow {
-					continue // Skip, too soon
-				}
-			}
-
-			// Update last seen time
-			seen[targetIP] = now
-
-			// Enqueue for discovery
-			job := scanner.ScanJob{
-				IP:     targetIP,
-				Source: "llmnr",
-				Meta:   &ScanMeta{DiscoveryMethods: []string{"llmnr"}, Hostname: hostname},
-			}
-
-			if enqueue(job) {
-				Info(fmt.Sprintf("LLMNR: enqueued %s (%s)", targetIP, hostname))
+			if body, ok := answer.Body.(*dnsmessage.AResource); ok {
+				h.Answer = sourceIPv4(net.IP(body.A[:]))
+				target = h.Answer // Preserve last matching A-answer selection.
 			}
 		}
 	}
+	if len(uniqueSourceTargets(target)) == 0 {
+		return nil
+	}
+	return []scanner.Observation{{IP: target, Source: scanner.SourceLLMNR, Hints: scanner.ProtocolHints{LLMNR: h}}}
+}
+
+func llmnrReceiptCredible(o scanner.Observation) bool {
+	h := o.Hints.LLMNR
+	return h.Message == "response" && h.Hostname != "" && h.Sender == o.IP && h.Answer == o.IP
 }
 
 // parseLLMNRPacket extracts hostname and IP from LLMNR DNS packet
@@ -169,8 +135,14 @@ func parseDNSName(data []byte, offset int) (string, int) {
 	var parts []string
 	jumped := false
 	jumpOffset := 0
+	visited := make(map[int]bool)
+	nameLength := 0
 
-	for offset < len(data) {
+	for offset >= 0 && offset < len(data) {
+		if visited[offset] {
+			return "", len(data) // Malformed cycles must not become partial names.
+		}
+		visited[offset] = true
 		length := int(data[offset])
 
 		// Check for compression pointer (top 2 bits set)
@@ -195,8 +167,15 @@ func parseDNSName(data []byte, offset int) (string, int) {
 		}
 
 		// Check bounds
+		if length&0xC0 != 0 {
+			return "", len(data)
+		}
 		if offset+1+length > len(data) {
 			break
+		}
+		nameLength += length + 1
+		if nameLength > 254 {
+			return "", len(data)
 		}
 
 		// Extract label

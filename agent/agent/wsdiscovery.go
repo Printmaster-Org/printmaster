@@ -5,6 +5,8 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net"
+	"net/netip"
+	"printmaster/agent/scanner"
 	"strings"
 	"time"
 )
@@ -57,139 +59,110 @@ type wsEndpointReference struct {
 	Address string `xml:"http://schemas.xmlsoap.org/ws/2004/08/addressing Address"`
 }
 
-// StartWSDiscoveryBrowser listens for WS-Discovery Hello/Bye messages and ProbeMatches
-// on the multicast group 239.255.255.250:3702. It invokes enqueue for each discovered
-// IPv4 address. Runs until context is canceled.
+// StartWSDiscoveryBrowser preserves the IPv4 enqueue API.
+// Deprecated: use StartWSDiscoveryObservationBrowser to retain protocol metadata.
 func StartWSDiscoveryBrowser(ctx context.Context, enqueue func(string) bool) {
-	addr, err := net.ResolveUDPAddr("udp4", wsDiscoveryMulticastAddr)
-	if err != nil {
-		Info("WS-Discovery: failed to resolve multicast address: " + err.Error())
-		return
+	StartWSDiscoveryObservationBrowser(ctx, func(o scanner.Observation) bool { return enqueue(o.IP.String()) }, logSourceError)
+}
+
+// StartWSDiscoveryObservationBrowser emits Hello and ProbeMatch observations,
+// retaining scopes and advertised URLs without asserting printer identity.
+func StartWSDiscoveryObservationBrowser(ctx context.Context, submit ObservationCallback, report SourceErrorCallback) {
+	browseSourceMulticast(ctx, "WS-Discovery", wsDiscoveryMulticastAddr, submit, report, wsdObservations,
+		func() error { return sendSourceDatagram(ctx, wsDiscoveryMulticastAddr, wsProbeMessage()) }, 0)
+}
+
+// Separate decoder leaves the historical envelope helper's semantics intact.
+// Both discovery namespaces occur in deployed printers. Recognized messages
+// must be direct Body children (or matches inside a ProbeMatches child).
+type wsdObservationEnvelope struct {
+	XMLName xml.Name `xml:"http://www.w3.org/2003/05/soap-envelope Envelope"`
+	Body    struct {
+		Messages []wsdObservationMessage `xml:",any"`
+	} `xml:"http://www.w3.org/2003/05/soap-envelope Body"`
+}
+type wsdObservationMessage struct {
+	XMLName           xml.Name
+	EndpointReference struct {
+		Address string `xml:"Address"`
+	} `xml:"EndpointReference"`
+	Types   string                  `xml:"Types"`
+	Scopes  string                  `xml:"Scopes"`
+	XAddrs  string                  `xml:"XAddrs"`
+	Matches []wsdObservationMessage `xml:"ProbeMatch"`
+}
+
+func wsdNamespace(ns string) bool {
+	return ns == "http://schemas.xmlsoap.org/ws/2005/04/discovery" || ns == "http://docs.oasis-open.org/ws-dd/ns/discovery/2009/01"
+}
+
+func wsdObservations(data []byte, src *net.UDPAddr) []scanner.Observation {
+	var envelope wsdObservationEnvelope
+	if err := xml.Unmarshal(data, &envelope); err != nil {
+		return nil
 	}
-
-	conn, err := net.ListenMulticastUDP("udp4", nil, addr)
-	if err != nil {
-		Info("WS-Discovery: failed to join multicast group: " + err.Error())
-		return
-	}
-	defer conn.Close()
-
-	Info("WS-Discovery: listening on " + wsDiscoveryMulticastAddr)
-
-	// Set read buffer size
-	conn.SetReadBuffer(65536)
-
-	// Send initial Probe to discover existing devices
-	go func() {
-		time.Sleep(500 * time.Millisecond) // Brief delay to ensure listener is ready
-		sendProbe()
-	}()
-
-	buf := make([]byte, 65536)
-	for {
-		select {
-		case <-ctx.Done():
-			Info("WS-Discovery: stopping listener")
+	var out []scanner.Observation
+	add := func(message wsdObservationMessage) {
+		if !wsdNamespace(message.XMLName.Space) || (message.XMLName.Local != "Hello" && message.XMLName.Local != "ProbeMatch") {
 			return
-		default:
-			// Set read deadline to allow periodic context checks
-			conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-			n, src, err := conn.ReadFromUDP(buf)
-			if err != nil {
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					continue // Read timeout, check context and retry
-				}
-				Info("WS-Discovery: read error: " + err.Error())
-				continue
-			}
-
-			// Parse WS-Discovery message
-			var envelope wsDiscoveryEnvelope
-			if err := xml.Unmarshal(buf[:n], &envelope); err != nil {
-				// Not all UDP traffic is WS-Discovery, ignore parse errors
-				continue
-			}
-
-			// Process Hello messages (device announcements)
-			if envelope.Body.Hello != nil {
-				hello := envelope.Body.Hello
-				Info(fmt.Sprintf("WS-Discovery: Hello from %s (Types: %s, XAddrs: %s)",
-					hello.EndpointReference.Address, hello.Types, hello.XAddrs))
-
-				// Extract IP addresses from XAddrs (can be multiple URLs)
-				ips := extractIPsFromXAddrs(hello.XAddrs)
-				for _, ip := range ips {
-					enqueue(ip)
-				}
-			}
-
-			// Process ProbeMatch messages (responses to Probe)
-			if envelope.Body.ProbeMatch != nil {
-				match := envelope.Body.ProbeMatch
-				Info(fmt.Sprintf("WS-Discovery: ProbeMatch from %s (Types: %s, XAddrs: %s)",
-					match.EndpointReference.Address, match.Types, match.XAddrs))
-
-				ips := extractIPsFromXAddrs(match.XAddrs)
-				for _, ip := range ips {
-					enqueue(ip)
-				}
-			}
-
-			// Process Bye messages (device leaving)
-			if envelope.Body.Bye != nil {
-				bye := envelope.Body.Bye
-				Info(fmt.Sprintf("WS-Discovery: Bye from %s", bye.EndpointReference.Address))
-				// Note: We don't remove devices on Bye, just log it
-			}
-
-			// Also try to extract IP from source address as fallback
-			if src != nil && src.IP != nil {
-				srcIP := src.IP.String()
-				if srcIP != "" && !strings.Contains(srcIP, ":") { // IPv4 only
-					// Only enqueue source IP if we haven't already from XAddrs
-					// This is a backup in case XAddrs parsing fails
-				}
-			}
+		}
+		h := scanner.WSDHint{Endpoint: message.EndpointReference.Address, Types: message.Types, Scopes: message.Scopes,
+			XAddr: message.XAddrs, Sender: senderIPv4(src), Message: message.XMLName.Local}
+		var ips []netip.Addr
+		for _, raw := range strings.Fields(message.XAddrs) {
+			ips = append(ips, sourceURLIPv4(raw))
+		}
+		ips = uniqueSourceTargets(ips...)
+		// Explicit fallback only for recognized discovery messages, never Bye,
+		// malformed XML, unrelated SOAP bodies, or empty ProbeMatches wrappers.
+		if len(ips) == 0 {
+			ips = uniqueSourceTargets(h.Sender)
+		}
+		for _, ip := range ips {
+			out = append(out, scanner.Observation{IP: ip, Source: scanner.SourceWSD, Hints: scanner.ProtocolHints{WSD: h}})
 		}
 	}
+	for _, message := range envelope.Body.Messages {
+		if message.XMLName.Local == "ProbeMatches" && wsdNamespace(message.XMLName.Space) {
+			for _, match := range message.Matches {
+				if match.XMLName.Space == message.XMLName.Space {
+					add(match)
+				}
+			}
+		} else {
+			add(message)
+		}
+	}
+	return out
+}
+
+func wsdReceiptCredible(o scanner.Observation) bool {
+	h := o.Hints.WSD
+	if h.Sender != o.IP || h.Message != "ProbeMatch" || h.Endpoint == "" || h.Types == "" {
+		return false
+	}
+	addresses := strings.Fields(h.XAddr)
+	if len(addresses) == 0 {
+		return false
+	}
+	for _, address := range addresses {
+		if !sourceURLValid(address) {
+			return false
+		}
+	}
+	return true
+}
+
+func wsProbeMessage() string {
+	return `<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:wsd="http://schemas.xmlsoap.org/ws/2005/04/discovery" xmlns:wsdp="http://schemas.xmlsoap.org/ws/2006/02/devprof">
+<soap:Header><wsa:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</wsa:Action><wsa:MessageID>urn:uuid:` + generateUUID() + `</wsa:MessageID><wsa:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</wsa:To></soap:Header>
+<soap:Body><wsd:Probe><wsd:Types>wsdp:Device</wsd:Types></wsd:Probe></soap:Body></soap:Envelope>`
 }
 
 // sendProbe sends a WS-Discovery Probe message to discover existing devices
 func sendProbe() {
-	probeXML := `<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:wsd="http://schemas.xmlsoap.org/ws/2005/04/discovery">
-  <soap:Header>
-    <wsa:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</wsa:Action>
-    <wsa:MessageID>urn:uuid:` + generateUUID() + `</wsa:MessageID>
-    <wsa:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</wsa:To>
-  </soap:Header>
-  <soap:Body>
-    <wsd:Probe>
-      <wsd:Types>wsdp:Device</wsd:Types>
-    </wsd:Probe>
-  </soap:Body>
-</soap:Envelope>`
-
-	addr, err := net.ResolveUDPAddr("udp4", wsDiscoveryMulticastAddr)
-	if err != nil {
-		Info("WS-Discovery Probe: failed to resolve address: " + err.Error())
-		return
-	}
-
-	conn, err := net.DialUDP("udp4", nil, addr)
-	if err != nil {
-		Info("WS-Discovery Probe: failed to dial: " + err.Error())
-		return
-	}
-	defer conn.Close()
-
-	_, err = conn.Write([]byte(probeXML))
-	if err != nil {
-		Info("WS-Discovery Probe: failed to send: " + err.Error())
-		return
-	}
-
-	Info("WS-Discovery: Probe sent to discover existing devices")
+	reportSourceError(logSourceError, sendSourceDatagram(context.Background(), wsDiscoveryMulticastAddr, wsProbeMessage()))
 }
 
 // extractIPsFromXAddrs parses XAddrs field (space-separated URLs) and extracts IPv4 addresses

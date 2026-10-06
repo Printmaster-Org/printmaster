@@ -112,6 +112,26 @@ reason. Outcome logs contain counts/reasons only. Callers may wake the uploader
 only after a nil return. `stage_commit_test.go` covers trigger-proven rollback,
 concurrent merges, locks, moves, occupancy and metric parity.
 
+#### Network source adapters (`agent/agent`)
+
+`Start{MDNS,SSDP,WSDiscovery,SNMPTrap,LLMNR}ObservationBrowser` decode packets into
+`scanner.Observation` values that keep protocol evidence: mDNS service/instance/
+host/port/TXT/addresses; SSDP USN/ST/NT/NTS/LOCATION/sender/filter decision;
+WS-Discovery endpoint/types/scopes/XAddrs/sender (IPv4 XAddrs only; no sender
+fallback); traps' version/PDU type/trap and enterprise OIDs/varbinds plus a
+printer-MIB or vendor eligibility label (other traps are dropped); LLMNR hostname,
+sender and A answer. Typed hints replace the old `ScanMeta`/map mismatch.
+
+Adapters stamp `ObservedAt` with local receipt time only for target-bound,
+structurally credible responses; announcements, queries and URL-only targets
+keep a zero time and therefore never skip TCP. The coordinator revalidates
+anyway. Callbacks run synchronously on one owner goroutine per browser; adapters
+do not spawn per-candidate work, assert identity, or mark stages complete.
+Per-IP throttling (10 minutes) counts only accepted submissions and uses private
+state. Cancellation stops reads, drains zeroconf streams, and joins trap
+listeners; socket/setup errors reach `SourceErrorCallback`. The legacy
+`Start*Browser(enqueue)` wrappers remain only until production callers migrate.
+
 The legacy descriptions below remain historical until the runtime migration
 slice updates callers and documentation together. USB/spooler remains a separate
 physical-source adapter; it must not manufacture network reachability.
