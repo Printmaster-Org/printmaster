@@ -88,6 +88,30 @@ they exclude serials, protocol payloads, credentials and backend error strings.
 identity mismatch, metrics reuse, retries, cancellation, queue ownership and wake
 ordering; coordinator race tests are mandatory.
 
+#### Partial persistence (`storage.CommitScannerFacts`)
+
+`SQLiteStore.CommitScannerFacts` persists only facts a work item obtained, in one
+transaction: an optional device patch, optional scan snapshot, optional metrics
+snapshot. Nil/blank patch fields never erase stored facts; locked fields, user
+state, visibility, saved state, classification and page-count baselines are not
+patchable. Raw metadata merges recursively. Identity-only work creates no scan,
+metrics or `last_seen`; liveness-only work updates only `last_seen`.
+
+Creating a device or changing its IP requires `ValidatedSerial` equal to the
+commit serial. `expectedIP` is a compare-and-set guard on the **prior** stored
+address, not the observed destination; liveness and address moves require it.
+A destination held by any other serial (including hidden/saved rows and
+IPv4-mapped aliases) rejects the whole transaction, so stale runtime caches
+cannot authorize a conflicting move. Serials are opaque keys: path separators,
+control bytes and surrounding whitespace are rejected, never normalized.
+
+Supplied metrics use the legacy `SaveMetricsSnapshot` drop policy (all-zero,
+>5%/min-10 decrease, >10%/min-100 breakdown mismatch) read inside the same
+transaction; an omitted sample still commits the other facts and logs a fixed
+reason. Outcome logs contain counts/reasons only. Callers may wake the uploader
+only after a nil return. `stage_commit_test.go` covers trigger-proven rollback,
+concurrent merges, locks, moves, occupancy and metric parity.
+
 The legacy descriptions below remain historical until the runtime migration
 slice updates callers and documentation together. USB/spooler remains a separate
 physical-source adapter; it must not manufacture network reachability.
