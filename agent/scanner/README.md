@@ -34,6 +34,18 @@ by this fix.
 
 ### Consolidation foundation (not yet wired into Agent startup)
 
+#### Uploader wake foundation
+
+The Agent upload worker now exposes `Wake()` for callers that have successfully
+committed local facts. It is nonblocking, coalesces into a one-slot channel, and
+uses a fixed one-second batching window; repeated wakes do not extend that window.
+Periodic uploads retain their cadence and can satisfy a pending wake. The wake
+channel is never closed, so late producers remain safe during/after shutdown.
+`Stop()` cancels active uploads/retry waits and joins loops; there is no guaranteed
+final flush. Use a fresh worker instance rather than restarting a stopped one.
+These are uploader capabilities only: scanner wiring remains a separate slice.
+Payloads, credentials, routes and protocol versions are unchanged.
+
 `work.go` provides typed observations, intents, provenance, stage outcomes and a
 pure value-based planner. `coordinator.go` owns a bounded queue and shared workers
 around an injected probe/query backend. These are independently tested library

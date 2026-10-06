@@ -58,7 +58,34 @@ type UploadWorker struct {
 
 	// Lifecycle
 	stopCh chan struct{}
-	wg     sync.WaitGroup
+	// wakeCh is buffered, coalescing and NEVER closed, even after Stop.
+	wakeCh   chan struct{}
+	stopOnce sync.Once
+	runCtx   context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+}
+
+// Wake requests an earlier batched upload without waiting for delivery.
+// Call only after a successful storage commit. Safe during/after shutdown.
+func (w *UploadWorker) Wake() {
+	if w == nil {
+		return
+	}
+	select {
+	case w.wakeCh <- struct{}{}:
+	default:
+	}
+}
+
+func (w *UploadWorker) workerContext() context.Context {
+	w.mu.RLock()
+	ctx := w.runCtx
+	w.mu.RUnlock()
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
 }
 
 // UploadWorkerStatus surfaces internal worker timings for diagnostics.
@@ -208,6 +235,7 @@ func NewUploadWorker(client *agent.ServerClient, store storage.DeviceStore, logg
 		retryBackoff:      config.RetryBackoff,
 		useWebSocket:      config.UseWebSocket,
 		stopCh:            make(chan struct{}),
+		wakeCh:            make(chan struct{}, 1),
 	}
 
 	return w
@@ -227,6 +255,9 @@ func (w *UploadWorker) StartWithVersionInfo(ctx context.Context, version string,
 	if err := w.ensureRegistered(ctx, version); err != nil {
 		return fmt.Errorf("registration failed: %w", err)
 	}
+	w.mu.Lock()
+	w.runCtx, w.cancel = context.WithCancel(ctx)
+	w.mu.Unlock()
 
 	// Initialize WebSocket client if enabled
 	if w.useWebSocket {
@@ -279,7 +310,13 @@ func (w *UploadWorker) StartWithVersionInfo(ctx context.Context, version string,
 // Stop gracefully shuts down the upload worker
 func (w *UploadWorker) Stop() {
 	w.logger.Info("Stopping upload worker...")
-	close(w.stopCh)
+	w.stopOnce.Do(func() { close(w.stopCh) })
+	w.mu.RLock()
+	cancel := w.cancel
+	w.mu.RUnlock()
+	if cancel != nil {
+		cancel()
+	}
 
 	// Stop WebSocket client if running
 	w.wsClientMu.Lock()
@@ -416,6 +453,8 @@ func (w *UploadWorker) heartbeatLoop() {
 			w.sendHeartbeat()
 		case <-w.stopCh:
 			return
+		case <-w.workerContext().Done():
+			return
 		}
 	}
 }
@@ -471,7 +510,7 @@ func (w *UploadWorker) buildHeartbeatMetadata() map[string]interface{} {
 
 // sendHeartbeat sends a single heartbeat with retry logic
 func (w *UploadWorker) sendHeartbeat() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(w.workerContext(), 10*time.Second)
 	defer cancel()
 
 	// Try WebSocket first if available
@@ -538,18 +577,73 @@ func (w *UploadWorker) sendHeartbeat() {
 // uploadLoop handles periodic uploads of devices and metrics
 func (w *UploadWorker) uploadLoop() {
 	defer w.wg.Done()
+	w.runUploadLoop(w.workerContext(), w.doUpload)
+}
+
+// runUploadLoop uses a fixed one-second batching window from the first wake.
+// A sustained stream cannot postpone uploads indefinitely; scheduled uploads
+// satisfy pending wakes without changing the regular ticker cadence.
+func (w *UploadWorker) runUploadLoop(ctx context.Context, upload func()) {
 
 	ticker := time.NewTicker(w.uploadInterval)
 	defer ticker.Stop()
+	var debounce *time.Timer
+	var ready <-chan time.Time
+	clearPending := func() {
+		if debounce != nil {
+			if !debounce.Stop() {
+				select {
+				case <-debounce.C:
+				default:
+				}
+			}
+		}
+		ready = nil
+		select {
+		case <-w.wakeCh:
+		default:
+		}
+	}
+	defer clearPending()
+	stopped := func() bool {
+		select {
+		case <-ctx.Done():
+			return true
+		case <-w.stopCh:
+			return true
+		default:
+			return false
+		}
+	}
 
 	// Upload immediately on start (don't wait for first interval)
-	w.doUpload()
+	if stopped() {
+		return
+	}
+	upload()
 
 	for {
 		select {
 		case <-ticker.C:
-			w.doUpload()
+			clearPending()
+			if stopped() {
+				return
+			}
+			upload()
+		case <-w.wakeCh:
+			if ready == nil {
+				debounce = time.NewTimer(time.Second)
+				ready = debounce.C
+			}
+		case <-ready:
+			clearPending()
+			if stopped() {
+				return
+			}
+			upload()
 		case <-w.stopCh:
+			return
+		case <-ctx.Done():
 			return
 		}
 	}
@@ -575,7 +669,7 @@ func (w *UploadWorker) doUpload() {
 
 // uploadDevices reads devices from store and uploads them
 func (w *UploadWorker) uploadDevices() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(w.workerContext(), 60*time.Second)
 	defer cancel()
 
 	// Get all visible devices from store
@@ -650,7 +744,7 @@ func (w *UploadWorker) uploadDevices() error {
 
 // uploadMetrics reads latest metrics from store and uploads them
 func (w *UploadWorker) uploadMetrics() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(w.workerContext(), 60*time.Second)
 	defer cancel()
 
 	// Get all visible devices to fetch their latest metrics
@@ -718,6 +812,13 @@ func (w *UploadWorker) retryWithBackoff(fn func() error) error {
 	var lastErr error
 
 	for attempt := 0; attempt < w.retryAttempts; attempt++ {
+		select {
+		case <-w.workerContext().Done():
+			return w.workerContext().Err()
+		case <-w.stopCh:
+			return fmt.Errorf("stopped during retry")
+		default:
+		}
 		err := fn()
 		if err == nil {
 			return nil // Success
@@ -742,6 +843,8 @@ func (w *UploadWorker) retryWithBackoff(fn func() error) error {
 			// Continue to next attempt
 		case <-w.stopCh:
 			return fmt.Errorf("stopped during retry")
+		case <-w.workerContext().Done():
+			return w.workerContext().Err()
 		}
 	}
 
