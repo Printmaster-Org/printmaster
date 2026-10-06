@@ -26,6 +26,10 @@ import (
 // ParsePDUs falls back to a generic heuristic regex.
 var AssetIDRegex string
 
+// A label must be separate from its value: protocol names such as SNMPv2
+// are not serial labels. Match the full Serial Number label before its value.
+var serialLabelRE = regexp.MustCompile(`(?i)\b(?:sn|s/n|serial(?:\s*number)?)\b[:=\s]+([A-Za-z0-9\-]{4,40})`)
+
 // SetAssetIDRegex updates the package-level regex used during parsing.
 func SetAssetIDRegex(r string) {
 	AssetIDRegex = r
@@ -366,7 +370,6 @@ func ParsePDUs(scanIP string, vars []gosnmp.SnmpPDU, meta *ScanMeta, logFn func(
 	var mfgGuess, modelGuess, serialGuess string
 	mfgRe := regexp.MustCompile(`(?i)\b(hp|hewlett[-\s]?packard|canon|brother|epson|lexmark|kyocera|konica|xerox|ricoh|sharp|okidata|dell|minolta|toshiba|samsung)\b`)
 	pidRe := regexp.MustCompile(`(?i)\b(?:pid|product|product id|model(?: name)?|model:)[:=\s]*([A-Za-z0-9\-\s]{2,60})`)
-	snRe := regexp.MustCompile(`(?i)\b(?:sn|s/n|serial(?:number)?|serial[:=])[:=\s]*([A-Za-z0-9\-]{4,40})`)
 	modelKeywords := []string{"laserjet", "mfp", "printer", "series", "deskjet", "workcentre", "color", "mono"}
 
 	// helper: detect UUID-like strings (8-4-4-4-12 hex with hyphens)
@@ -488,7 +491,7 @@ func ParsePDUs(scanIP string, vars []gosnmp.SnmpPDU, meta *ScanMeta, logFn func(
 			// Never consider prtGeneral.16.1 for serial (it's often description-like)
 			if name == "1.3.6.1.2.1.43.5.1.1.16.1" {
 				// skip entirely
-			} else if m := snRe.FindStringSubmatch(sval); len(m) > 1 {
+			} else if m := serialLabelRE.FindStringSubmatch(sval); len(m) > 1 {
 				cand := strings.TrimSpace(m[1])
 				if !looksLikeUUID(cand) && !looksLikeOID(cand) && !looksLikeSupplyModel(cand) {
 					serialGuess = cand

@@ -6,6 +6,50 @@ import (
 	"github.com/gosnmp/gosnmp"
 )
 
+func TestSerialLabelBoundaries(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{name: "protocol", text: "SNMPv2"},
+		{name: "protocol-in-description", text: "Network printer supports SNMPv2 and IPP"},
+		{name: "attached-sn", text: "SN123456"},
+		{name: "attached-slash-label", text: "S/NABC123"},
+		{name: "attached-serial", text: "SerialABC123"},
+		{name: "attached-long-label", text: "SerialNumberABC123"},
+		{name: "embedded-label", text: "MSN: ABC123"},
+		{name: "embedded-serial", text: "XSerial: ABC123"},
+		{name: "colon", text: "SN:ABC123", want: "ABC123"},
+		{name: "equals", text: "SN = ABC123", want: "ABC123"},
+		{name: "whitespace", text: "SN ABC123", want: "ABC123"},
+		{name: "slash-label", text: "S/N ABC123", want: "ABC123"},
+		{name: "serial", text: "Serial: ABC123", want: "ABC123"},
+		{name: "serial-number", text: "Serial Number: ABC123", want: "ABC123"},
+		{name: "serial-number-space", text: "Serial Number ABC123", want: "ABC123"},
+		{name: "serialnumber", text: "SerialNumber=ABC123", want: "ABC123"},
+		{name: "case-and-hyphen", text: "s/n:\tAbC-123", want: "AbC-123"},
+		{name: "structured-text", text: "MFG:ACME;SN:ABC123;", want: "ABC123"},
+		{name: "real-label-after-protocol", text: "SNMPv2; SN:ABC123", want: "ABC123"},
+		{name: "missing-value", text: "SN:"},
+		{name: "short-value", text: "SN:ABC"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// Exercise the production matcher without ParsePDUs' web-UI probes.
+			got := ""
+			if match := serialLabelRE.FindStringSubmatch(tt.text); len(match) > 1 {
+				got = match[1]
+			}
+			if got != tt.want {
+				t.Fatalf("serial label in %q = %q, want %q", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParsePDUs_NonUTF8SerialAndHexCounter(t *testing.T) {
 	t.Parallel()
 	t.Run("non-utf8-serial-sanitized", func(t *testing.T) {
