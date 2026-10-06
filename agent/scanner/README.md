@@ -32,6 +32,54 @@ by this fix.
 
 ## Architecture Overview
 
+### Consolidation foundation (not yet wired into Agent startup)
+
+`work.go` provides typed observations, intents, provenance, stage outcomes and a
+pure value-based planner. `coordinator.go` owns a bounded queue and shared workers
+around an injected probe/query backend. These are independently tested library
+foundations; their presence does not mean production discovery has migrated.
+
+The ordered workload is reachability → identity → detail → optional metrics.
+An IP or `KnownDeviceHint` never proves identity. Every identity request validates
+a fresh SNMP serial from an approved identity OID or structured vendor device ID;
+a contradictory expected serial blocks attribution and commit. Detail responses
+may retain that same item's validated identity, but contradictory serials cannot
+be merged. No cross-item identity cache exists.
+
+`Do` never skips TCP based on caller hints. `DoSource` is an explicit wiring
+contract for a real adapter callback, not authentication of caller metadata.
+Only locally received, target-bound, validated protocol responses no older than
+30 seconds can skip reachability; zero/future timestamps, indirect advertised
+targets and malformed messages cannot. Queued evidence is rechecked at dispatch;
+once identity starts, receipt expiry cannot rewind the in-flight stage. Adapters
+must preserve actual receipt time rather than stamp stale hints during enqueue.
+
+Quick/liveness presets request identity; full requests detail and metrics; live
+allows essential-response enrichment; manual stays essential unless explicitly
+upgraded. Metrics run only when requested/due, and all requested fields must be
+fresh in the same item to reuse a response. Zero counters are valid; missing
+fields are not zeros. Negative TCP is not an offline assertion. Failed, negative,
+skipped-with-reason and not-checked outcomes remain distinct.
+
+Exact active requests coalesce; compatible pending requests union their work;
+active upgrades run as fresh followups. The coordinator serializes each target.
+Subscriber cancellation removes only that subscriber; the last subscriber cancels
+its work. Saturation returns `ErrCoordinatorQueueFull`. The owner calls `Close`
+to cancel/join workers; backend and commit callbacks must honor cancellation and
+must not call `Close` themselves. No source owns or closes coordinator queues.
+
+Commit and uploader wake are injected, not implemented by this library slice.
+Wake occurs only after commit succeeds, never for read-only work. Logs cover
+admission/coalescing, stage start/outcome, conflicts, persistence and shutdown;
+they exclude serials, protocol payloads, credentials and backend error strings.
+`work_test.go` and `coordinator_test.go` use offline fakes for ordering, evidence,
+identity mismatch, metrics reuse, retries, cancellation, queue ownership and wake
+ordering; coordinator race tests are mandatory.
+
+The legacy descriptions below remain historical until the runtime migration
+slice updates callers and documentation together. USB/spooler remains a separate
+physical-source adapter; it must not manufacture network reachability.
+
 ```
 scanner/
 ├── detector.go          # Device type detection (IsPrinter? confidence scoring)
