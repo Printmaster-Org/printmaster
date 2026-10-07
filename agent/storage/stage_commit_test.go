@@ -421,7 +421,7 @@ func TestCommitScannerFactsAddressMove(t *testing.T) {
 	}
 }
 
-func TestCommitScannerFactsTargetOccupancy(t *testing.T) {
+func TestCommitScannerFactsSharedTargetLeavesStaleOccupant(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"create", "move", "locked_move", "liveness", "metrics", "unguarded", "ipv4_alias", "ipv6_alias"} {
 		t.Run(mode, func(t *testing.T) {
@@ -470,23 +470,32 @@ func TestCommitScannerFactsTargetOccupancy(t *testing.T) {
 			if mode == "unguarded" {
 				guard, patch = "", DevicePatch{Model: stagePointer("changed")}
 			}
-			if err := s.CommitScannerFacts(ctx, serial, guard, patch, scan, metrics); !errors.Is(err, ErrScannerTargetOccupied) {
-				t.Fatalf("ambiguous target accepted: %v", err)
+			if err := s.CommitScannerFacts(ctx, serial, guard, patch, scan, metrics); err != nil {
+				t.Fatalf("validated identity rejected at shared target: %v", err)
 			}
 			after, err := s.Get(ctx, serial)
-			if before == nil {
-				if !errors.Is(err, ErrNotFound) {
-					t.Fatalf("ambiguous device created: %+v %v", after, err)
-				}
-			} else if err != nil || !reflect.DeepEqual(before, after) {
-				t.Fatalf("ambiguous commit changed subject: %+v %v", after, err)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if before != nil && mode == "locked_move" && after.IP != before.IP {
+				t.Fatalf("locked IP moved: %+v", after)
+			}
+			if mode == "liveness" && after.Model != before.Model {
+				t.Fatalf("liveness changed facts: %+v", after)
 			}
 			occupantAfter, err := s.Get(ctx, occupant.Serial)
 			if err != nil || !reflect.DeepEqual(occupantBefore, occupantAfter) {
-				t.Fatalf("occupant overwritten: %+v %v", occupantAfter, err)
+				t.Fatalf("stale occupant modified: %+v %v", occupantAfter, err)
 			}
-			stageAssertRows(t, s, "scan_history", 0)
-			stageAssertRows(t, s, "metrics_raw", 0)
+			wantScans, wantMetrics := 1, 1
+			switch mode {
+			case "liveness":
+				wantScans, wantMetrics = 0, 0
+			case "metrics":
+				wantScans = 0
+			}
+			stageAssertRows(t, s, "scan_history", wantScans)
+			stageAssertRows(t, s, "metrics_raw", wantMetrics)
 		})
 	}
 }
@@ -520,16 +529,16 @@ func TestCommitScannerFactsConcurrentTargetClaims(t *testing.T) {
 			close(start)
 			committed := 0
 			for i := 0; i < claims; i++ {
-				if err := <-results; err == nil {
-					committed++
-				} else if !errors.Is(err, ErrScannerTargetOccupied) {
+				if err := <-results; err != nil {
 					t.Fatalf("unexpected claim error: %v", err)
 				}
+				committed++
 			}
-			if committed != 1 {
-				t.Fatalf("committed %d claims, want 1", committed)
+			// Each claim is its own validated serial; storage serializes, never merges.
+			if committed != claims {
+				t.Fatalf("committed %d claims, want %d", committed, claims)
 			}
-			stageAssertRows(t, s, "metrics_raw", 1)
+			stageAssertRows(t, s, "metrics_raw", claims)
 			stageAssertRows(t, s, "scan_history", 0)
 		})
 	}

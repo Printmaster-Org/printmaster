@@ -100,9 +100,11 @@ metrics or `last_seen`; liveness-only work updates only `last_seen`.
 Creating a device or changing its IP requires `ValidatedSerial` equal to the
 commit serial. `expectedIP` is a compare-and-set guard on the **prior** stored
 address, not the observed destination; liveness and address moves require it.
-A destination held by any other serial (including hidden/saved rows and
-IPv4-mapped aliases) rejects the whole transaction, so stale runtime caches
-cannot authorize a conflicting move. Serials are opaque keys: path separators,
+Other serials still recorded at the destination (DHCP reuse, replaced printers,
+including hidden/saved rows and IPv4-mapped aliases) are left untouched and only
+counted in an info log: the committing identity was validated at that address,
+and liveness touches require a serial match, so stale rows cannot be refreshed.
+Serials are opaque keys: path separators,
 control bytes and surrounding whitespace are rejected, never normalized.
 
 Supplied metrics use the legacy `SaveMetricsSnapshot` drop policy (all-zero,

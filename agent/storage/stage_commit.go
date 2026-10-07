@@ -42,8 +42,7 @@ type DevicePatch struct {
 }
 
 var (
-	ErrExpectedIPMismatch    = errors.New("device IP no longer matches scanner target")
-	ErrScannerTargetOccupied = errors.New("scanner target belongs to another device")
+	ErrExpectedIPMismatch = errors.New("device IP no longer matches scanner target")
 )
 
 var _ StageCommitStore = (*SQLiteStore)(nil)
@@ -56,9 +55,9 @@ var _ StageCommitStore = (*SQLiteStore)(nil)
 // the observed destination even when the device's IP field is locked. Liveness
 // (LastSeen) always requires the guard. A new device requires a
 // validated identity and a nonempty IP matching expectedIP when supplied.
-// Another serial at the destination rejects the entire transaction, including
-// hidden/saved occupants. Hidden/saved devices remain hidden/saved. Locks and
-// destination occupancy are read inside the write tx, not from runtime caches.
+// Other serials recorded at the destination are left untouched: the caller's
+// identity was validated there, so they are stale (DHCP reuse/replacement).
+// Hidden/saved devices remain hidden/saved. Locks are read inside the write tx.
 func (s *SQLiteStore) CommitScannerFacts(ctx context.Context, serial, expectedIP string, patch DevicePatch, scan *ScanSnapshot, metrics *MetricsSnapshot) (err error) {
 	fields, scans, metricRows := 0, 0, 0
 	metricsOutcome := "absent"
@@ -138,11 +137,14 @@ func (s *SQLiteStore) CommitScannerFacts(ctx context.Context, serial, expectedIP
 	if scan != nil && !scannerAddressesEqual(scan.IP, destination) {
 		return fmt.Errorf("scan IP mismatch")
 	}
-	// No UNIQUE(ip) constraint exists: legacy inventory can contain duplicates.
-	// Check all occupants while holding the writer reservation, including IPv4
-	// mapped IPv6 aliases, so cached indexes cannot authorize a conflicting move.
-	if err = rejectScannerOccupant(ctx, tx, serial, destination); err != nil {
+	// No UNIQUE(ip) constraint exists; liveness touches require a serial match,
+	// so a stale row sharing this address cannot be refreshed by this commit.
+	shared, err := countScannerOccupants(ctx, tx, serial, destination)
+	if err != nil {
 		return err
+	}
+	if shared > 0 && storageLogger != nil {
+		storageLogger.Info("Scanner target shared with stale devices", "stale_devices", shared)
 	}
 	var locks []FieldLock
 	if locksJSON.Valid && locksJSON.String != "" && locksJSON.String != "null" {
@@ -295,25 +297,26 @@ func scannerAddressesEqual(a, b string) bool {
 	return a == b
 }
 
-func rejectScannerOccupant(ctx context.Context, tx *sql.Tx, serial, destination string) error {
+func countScannerOccupants(ctx context.Context, tx *sql.Tx, serial, destination string) (int, error) {
 	if destination == "" {
-		return nil // Metadata-only updates to legacy address-less devices.
+		return 0, nil
 	}
 	rows, err := tx.QueryContext(ctx, "SELECT ip FROM devices WHERE serial <> ? AND ip <> ''", serial)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer rows.Close()
+	count := 0
 	for rows.Next() {
 		var ip string
 		if err := rows.Scan(&ip); err != nil {
-			return err
+			return 0, err
 		}
 		if scannerAddressesEqual(ip, destination) {
-			return ErrScannerTargetOccupied
+			count++
 		}
 	}
-	return rows.Err()
+	return count, rows.Err()
 }
 
 // validateScannerMetrics mirrors SaveMetricsSnapshot's two drop rules and zero
