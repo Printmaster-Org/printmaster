@@ -1,6 +1,6 @@
 [printmaster]
 name=PrintMaster Repository
-baseurl=https://mstrhakr.github.io/printmaster/rpm
+baseurl=https://packages.printmaster.work/rpm
 enabled=1
 gpgcheck=1
-gpgkey=https://mstrhakr.github.io/printmaster/gpg.key
+gpgkey=https://packages.printmaster.work/gpg.key

@@ -17,42 +17,28 @@
 <body>
   <h1>🖨️ PrintMaster Package Repository</h1>
   
-  <p>Official package repositories for <a href="https://github.com/mstrhakr/printmaster">PrintMaster Agent</a>.</p>
+  <p>Official package repositories for <a href="https://github.com/printmaster-org/printmaster">PrintMaster Agent</a>.</p>
   
   <h2>Debian/Ubuntu (APT)</h2>
   
-  <h3>Quick Install</h3>
-  <pre><code># Add repository
-echo "deb [trusted=yes] https://mstrhakr.github.io/printmaster stable main" | sudo tee /etc/apt/sources.list.d/printmaster.list
+  <h3>Quick Install (GPG signature verification enabled)</h3>
+  <pre><code>curl -fsSL https://packages.printmaster.work/install.sh | sudo bash</code></pre>
 
-# Update and install
-sudo apt-get update
-sudo apt-get install printmaster-agent</code></pre>
-
-  <h3>With GPG Verification (Recommended)</h3>
-  <pre><code># Download and add GPG key
-curl -fsSL https://mstrhakr.github.io/printmaster/gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/printmaster.gpg
-
-# Add repository with signed-by
-echo "deb [signed-by=/usr/share/keyrings/printmaster.gpg] https://mstrhakr.github.io/printmaster stable main" | sudo tee /etc/apt/sources.list.d/printmaster.list
-
-# Update and install
-sudo apt-get update
-sudo apt-get install printmaster-agent</code></pre>
+  <p>The installer verifies the signing-key fingerprint, configures APT with a dedicated keyring, and installs PrintMaster Agent.</p>
 
   <h2>Fedora/RHEL (DNF)</h2>
   
   <h3>Quick Install (One-liner)</h3>
   <pre><code># Add repository and install
-sudo dnf config-manager addrepo --from-repofile=https://mstrhakr.github.io/printmaster/printmaster.repo
+sudo dnf config-manager addrepo --from-repofile=https://packages.printmaster.work/printmaster.repo
 sudo dnf install printmaster-agent</code></pre>
 
   <h3>With GPG Verification (Recommended)</h3>
   <pre><code># Import GPG key first
-sudo rpm --import https://mstrhakr.github.io/printmaster/gpg.key
+sudo rpm --import https://packages.printmaster.work/gpg.key
 
 # Add repository and install
-sudo dnf config-manager addrepo --from-repofile=https://mstrhakr.github.io/printmaster/printmaster.repo
+sudo dnf config-manager addrepo --from-repofile=https://packages.printmaster.work/printmaster.repo
 sudo dnf install printmaster-agent</code></pre>
 
   <h2>After Installation</h2>
@@ -60,12 +46,12 @@ sudo dnf install printmaster-agent</code></pre>
 sudo systemctl start printmaster-agent
 sudo systemctl enable printmaster-agent</code></pre>
   
-  <p>Web UI: <code>http://localhost:8000</code></p>
+  <p>Web UI: <code>http://localhost:8080</code></p>
   
   <h2>Links</h2>
   <ul>
-    <li><a href="https://github.com/mstrhakr/printmaster">GitHub Repository</a></li>
-    <li><a href="https://github.com/mstrhakr/printmaster/releases">Releases</a></li>
+    <li><a href="https://github.com/printmaster-org/printmaster">GitHub Repository</a></li>
+    <li><a href="https://github.com/printmaster-org/printmaster/releases">Releases</a></li>
   </ul>
 </body>
 </html>
