@@ -21,7 +21,7 @@ jobs:
   # Wait for CI to pass on this commit
   wait-for-ci:
     name: Wait for CI
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       checks: read
@@ -48,10 +48,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-26.04
             goos: linux
             goarch: amd64
-          - os: ubuntu-latest
+          - os: ubuntu-26.04
             goos: linux
             goarch: arm64
           - os: windows-latest
@@ -125,10 +125,10 @@ jobs:
       matrix:
         include:
           - platform: linux/amd64
-            runner: ubuntu-latest
+            runner: ubuntu-26.04
             suffix: amd64
           - platform: linux/arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-26.04-arm
             suffix: arm64
     
     steps:
@@ -196,7 +196,7 @@ jobs:
   merge-docker:
     name: Create Docker Manifest
     needs: [build-docker]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write
@@ -267,7 +267,7 @@ jobs:
     name: Create Server Release
     if: startsWith(github.ref, 'refs/tags/server-v')
     needs: [build-server, merge-docker]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     
@@ -516,7 +516,7 @@ jobs:
     name: Create Server Dev Release
     if: github.ref == 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/')
     needs: [build-server, merge-docker]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     

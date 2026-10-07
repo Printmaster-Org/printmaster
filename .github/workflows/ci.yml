@@ -27,7 +27,7 @@ jobs:
   # ============================================================================
   common:
     name: Common
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -57,7 +57,7 @@ jobs:
 
   agent:
     name: Agent
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: [common]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -87,7 +87,7 @@ jobs:
 
   server:
     name: Server
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: [common]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -130,7 +130,7 @@ jobs:
   # ============================================================================
   javascript:
     name: JavaScript
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     env:
       PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
     steps:
@@ -196,7 +196,7 @@ jobs:
   # ============================================================================
   e2e:
     name: E2E (Mock)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: [agent, server]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -225,7 +225,7 @@ jobs:
   # ============================================================================
   e2e-docker:
     name: E2E (Docker)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: [agent, server]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -327,7 +327,7 @@ jobs:
 
   ci-passed:
     name: CI Passed
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: [agent, server, javascript, e2e, e2e-docker]
     if: always()
     steps:

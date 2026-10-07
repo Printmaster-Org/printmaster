@@ -2,9 +2,27 @@ version: 2
 
 updates:
   - package-ecosystem: "docker"
-    directory: "/"
+    directories:
+      - "/agent"
+      - "/server"
     schedule:
       interval: "weekly"
+    groups:
+      docker-images:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "docker-compose"
+    directories:
+      - "/"
+      - "/server"
+      - "/tests"
+    schedule:
+      interval: "weekly"
+    groups:
+      docker-compose-images:
+        patterns:
+          - "*"
 
   - package-ecosystem: "github-actions"
     directory: "/"
