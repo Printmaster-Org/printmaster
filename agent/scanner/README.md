@@ -175,7 +175,10 @@ storage tests must also pass with `-race`.
 - **No devices found:** confirm IP scanning is enabled, TCP 9100/80/443 (plus
   515/631 for full scans) are reachable, and SNMP (UDP 161) answers with the
   configured credentials.
-- **Device not updated:** check logs for `Scanner stage failed` (reason codes)
-  or `Scanner commit failed`; identity conflicts never overwrite another serial.
+- **Device not updated:** check logs for `Scanner identity check failed`,
+  `Scanner detail check failed` (each entry names the stage, reason, query and
+  error type) or `Scanner commit failed`; identity conflicts never overwrite
+  another serial. Addresses with no device, non-printers and non-SNMP hosts are
+  logged at debug level only.
 - **Live source silent:** check `Live discovery source failed`; trap listening on
   UDP 162 needs elevated privileges.

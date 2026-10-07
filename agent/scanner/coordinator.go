@@ -134,7 +134,7 @@ var (
 type OutcomeError struct{ Outcome StageOutcome }
 
 func (e *OutcomeError) Error() string {
-	return fmt.Sprintf("scanner stage %d: status %d reason %d", e.Outcome.Stage, e.Outcome.Status, e.Outcome.Reason)
+	return fmt.Sprintf("scanner %s check %s: %s", e.Outcome.Stage, e.Outcome.Status, e.Outcome.Reason)
 }
 
 type delivery struct {
@@ -592,15 +592,17 @@ func (c *Coordinator) execute(ctx context.Context, req Request, protocol *protoc
 		}
 		start := time.Now()
 		if c.cfg.Logger != nil {
-			c.cfg.Logger.Debug("Scanner stage started", "ip", req.Observation.IP.String(), "stage", stage)
+			c.cfg.Logger.Debug("Scanner "+stage.String()+" check started", "ip", req.Observation.IP.String(), "stage", stage.String(), "source", req.Observation.Source.String(), "request", req.Preset.String())
 		}
 		var stageErr, orderErr error
+		var info stageLogInfo
 		if stage == StageReachability {
 			var ports []uint16
 			for attempt := 0; attempt <= req.Options.Retries; attempt++ {
 				if stageErr = ctx.Err(); stageErr != nil {
 					break
 				}
+				info.attempts++
 				if c.cfg.Backend.ProbeWithPorts != nil {
 					ports, stageErr = c.cfg.Backend.ProbeWithPorts(ctx, req.Observation.IP, append([]uint16(nil), req.Options.Ports...))
 				} else {
@@ -656,15 +658,16 @@ func (c *Coordinator) execute(ctx context.Context, req Request, protocol *protoc
 			var received time.Time
 			if reuse {
 				qr, received = collected, collectedAt
+				info.reused = true
 			} else {
-				qr, received, stageErr = c.query(ctx, req, stage, profile, false, &result)
+				qr, received, stageErr = c.query(ctx, req, stage, profile, false, &result, &info)
 			}
 			facts, model, manufacturer, fields, parseErr := coordinatorIdentity(req, qr, received)
 			if stageErr == nil {
 				stageErr = parseErr
 			}
 			if stage == StageIdentity && stageErr == nil && facts.Serial == "" && req.Options.MissingSerialFallback {
-				qr, received, stageErr = c.query(ctx, req, stage, QueryFull, true, &result)
+				qr, received, stageErr = c.query(ctx, req, stage, QueryFull, true, &result, &info)
 				facts, model, manufacturer, fields, parseErr = coordinatorIdentity(req, qr, received)
 				if stageErr == nil {
 					stageErr = parseErr
@@ -725,18 +728,9 @@ func (c *Coordinator) execute(ctx context.Context, req Request, protocol *protoc
 		if stage != StageReachability && (o.Status == StatusNegative || o.Status == StatusFailed) {
 			unsafe = true
 		}
-		if c.cfg.Logger != nil {
-			args := []interface{}{"ip", req.Observation.IP.String(), "stage", stage, "duration", time.Since(start), "status", o.Status, "reason", o.Reason, "error", stageErr != nil}
-			if o.Status == StatusFailed {
-				c.cfg.Logger.Error("Scanner stage failed", args...)
-			} else if o.Status == StatusNegative {
-				c.cfg.Logger.Warn("Scanner stage negative", args...)
-			} else {
-				c.cfg.Logger.Info("Scanner stage completed", args...)
-			}
-		}
+		c.logStage(req, o, stageErr, time.Since(start), info)
 		if stageErr != nil {
-			failures = append(failures, fmt.Errorf("stage %d: %w", stage, stageErr))
+			failures = append(failures, fmt.Errorf("%s stage: %w", stage, stageErr))
 		}
 		if o.Status == StatusNegative || o.Status == StatusFailed {
 			failures = append(failures, &OutcomeError{Outcome: o})
@@ -754,7 +748,7 @@ func (c *Coordinator) execute(ctx context.Context, req Request, protocol *protoc
 	if c.cfg.Logger != nil {
 		for _, o := range result.Outcomes {
 			if o.Status == StatusSkipped {
-				c.cfg.Logger.Debug("Scanner stage skipped", "ip", req.Observation.IP.String(), "stage", o.Stage, "duration", time.Duration(0), "status", o.Status, "reason", o.Reason)
+				c.cfg.Logger.Debug("Scanner "+o.Stage.String()+" check skipped: "+o.Reason.String(), "ip", req.Observation.IP.String(), "stage", o.Stage.String(), "status", o.Status.String(), "reason", o.Reason.String())
 			}
 		}
 	}
@@ -782,11 +776,13 @@ func coordinatorProvenance(req Request, at time.Time, protocol FactProtocol, fie
 	return Provenance{Source: req.Observation.Source, IP: req.Observation.IP, Protocol: protocol, ReceivedAt: at, Field: field}
 }
 
-func (c *Coordinator) query(ctx context.Context, req Request, stage WorkStage, profile QueryProfile, diagnostic bool, result *Result) (*QueryResult, time.Time, error) {
+func (c *Coordinator) query(ctx context.Context, req Request, stage WorkStage, profile QueryProfile, diagnostic bool, result *Result, info *stageLogInfo) (*QueryResult, time.Time, error) {
 	timeout := req.Options.TimeoutSeconds
 	if profile == QueryFull {
 		timeout = req.Options.FullTimeoutSeconds
 	}
+	info.profiles = append(info.profiles, profile)
+	info.timeout = timeout
 	var qr *QueryResult
 	var err error
 	var at time.Time
@@ -794,8 +790,9 @@ func (c *Coordinator) query(ctx context.Context, req Request, stage WorkStage, p
 		if err = ctx.Err(); err != nil {
 			break
 		}
+		info.attempts++
 		if c.cfg.Logger != nil {
-			c.cfg.Logger.Debug("Scanner query", "ip", req.Observation.IP.String(), "stage", stage, "profile", profile.String(), "attempt", attempt, "diagnostic", diagnostic)
+			c.cfg.Logger.Debug("Scanner SNMP query", "ip", req.Observation.IP.String(), "stage", stage.String(), "query", queryProfileLabel(profile), "attempt", attempt+1, "of", req.Options.Retries+1, "timeout", (time.Duration(timeout) * time.Second).String(), "missing_serial_fallback", diagnostic)
 		}
 		queryCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 		qr, err = c.cfg.Backend.Query(queryCtx, QueryRequest{IP: req.Observation.IP, Profile: profile, VendorHint: req.Options.VendorHint, LearnedSerialOID: req.Options.LearnedSerialOID, TimeoutSeconds: timeout, Metrics: append([]MetricField(nil), req.Metrics...)})
