@@ -26,14 +26,6 @@ func reportSourceError(report SourceErrorCallback, err error) {
 	}
 }
 
-func logSourceError(err error) {
-	if err == nil {
-		return
-	}
-	// Reported errors are local setup/socket failures; decoders never report packet contents.
-	WarnCtx("Discovery source failed", "error", err.Error())
-}
-
 // Decoders leave ObservedAt zero. Only an actual receive seam supplies time,
 // and only target-bound credible messages carry it through to consumers.
 // This is not a stage result or authentication; the coordinator revalidates.

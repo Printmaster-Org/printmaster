@@ -154,11 +154,6 @@ func wsProbeMessage() string {
 <soap:Body><wsd:Probe><wsd:Types>wsdp:Device</wsd:Types></wsd:Probe></soap:Body></soap:Envelope>`
 }
 
-// sendProbe sends a WS-Discovery Probe message to discover existing devices
-func sendProbe() {
-	reportSourceError(logSourceError, sendSourceDatagram(context.Background(), wsDiscoveryMulticastAddr, wsProbeMessage()))
-}
-
 // extractIPsFromXAddrs parses XAddrs field (space-separated URLs) and extracts IPv4 addresses
 func extractIPsFromXAddrs(xaddrs string) []string {
 	var ips []string

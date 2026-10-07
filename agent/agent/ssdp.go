@@ -207,11 +207,6 @@ func sendSourceDatagram(ctx context.Context, address, message string) error {
 	return err
 }
 
-// sendMSearch sends an SSDP M-SEARCH message to discover existing devices
-func sendMSearch() {
-	reportSourceError(logSourceError, sendSourceDatagram(context.Background(), ssdpMulticastAddr, ssdpSearchMessage()))
-}
-
 // parseSSDPHeaders parses HTTP-style headers from SSDP message
 func parseSSDPHeaders(message string) map[string]string {
 	headers := make(map[string]string)
