@@ -72,7 +72,8 @@ async function updateHeaderInfoBar() {
     if (versionEl && cachedAgentVersion) {
         const ver = cachedAgentVersion.version || 'unknown';
         const buildType = cachedAgentVersion.build_type || '';
-        versionEl.textContent = 'v' + ver + (buildType && buildType !== 'release' ? ' (' + buildType + ')' : '');
+        const showBuildType = buildType && buildType !== 'release' && !ver.toLowerCase().includes(buildType.toLowerCase());
+        versionEl.textContent = 'v' + ver + (showBuildType ? ' (' + buildType + ')' : '');
         versionEl.title = 'Agent version: ' + ver + 
             (cachedAgentVersion.git_commit ? '\nCommit: ' + cachedAgentVersion.git_commit : '') +
             (cachedAgentVersion.build_time ? '\nBuilt: ' + cachedAgentVersion.build_time : '');

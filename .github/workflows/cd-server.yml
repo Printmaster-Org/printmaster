@@ -148,13 +148,16 @@ jobs:
     - name: Get version
       id: version
       run: |
-        echo "version=$(cat server/VERSION)" >> $GITHUB_OUTPUT
-        echo "git_commit=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+        BASE_VERSION=$(cat server/VERSION)
+        GIT_COMMIT=$(git rev-parse --short HEAD)
+        echo "git_commit=$GIT_COMMIT" >> $GITHUB_OUTPUT
         echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
         # Dev builds from main branch, release builds from tags
         if [[ "${{ github.ref }}" == refs/tags/server-v* ]]; then
+          echo "version=$BASE_VERSION" >> $GITHUB_OUTPUT
           echo "build_type=release" >> $GITHUB_OUTPUT
         else
+          echo "version=${BASE_VERSION}-dev.${GIT_COMMIT}" >> $GITHUB_OUTPUT
           echo "build_type=dev" >> $GITHUB_OUTPUT
         fi
     

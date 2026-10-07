@@ -6850,7 +6850,15 @@ async function loadServerStatus() {
 
         const data = await response.json();
         const el = document.getElementById('server_status');
-        if (el) el.innerHTML = `<span style="color:var(--success);">● Online</span> v${data.version}`;
+        if (el) {
+            const ver = data.version || 'unknown';
+            const buildType = data.build_type || '';
+            const showBuildType = buildType && buildType !== 'release' && !ver.toLowerCase().includes(buildType.toLowerCase());
+            el.innerHTML = `<span style="color:var(--success);">● Online</span> v${escapeHtml(ver)}${showBuildType ? ` (${escapeHtml(buildType)})` : ''}`;
+            el.title = `Server version: ${ver}` +
+                (data.git_commit ? `\nCommit: ${data.git_commit}` : '') +
+                (data.build_time ? `\nBuilt: ${data.build_time}` : '');
+        }
         else window.__pm_shared.warn('server_status element not found in DOM');
 
         // Store tenancy_enabled flag globally for other UI components

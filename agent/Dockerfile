@@ -27,12 +27,16 @@ WORKDIR /build/agent
 ARG VERSION=dev
 ARG BUILD_TIME
 ARG GIT_COMMIT
-ARG BUILD_TYPE=release
+ARG BUILD_TYPE=dev
 ARG TARGETARCH
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
+    APP_VERSION="${VERSION}"; \
+    if [ -z "$APP_VERSION" ] || [ "$APP_VERSION" = "dev" ] || [ "$APP_VERSION" = "latest" ]; then \
+        APP_VERSION="$(tr -d '[:space:]' < VERSION)-dev"; \
+    fi; \
     CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
-        -ldflags="-s -w -X 'main.Version=${VERSION}' -X 'main.BuildTime=${BUILD_TIME}' -X 'main.GitCommit=${GIT_COMMIT}' -X 'main.BuildType=${BUILD_TYPE}'" \
+        -ldflags="-s -w -X 'main.Version=${APP_VERSION}' -X 'main.BuildTime=${BUILD_TIME}' -X 'main.GitCommit=${GIT_COMMIT}' -X 'main.BuildType=${BUILD_TYPE}'" \
         -o printmaster-agent .
 
 # Runtime stage - use Alpine for minimal size with shell support for entrypoint
