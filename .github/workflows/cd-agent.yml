@@ -428,8 +428,9 @@ jobs:
         # Extract major.minor for compatible server matching
         MAJOR_MINOR=$(echo "$AGENT_VERSION" | sed 's/\.[^.]*$//')
         
-        # Find latest server with matching minor version (e.g., agent 0.9.5 -> server 0.9.*)
-        MATCHING_SERVER_TAG=$(git tag -l "server-v${MAJOR_MINOR}.*" --sort=-version:refname | head -n 1)
+        # Find latest stable server with matching minor version (e.g., agent 0.9.5 -> server 0.9.*).
+        # Dev tags (server-vX.Y.Z-dev.sha) sort above their stable release, so exclude them.
+        MATCHING_SERVER_TAG=$(git tag -l "server-v${MAJOR_MINOR}.*" --sort=-version:refname | grep -E '^server-v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)
         
         if [ -n "$MATCHING_SERVER_TAG" ]; then
           echo "server_version=${MATCHING_SERVER_TAG#server-v}" >> $GITHUB_OUTPUT
@@ -612,7 +613,7 @@ jobs:
           - **Commit:** ${{ github.sha }}
           
           ### 🔗 Links
-          - [Documentation](https://github.com/printmaster-org/printmaster/tree/main/docs)
+          - [Documentation](https://docs.printmaster.work/)
           - [Docker Images](https://github.com/printmaster-org/printmaster/pkgs/container/printmaster-agent)
           - [Issue Tracker](https://github.com/printmaster-org/printmaster/issues)
         files: artifacts/printmaster-*
@@ -1122,7 +1123,7 @@ jobs:
         sudo systemctl start printmaster-agent
         sudo systemctl enable printmaster-agent</code></pre>
           
-          <p>Web UI: <code>http://localhost:8000</code></p>
+          <p>Web UI: <code>http://localhost:8080</code></p>
           
           <h2>Links</h2>
           <ul>

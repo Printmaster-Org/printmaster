@@ -286,6 +286,8 @@ jobs:
     
     - name: Get version info
       id: version
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
         SERVER_VERSION=$(cat server/VERSION)
         echo "version=$SERVER_VERSION" >> $GITHUB_OUTPUT
@@ -294,12 +296,16 @@ jobs:
         # Extract major.minor for compatible agent matching
         MAJOR_MINOR=$(echo "$SERVER_VERSION" | sed 's/\.[^.]*$//')
         
-        # Find latest agent with matching minor version (e.g., server 0.9.5 -> agent 0.9.*)
-        MATCHING_AGENT_TAG=$(git tag -l "agent-v${MAJOR_MINOR}.*" --sort=-version:refname | head -n 1)
+        # Find latest stable agent with matching minor version (e.g., server 0.9.5 -> agent 0.9.*).
+        # Dev tags (agent-vX.Y.Z-dev.sha) sort above their stable release, so exclude them.
+        MATCHING_AGENT_TAG=$(git tag -l "agent-v${MAJOR_MINOR}.*" --sort=-version:refname | grep -E '^agent-v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)
         
         if [ -n "$MATCHING_AGENT_TAG" ]; then
           echo "agent_version=${MATCHING_AGENT_TAG#agent-v}" >> $GITHUB_OUTPUT
           echo "agent_tag=$MATCHING_AGENT_TAG" >> $GITHUB_OUTPUT
+          # RPM names carry a release/dist suffix (e.g. 0.31.1-1.fc44), so read the real asset name.
+          RPM_ASSET=$(gh release view "$MATCHING_AGENT_TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name | select(endswith(".x86_64.rpm"))' 2>/dev/null | head -n 1 || true)
+          echo "agent_rpm=$RPM_ASSET" >> $GITHUB_OUTPUT
           echo "Found compatible agent: $MATCHING_AGENT_TAG"
         else
           echo "agent_version=" >> $GITHUB_OUTPUT
@@ -469,13 +475,24 @@ jobs:
           
           **Latest Agent: v${{ steps.version.outputs.agent_version }}** — [View Release](https://github.com/printmaster-org/printmaster/releases/tag/${{ steps.version.outputs.agent_tag }})
           
+          **Debian/Ubuntu (APT repo, signed):**
+          ```bash
+          curl -fsSL https://packages.printmaster.work/install.sh | sudo bash
+          ```
+          
+          **Fedora/RHEL (DNF repo):**
+          ```bash
+          sudo dnf config-manager addrepo --from-repofile=https://packages.printmaster.work/printmaster.repo && sudo dnf install -y printmaster-agent
+          ```
+          
           | Platform | Download |
           |----------|----------|
           | Windows (MSI) | [printmaster-agent-v${{ steps.version.outputs.agent_version }}-windows-amd64.msi](https://github.com/printmaster-org/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent-v${{ steps.version.outputs.agent_version }}-windows-amd64.msi) |
           | Linux (amd64) | [printmaster-agent-v${{ steps.version.outputs.agent_version }}-linux-amd64](https://github.com/printmaster-org/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent-v${{ steps.version.outputs.agent_version }}-linux-amd64) |
           | Linux (arm64) | [printmaster-agent-v${{ steps.version.outputs.agent_version }}-linux-arm64](https://github.com/printmaster-org/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent-v${{ steps.version.outputs.agent_version }}-linux-arm64) |
-          | Debian/Ubuntu | [printmaster-agent_${{ steps.version.outputs.agent_version }}_amd64.deb](https://github.com/printmaster-org/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent_${{ steps.version.outputs.agent_version }}_amd64.deb) |
-          | Fedora/RHEL | [printmaster-agent-${{ steps.version.outputs.agent_version }}.x86_64.rpm](https://github.com/printmaster-org/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent-${{ steps.version.outputs.agent_version }}.x86_64.rpm) |
+          | Debian/Ubuntu (amd64) | [printmaster-agent_${{ steps.version.outputs.agent_version }}_amd64.deb](https://github.com/printmaster-org/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent_${{ steps.version.outputs.agent_version }}_amd64.deb) |
+          | Debian/Ubuntu (arm64) | [printmaster-agent_${{ steps.version.outputs.agent_version }}_arm64.deb](https://github.com/printmaster-org/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent_${{ steps.version.outputs.agent_version }}_arm64.deb) |
+          | Fedora/RHEL | ${{ steps.version.outputs.agent_rpm && format('[{0}](https://github.com/printmaster-org/printmaster/releases/download/{1}/{0})', steps.version.outputs.agent_rpm, steps.version.outputs.agent_tag) || format('[RPM packages](https://github.com/printmaster-org/printmaster/releases/tag/{0})', steps.version.outputs.agent_tag) }} |
           | macOS (Intel) | [printmaster-agent-v${{ steps.version.outputs.agent_version }}-darwin-amd64](https://github.com/printmaster-org/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent-v${{ steps.version.outputs.agent_version }}-darwin-amd64) |
           | macOS (Apple Silicon) | [printmaster-agent-v${{ steps.version.outputs.agent_version }}-darwin-arm64](https://github.com/printmaster-org/printmaster/releases/download/${{ steps.version.outputs.agent_tag }}/printmaster-agent-v${{ steps.version.outputs.agent_version }}-darwin-arm64) |
           
@@ -486,7 +503,7 @@ jobs:
           - **Commit:** ${{ github.sha }}
           
           ### 🔗 Links
-          - [Documentation](https://github.com/printmaster-org/printmaster/tree/main/docs)
+          - [Documentation](https://docs.printmaster.work/)
           - [Docker Images](https://github.com/printmaster-org/printmaster/pkgs/container/printmaster-server)
           - [Issue Tracker](https://github.com/printmaster-org/printmaster/issues)
         files: artifacts/printmaster-*
@@ -611,7 +628,7 @@ jobs:
           - **Workflow run:** ${{ github.run_id }}
           
           ### 🔗 Links
-          - [Documentation](https://github.com/printmaster-org/printmaster/tree/main/docs)
+          - [Documentation](https://docs.printmaster.work/)
           - [Docker Images](https://github.com/printmaster-org/printmaster/pkgs/container/printmaster-server)
           - [Issue Tracker](https://github.com/printmaster-org/printmaster/issues)
         files: artifacts/printmaster-*
