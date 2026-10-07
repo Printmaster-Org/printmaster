@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,19 +8,6 @@ import (
 
 	"printmaster/common/util"
 )
-
-// UpsertDiscoveredPrinter writes discovered device directly to database
-func UpsertDiscoveredPrinter(pi PrinterInfo) {
-	pi.LastSeen = time.Now()
-
-	// Write to database (primary storage)
-	if deviceStorage != nil {
-		ctx := context.Background()
-		if err := deviceStorage.StoreDiscoveredDevice(ctx, pi); err != nil {
-			Info("Failed to store device in database: " + err.Error())
-		}
-	}
-}
 
 // AppendScanEvent writes a timestamped single-line audit of scan events to
 // logs/scan_events.log. It's best-effort and will not abort scanning on error.

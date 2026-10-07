@@ -1561,43 +1561,6 @@ func ensureTLSCertificates(customCertPath, customKeyPath string) (certFile, keyF
 	return certFile, keyFile, nil
 }
 
-// deviceStorageAdapter implements agent.DeviceStorage interface
-type deviceStorageAdapter struct {
-	store storage.DeviceStore
-}
-
-func (a *deviceStorageAdapter) StoreDiscoveredDevice(ctx context.Context, pi agent.PrinterInfo) error {
-	// Convert PrinterInfo to Device
-	device := storage.PrinterInfoToDevice(pi, false)
-	device.Visible = true
-
-	snapshot := storage.PrinterInfoToScanSnapshot(pi)
-	metrics := storage.PrinterInfoToMetricsSnapshot(pi)
-	if err := a.store.StoreDiscoveryAtomic(ctx, device, snapshot, metrics); err != nil {
-		return fmt.Errorf("failed to persist discovery atomically: %w", err)
-	}
-
-	// Broadcast device update via SSE
-	if sseHub != nil {
-		isNew := device.FirstSeen.Equal(device.LastSeen) || time.Since(device.FirstSeen) < time.Second
-		eventType := "device_updated"
-		if isNew {
-			eventType = "device_discovered"
-		}
-		sseHub.Broadcast(SSEEvent{
-			Type: eventType,
-			Data: map[string]interface{}{
-				"serial": device.Serial,
-				"ip":     device.IP,
-				"make":   device.Manufacturer,
-				"model":  device.Model,
-			},
-		})
-	}
-
-	return nil
-}
-
 // SSE (Server-Sent Events) Hub for real-time UI updates
 type SSEEvent struct {
 	Type string                 `json:"type"`
@@ -3397,9 +3360,6 @@ func runInteractive(ctx context.Context, configFlag string) {
 		return agentConfigStore.SetConfigValue("webui_credentials", all)
 	}
 
-	// Create storage adapter that implements agent.DeviceStorage interface
-	storageAdapter := &deviceStorageAdapter{store: deviceStore}
-	agent.SetDeviceStorage(storageAdapter)
 	appLogger.Info("Device storage connected", "mode", "auto_persist")
 
 	mainScanner, err = newScannerRuntime(ctx, deviceStore, productionScannerBackend())
@@ -3586,7 +3546,7 @@ func runInteractive(ctx context.Context, configFlag string) {
 					mu.Unlock()
 				}
 			}()
-			browse(sourceCtx, func(observation scanner.Observation) bool {
+			browse(sourceCtx, agent.ThrottleObservations(func(observation scanner.Observation) bool {
 				// Adapter already stamped receipt; scanning runs off the listener goroutine.
 				return mainScanner.launch(func() {
 					_, err := mainScanner.RequestSource(sourceCtx, observation, scanner.IntentLive,
@@ -3595,7 +3555,7 @@ func runInteractive(ctx context.Context, configFlag string) {
 						appLogger.Debug("Live scanner observation rejected", "source", observation.Source, "ip", observation.IP.String(), "error", err.Error())
 					}
 				})
-			}, sourceError)
+			}, 10*time.Minute), sourceError)
 		}) {
 			cancel()
 			*running = false

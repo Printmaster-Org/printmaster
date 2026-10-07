@@ -7,7 +7,6 @@ import (
 	"net"
 	"printmaster/agent/scanner"
 	"strings"
-	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
 )
@@ -17,23 +16,6 @@ import (
 const (
 	llmnrMulticastAddr = "224.0.0.252:5355"
 )
-
-// StartLLMNRBrowser listens for LLMNR queries and responses on multicast group
-// 224.0.0.252:5355. It filters for printer-related hostnames and resolves them
-// to IPs for discovery. Runs until context is canceled.
-//
-// LLMNR is a Windows protocol for hostname resolution in networks without DNS.
-// Useful for discovering printers by hostname in Windows-only environments.
-// Deprecated: use StartLLMNRObservationBrowser. seen is retained only for
-// signature compatibility; private throttling records accepted work only.
-func StartLLMNRBrowser(ctx context.Context, enqueue func(scanner.ScanJob) bool, seen map[string]time.Time, throttleWindow time.Duration) {
-	StartLLMNRObservationBrowser(ctx, throttleObservations(func(o scanner.Observation) bool { return enqueue(llmnrLegacyJob(o)) }, throttleWindow), logSourceError)
-}
-
-func llmnrLegacyJob(o scanner.Observation) scanner.ScanJob {
-	// A typed scanner hint, not agent.ScanMeta (which main cannot type assert).
-	return scanner.ScanJob{IP: o.IP.String(), Source: "llmnr", Meta: o.Hints.LLMNR}
-}
 
 // StartLLMNRObservationBrowser retains hostname/answer/sender hints, not identity.
 // Existing hostname heuristics and query-source fallback remain admission policy.

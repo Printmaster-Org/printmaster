@@ -13,20 +13,6 @@ import (
 	"github.com/gosnmp/gosnmp"
 )
 
-// StartSNMPTrapListener listens for SNMP trap notifications on UDP port 162
-// and enqueues discovered devices for SNMP enrichment. Runs until context is canceled.
-//
-// SNMP traps provide event-driven discovery when printers:
-// - Power on or boot up
-// - Change status (errors, warnings, ready)
-// - Experience supply issues (toner low, paper jam, etc.)
-//
-// Note: Port 162 requires elevated privileges on most systems (admin/root).
-// Deprecated: use StartSNMPTrapObservationListener to retain trap metadata.
-func StartSNMPTrapListener(ctx context.Context, enqueue func(string) bool, port uint16) error {
-	return StartSNMPTrapObservationListener(ctx, func(o scanner.Observation) bool { return enqueue(o.IP.String()) }, port)
-}
-
 // StartSNMPTrapObservationListener retains PDUs from eligible IPv4 traps.
 // Printer-MIB OIDs or known vendor OIDs admit work, never establish identity.
 // Listen errors are returned; the browser API reports/retries them.
@@ -213,29 +199,6 @@ func trapObservation(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) (scanner.Obse
 		h.Eligibility = "vendor-hint"
 	}
 	return scanner.Observation{IP: ip, Source: scanner.SourceTrap, Hints: scanner.ProtocolHints{Trap: h}}, true
-}
-
-// handleTrap processes incoming SNMP trap notifications
-func handleTrap(packet *gosnmp.SnmpPacket, addr *net.UDPAddr, enqueue func(string) bool) {
-	if packet == nil || addr == nil || enqueue == nil {
-		return
-	}
-
-	ip := addr.IP.String()
-	InfoCtx("SNMP trap received", "source", "snmptrap", "ip", ip)
-
-	// Enqueue device IP for discovery
-	if enqueue(ip) {
-		InfoCtx("SNMP trap enqueued", "source", "snmptrap", "ip", ip)
-	}
-}
-
-// StartSNMPTrapBrowser is a wrapper that handles the trap listener lifecycle
-// with automatic restart on errors and throttling to prevent duplicate discoveries
-// Deprecated: use StartSNMPTrapObservationBrowser. seen is retained only for
-// signature compatibility; throttle state is private to this invocation.
-func StartSNMPTrapBrowser(ctx context.Context, enqueue func(string) bool, seen map[string]time.Time, throttleWindow time.Duration) {
-	StartSNMPTrapObservationBrowser(ctx, throttleObservations(func(o scanner.Observation) bool { return enqueue(o.IP.String()) }, throttleWindow), logSourceError)
 }
 
 // StartSNMPTrapObservationBrowser retries non-permission listener errors with

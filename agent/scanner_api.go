@@ -168,9 +168,6 @@ func DiscoverNow(ctx context.Context, timeout time.Duration) ([]DiscoveredDevice
 func LiveDiscoveryDetect(ctx context.Context, ip string, timeout int) (*agent.PrinterInfo, error) {
 	return scannerReadPrinter(ctx, ip, timeout, false)
 }
-func LiveDiscoveryDeepScan(ctx context.Context, ip string, timeout int) (*agent.PrinterInfo, error) {
-	return scannerReadPrinter(ctx, ip, timeout, true)
-}
 func scannerReadPrinter(ctx context.Context, ip string, timeout int, full bool) (*agent.PrinterInfo, error) {
 	runtime, err := requireScanner()
 	if err != nil {

@@ -17,12 +17,6 @@ const (
 	ssdpSearchTarget  = "upnp:rootdevice" // Could also use "ssdp:all" for broader discovery
 )
 
-// StartSSDPBrowser preserves the IPv4 enqueue API.
-// Deprecated: use StartSSDPObservationBrowser to retain protocol metadata.
-func StartSSDPBrowser(ctx context.Context, enqueue func(string) bool) {
-	StartSSDPObservationBrowser(ctx, func(o scanner.Observation) bool { return enqueue(o.IP.String()) }, logSourceError)
-}
-
 // StartSSDPObservationBrowser emits accepted alive/response targets with raw
 // sender and headers. A Location target is not evidence its host responded.
 func StartSSDPObservationBrowser(ctx context.Context, submit ObservationCallback, report SourceErrorCallback) {

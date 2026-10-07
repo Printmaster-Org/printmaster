@@ -208,11 +208,6 @@ func TestSourceObservationLLMNRMetadata(t *testing.T) {
 		if h.Hostname != "HP-Office.local" || h.Message != kind || h.Sender.String() != "192.0.2.9" || h.Answer.IsValid() != response {
 			t.Fatalf("metadata=%+v", h)
 		}
-		job := llmnrLegacyJob(out[0])
-		meta, ok := job.Meta.(scanner.LLMNRHint)
-		if !ok || meta != h || job.IP != target || job.Source != "llmnr" {
-			t.Fatalf("legacy metadata=%+v", job)
-		}
 		for n := 0; n < len(data); n++ {
 			if len(llmnrObservations(data[:n], observationSender("192.0.2.9"))) != 0 {
 				t.Fatalf("truncated packet %d admitted", n)
@@ -230,7 +225,7 @@ func TestSourceObservationLLMNRMetadata(t *testing.T) {
 func TestSourceObservationThrottleAcceptedOnly(t *testing.T) {
 	t.Parallel()
 	var attempts atomic.Int32
-	submit := throttleObservations(func(scanner.Observation) bool { return attempts.Add(1) > 1 }, time.Hour)
+	submit := ThrottleObservations(func(scanner.Observation) bool { return attempts.Add(1) > 1 }, time.Hour)
 	o := scanner.Observation{IP: netip.MustParseAddr("192.0.2.1")}
 	if submit(o) || !submit(o) || submit(o) || attempts.Load() != 2 {
 		t.Fatal("rejected admission poisoned throttle")

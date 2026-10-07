@@ -93,7 +93,7 @@ func waitSourceDelay(ctx context.Context, delay time.Duration) bool {
 
 // Local throttle state never touches the legacy caller-owned seen map, which
 // may be shared with unrelated workers without a common lock.
-func throttleObservations(submit ObservationCallback, window time.Duration) ObservationCallback {
+func ThrottleObservations(submit ObservationCallback, window time.Duration) ObservationCallback {
 	var mu sync.Mutex
 	seen := make(map[netip.Addr]time.Time)
 	return func(o scanner.Observation) bool {
@@ -208,10 +208,4 @@ func runMDNSObservationBrowser(ctx context.Context, submit ObservationCallback, 
 			submit(event.observation)
 		}
 	}
-}
-
-// StartMDNSBrowser preserves the IPv4 enqueue API.
-// Deprecated: use StartMDNSObservationBrowser to retain protocol metadata.
-func StartMDNSBrowser(ctx context.Context, enqueue func(string) bool) {
-	StartMDNSObservationBrowser(ctx, func(o scanner.Observation) bool { return enqueue(o.IP.String()) }, logSourceError)
 }

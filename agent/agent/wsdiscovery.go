@@ -59,12 +59,6 @@ type wsEndpointReference struct {
 	Address string `xml:"http://schemas.xmlsoap.org/ws/2004/08/addressing Address"`
 }
 
-// StartWSDiscoveryBrowser preserves the IPv4 enqueue API.
-// Deprecated: use StartWSDiscoveryObservationBrowser to retain protocol metadata.
-func StartWSDiscoveryBrowser(ctx context.Context, enqueue func(string) bool) {
-	StartWSDiscoveryObservationBrowser(ctx, func(o scanner.Observation) bool { return enqueue(o.IP.String()) }, logSourceError)
-}
-
 // StartWSDiscoveryObservationBrowser emits Hello and ProbeMatch observations,
 // retaining scopes and advertised URLs without asserting printer identity.
 func StartWSDiscoveryObservationBrowser(ctx context.Context, submit ObservationCallback, report SourceErrorCallback) {

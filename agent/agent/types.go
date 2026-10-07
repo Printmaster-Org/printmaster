@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"time"
 )
 
@@ -14,21 +13,6 @@ type PaperTray struct {
 	MaxCapacity  int    `json:"max_capacity"`            // Max capacity (-2=unknown, -1=unlimited, 0+=actual)
 	LevelPercent int    `json:"level_percent,omitempty"` // Calculated percentage (0-100, -1 if unknown)
 	Status       string `json:"status,omitempty"`        // "ok", "low", "empty", "unknown"
-}
-
-// DeviceStorage defines the interface for storing discovered devices
-// This allows the agent package to store devices without importing the storage package
-type DeviceStorage interface {
-	// StoreDiscoveredDevice stores a discovered device in the database
-	StoreDiscoveredDevice(ctx context.Context, pi PrinterInfo) error
-}
-
-// Global device storage (set by main package)
-var deviceStorage DeviceStorage
-
-// SetDeviceStorage allows main package to inject the storage implementation
-func SetDeviceStorage(storage DeviceStorage) {
-	deviceStorage = storage
 }
 
 // ScanMeta holds optional metadata from earlier discovery steps (ARP, TCP probes, mDNS)

@@ -3,11 +3,8 @@ package agent
 import (
 	"encoding/binary"
 	"encoding/xml"
-	"net"
 	"reflect"
 	"testing"
-
-	"github.com/gosnmp/gosnmp"
 )
 
 // These tests exercise production parsers and the trap callback only. Browser
@@ -238,41 +235,6 @@ func TestBaselineLLMNRHostnameFilter(t *testing.T) {
 			t.Parallel()
 			if got := isPrinterHostname(tc.host); got != tc.want {
 				t.Fatalf("printer hostname = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestBaselineTrapCallback(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name string
-		addr *net.UDPAddr
-		pdus []gosnmp.SnmpPDU
-	}{
-		{"nil-source", nil, nil},
-		{"generic", &net.UDPAddr{IP: net.ParseIP("192.0.2.9")}, nil},
-		{"printer", &net.UDPAddr{IP: net.ParseIP("192.0.2.9")}, []gosnmp.SnmpPDU{{Name: "1.3.6.1.6.3.1.1.4.1.0", Value: "1.3.6.1.2.1.43.18.2.0.3"}}},
-		// Known gap: callback has no printer-OID or IPv4 filter. Arbitrary
-		// traps and IPv6 enqueue too; this is not validated reachability.
-		{"unrelated", &net.UDPAddr{IP: net.ParseIP("192.0.2.9")}, []gosnmp.SnmpPDU{{Name: "1.3.6.1.6.3.1.1.4.1.0", Value: "1.3.6.1.6.3.1.1.5.1"}}},
-		{"ipv6", &net.UDPAddr{IP: net.ParseIP("2001:db8::9")}, nil},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			for _, accepted := range []bool{false, true} {
-				var ips []string
-				handleTrap(&gosnmp.SnmpPacket{Variables: tc.pdus}, tc.addr, func(ip string) bool {
-					ips = append(ips, ip)
-					return accepted
-				})
-				var want []string
-				if tc.addr != nil {
-					want = []string{tc.addr.IP.String()}
-				}
-				if !reflect.DeepEqual(ips, want) {
-					t.Fatalf("accepted=%v: enqueued = %#v, want %#v", accepted, ips, want)
-				}
 			}
 		})
 	}
