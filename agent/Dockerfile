@@ -40,7 +40,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
         -o printmaster-agent .
 
 # Runtime stage - use Alpine for minimal size with shell support for entrypoint
-FROM alpine:3.21
+FROM alpine:3.24
 
 # Install su-exec for dropping privileges (tiny, no dependencies)
 # Install sqlite3 for database management and testing
