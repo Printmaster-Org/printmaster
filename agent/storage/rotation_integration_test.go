@@ -109,7 +109,7 @@ func TestDatabaseRotationOnMigrationFailure(t *testing.T) {
 
 // TestDatabaseRotationLogging verifies that proper logging occurs during rotation
 func TestDatabaseRotationLogging(t *testing.T) {
-	t.Parallel()
+	// Not parallel: swaps the package-global logger used by concurrent tests.
 
 	// Create a simple logger that captures messages
 	var logMessages []string
