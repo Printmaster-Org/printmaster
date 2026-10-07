@@ -1,0 +1,6 @@
+[printmaster]
+name=PrintMaster Repository
+baseurl=https://packages.printmaster.work/rpm
+enabled=1
+gpgcheck=1
+gpgkey=https://packages.printmaster.work/gpg.key

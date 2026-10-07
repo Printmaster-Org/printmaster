@@ -745,6 +745,9 @@ jobs:
     name: Update Package Repositories (APT + DNF)
     needs: [build-agent, build-rpm]
     runs-on: ubuntu-26.04
+    concurrency:
+      group: gh-pages-publish
+      cancel-in-progress: false
     permissions:
       contents: write
     
@@ -795,15 +798,20 @@ jobs:
         sparse-checkout: |
           agent/VERSION
           scripts/install-agent.sh
+          packaging/site
 
     - name: Get version from main
       id: main_version
       run: |
         echo "version=$(cat main-repo/agent/VERSION)" >> $GITHUB_OUTPUT
 
-    - name: Publish signed APT installer
+    # Keep in sync with package-site.yml, which republishes these files without a release.
+    - name: Publish static package site files
       run: |
         install -m 0755 main-repo/scripts/install-agent.sh apt-repo/install.sh
+        install -m 0644 main-repo/packaging/site/index.html apt-repo/index.html
+        install -m 0644 main-repo/packaging/site/printmaster.repo apt-repo/printmaster.repo
+        install -m 0644 main-repo/packaging/site/CNAME apt-repo/CNAME
 
     - name: Install APT repo tools
       run: |
@@ -1050,89 +1058,6 @@ jobs:
             --armor --detach-sign --output rpm/repodata/repomd.xml.asc rpm/repodata/repomd.xml
           echo "RPM repository metadata signed"
         fi
-
-    - name: Create repo files
-      run: |
-        cd apt-repo
-        
-        # Create downloadable .repo file for Fedora/RHEL
-        cat > printmaster.repo << 'EOF'
-        [printmaster]
-        name=PrintMaster Repository
-        baseurl=https://packages.printmaster.work/rpm
-        enabled=1
-        gpgcheck=1
-        gpgkey=https://packages.printmaster.work/gpg.key
-        EOF
-
-    - name: Configure custom domain
-      run: |
-        cd apt-repo
-        echo "packages.printmaster.work" > CNAME
-
-    - name: Create index page
-      run: |
-        cd apt-repo
-        
-        cat > index.html << 'EOF'
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <title>PrintMaster Package Repository</title>
-          <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 900px; margin: 50px auto; padding: 20px; }
-            h1 { color: #333; }
-            h2 { color: #555; border-bottom: 1px solid #ddd; padding-bottom: 5px; margin-top: 30px; }
-            h3 { color: #666; }
-            pre { background: #f4f4f4; padding: 15px; border-radius: 5px; overflow-x: auto; }
-            code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; }
-            .tabs { display: flex; gap: 10px; margin-bottom: 20px; }
-            .tab { padding: 10px 20px; background: #e0e0e0; border-radius: 5px; cursor: pointer; }
-            .tab.active { background: #333; color: white; }
-          </style>
-        </head>
-        <body>
-          <h1>🖨️ PrintMaster Package Repository</h1>
-          
-          <p>Official package repositories for <a href="https://github.com/printmaster-org/printmaster">PrintMaster Agent</a>.</p>
-          
-          <h2>Debian/Ubuntu (APT)</h2>
-          
-          <h3>Quick Install (GPG signature verification enabled)</h3>
-          <pre><code>curl -fsSL https://packages.printmaster.work/install.sh | sudo bash</code></pre>
-
-          <p>The installer verifies the signing-key fingerprint, configures APT with a dedicated keyring, and installs PrintMaster Agent.</p>
-
-          <h2>Fedora/RHEL (DNF)</h2>
-          
-          <h3>Quick Install (One-liner)</h3>
-          <pre><code># Add repository and install
-        sudo dnf config-manager addrepo --from-repofile=https://packages.printmaster.work/printmaster.repo
-        sudo dnf install printmaster-agent</code></pre>
-
-          <h3>With GPG Verification (Recommended)</h3>
-          <pre><code># Import GPG key first
-        sudo rpm --import https://packages.printmaster.work/gpg.key
-
-        # Add repository and install
-        sudo dnf config-manager addrepo --from-repofile=https://packages.printmaster.work/printmaster.repo
-        sudo dnf install printmaster-agent</code></pre>
-
-          <h2>After Installation</h2>
-          <pre><code># Start the service
-        sudo systemctl start printmaster-agent
-        sudo systemctl enable printmaster-agent</code></pre>
-          
-          <p>Web UI: <code>http://localhost:8080</code></p>
-          
-          <h2>Links</h2>
-          <ul>
-            <li><a href="https://github.com/printmaster-org/printmaster">GitHub Repository</a></li>
-            <li><a href="https://github.com/printmaster-org/printmaster/releases">Releases</a></li>
-          </ul>
-        </body>
-        </html>
-        EOF
 
     - name: Commit and push changes
       run: |

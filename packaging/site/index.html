@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>PrintMaster Package Repository</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 900px; margin: 50px auto; padding: 20px; }
+    h1 { color: #333; }
+    h2 { color: #555; border-bottom: 1px solid #ddd; padding-bottom: 5px; margin-top: 30px; }
+    h3 { color: #666; }
+    pre { background: #f4f4f4; padding: 15px; border-radius: 5px; overflow-x: auto; }
+    code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; }
+    .tabs { display: flex; gap: 10px; margin-bottom: 20px; }
+    .tab { padding: 10px 20px; background: #e0e0e0; border-radius: 5px; cursor: pointer; }
+    .tab.active { background: #333; color: white; }
+  </style>
+</head>
+<body>
+  <h1>🖨️ PrintMaster Package Repository</h1>
+  
+  <p>Official package repositories for <a href="https://github.com/printmaster-org/printmaster">PrintMaster Agent</a>.</p>
+  
+  <h2>Debian/Ubuntu (APT)</h2>
+  
+  <h3>Quick Install (GPG signature verification enabled)</h3>
+  <pre><code>curl -fsSL https://packages.printmaster.work/install.sh | sudo bash</code></pre>
+
+  <p>The installer verifies the signing-key fingerprint, configures APT with a dedicated keyring, and installs PrintMaster Agent.</p>
+
+  <h2>Fedora/RHEL (DNF)</h2>
+  
+  <h3>Quick Install (One-liner)</h3>
+  <pre><code># Add repository and install
+sudo dnf config-manager addrepo --from-repofile=https://packages.printmaster.work/printmaster.repo
+sudo dnf install printmaster-agent</code></pre>
+
+  <h3>With GPG Verification (Recommended)</h3>
+  <pre><code># Import GPG key first
+sudo rpm --import https://packages.printmaster.work/gpg.key
+
+# Add repository and install
+sudo dnf config-manager addrepo --from-repofile=https://packages.printmaster.work/printmaster.repo
+sudo dnf install printmaster-agent</code></pre>
+
+  <h2>After Installation</h2>
+  <pre><code># Start the service
+sudo systemctl start printmaster-agent
+sudo systemctl enable printmaster-agent</code></pre>
+  
+  <p>Web UI: <code>http://localhost:8080</code></p>
+  
+  <h2>Links</h2>
+  <ul>
+    <li><a href="https://github.com/printmaster-org/printmaster">GitHub Repository</a></li>
+    <li><a href="https://github.com/printmaster-org/printmaster/releases">Releases</a></li>
+  </ul>
+</body>
+</html>

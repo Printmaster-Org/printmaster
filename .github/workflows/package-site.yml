@@ -1,0 +1,66 @@
+name: Publish Package Site
+run-name: "Package site: ${{ github.ref_name }}"
+
+# Republishes the static files on packages.printmaster.work (installer, DNF repo
+# file, index page, CNAME) without waiting for an agent release. Package
+# metadata (dists/, pool/, rpm/) is only touched by cd-agent.yml on tags.
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/install-agent.sh
+      - packaging/site/**
+      - .github/workflows/package-site.yml
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish static package site files
+    runs-on: ubuntu-26.04
+    concurrency:
+      group: gh-pages-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout main
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        path: main-repo
+        sparse-checkout: |
+          scripts/install-agent.sh
+          packaging/site
+
+    - name: Checkout gh-pages
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: gh-pages
+        path: apt-repo
+
+    - name: Validate installer
+      run: sh -n main-repo/scripts/install-agent.sh
+
+    # Keep in sync with the update-package-repos job in cd-agent.yml.
+    - name: Publish static package site files
+      run: |
+        install -m 0755 main-repo/scripts/install-agent.sh apt-repo/install.sh
+        install -m 0644 main-repo/packaging/site/index.html apt-repo/index.html
+        install -m 0644 main-repo/packaging/site/printmaster.repo apt-repo/printmaster.repo
+        install -m 0644 main-repo/packaging/site/CNAME apt-repo/CNAME
+
+    - name: Commit and push changes
+      run: |
+        cd apt-repo
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add install.sh index.html printmaster.repo CNAME
+        if git diff --staged --quiet; then
+          echo "Package site already up to date"
+        else
+          git commit -m "Update package site files (${GITHUB_SHA::7})"
+          git push origin gh-pages
+        fi
