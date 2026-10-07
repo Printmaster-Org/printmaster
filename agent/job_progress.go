@@ -221,7 +221,11 @@ func collectMetricsAsync(jobID, serial, ip string, device *storage.Device) {
 	sendJobProgress(jobID, jobType, JobStatusRunning, 20, "Connecting to device via SNMP...", "", nil)
 
 	// Use new scanner for metrics collection with extended context
-	metricsCtx, cancelMetrics := context.WithTimeout(context.Background(), 60*time.Second)
+	jobCtx := context.Background()
+	if mainScanner != nil {
+		jobCtx = mainScanner.ctx
+	}
+	metricsCtx, cancelMetrics := context.WithTimeout(jobCtx, 60*time.Second)
 	defer cancelMetrics()
 
 	appLogger.Info("Collecting metrics (async)", "serial", serial, "ip", ip, "vendor_hint", vendorHint)
@@ -240,34 +244,14 @@ func collectMetricsAsync(jobID, serial, ip string, device *storage.Device) {
 
 	sendJobProgress(jobID, jobType, JobStatusRunning, 80, "Processing metrics data...", "", nil)
 
-	// Convert to storage type
-	storageSnapshot := &storage.MetricsSnapshot{}
-	storageSnapshot.Serial = agentSnapshot.Serial
-	storageSnapshot.PageCount = agentSnapshot.PageCount
-	storageSnapshot.ColorPages = agentSnapshot.ColorPages
-	storageSnapshot.MonoPages = agentSnapshot.MonoPages
-	storageSnapshot.ScanCount = agentSnapshot.ScanCount
-	storageSnapshot.TonerLevels = agentSnapshot.TonerLevels
-	storageSnapshot.FaxPages = agentSnapshot.FaxPages
-	storageSnapshot.CopyPages = agentSnapshot.CopyPages
-	storageSnapshot.OtherPages = agentSnapshot.OtherPages
-	storageSnapshot.CopyMonoPages = agentSnapshot.CopyMonoPages
-	storageSnapshot.CopyFlatbedScans = agentSnapshot.CopyFlatbedScans
-	storageSnapshot.CopyADFScans = agentSnapshot.CopyADFScans
-	storageSnapshot.FaxFlatbedScans = agentSnapshot.FaxFlatbedScans
-	storageSnapshot.FaxADFScans = agentSnapshot.FaxADFScans
-	storageSnapshot.ScanToHostFlatbed = agentSnapshot.ScanToHostFlatbed
-	storageSnapshot.ScanToHostADF = agentSnapshot.ScanToHostADF
-	storageSnapshot.DuplexSheets = agentSnapshot.DuplexSheets
-	storageSnapshot.JamEvents = agentSnapshot.JamEvents
-	storageSnapshot.ScannerJamEvents = agentSnapshot.ScannerJamEvents
+	storageSnapshot := scannerStorageMetrics(agentSnapshot, time.Now().UTC())
 
 	sendJobProgress(jobID, jobType, JobStatusRunning, 90, "Saving metrics to database...", "", nil)
 
 	// Save to database
-	saveCtx, cancelSave := context.WithTimeout(context.Background(), 10*time.Second)
+	saveCtx, cancelSave := context.WithTimeout(metricsCtx, 10*time.Second)
 	defer cancelSave()
-	if err := deviceStore.SaveMetricsSnapshot(saveCtx, storageSnapshot); err != nil {
+	if err := saveScannerMetrics(saveCtx, ip, storageSnapshot); err != nil {
 		sendJobProgress(jobID, jobType, JobStatusFailed, 0, "Failed to save metrics", err.Error(), nil)
 		return
 	}

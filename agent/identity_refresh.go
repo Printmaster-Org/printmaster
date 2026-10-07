@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"printmaster/agent/agent"
+	"printmaster/agent/scanner"
 	"printmaster/agent/storage"
 	"printmaster/common/logger"
 )
@@ -32,6 +33,14 @@ func refreshKnownDeviceIdentities(
 	refresh func(context.Context, string, int) (*agent.PrinterInfo, error),
 	persist func(context.Context, agent.PrinterInfo) error,
 ) identityRefreshResult {
+	return refreshKnownDeviceIdentitiesWithDevice(ctx, devices, func(ctx context.Context, device *storage.Device, timeout int) (*agent.PrinterInfo, error) {
+		return refresh(ctx, device.IP, timeout)
+	}, persist)
+}
+
+// A nil persist callback means refresh already performed its staged commit.
+// The legacy callback API remains available for tests and runtime-free callers.
+func refreshKnownDeviceIdentitiesWithDevice(ctx context.Context, devices []*storage.Device, refresh func(context.Context, *storage.Device, int) (*agent.PrinterInfo, error), persist func(context.Context, agent.PrinterInfo) error) identityRefreshResult {
 	result := identityRefreshResult{}
 	jobs := make(chan *storage.Device)
 	var mu sync.Mutex
@@ -46,7 +55,7 @@ func refreshKnownDeviceIdentities(
 					return
 				}
 
-				pi, err := refresh(ctx, device.IP, 10)
+				pi, err := refresh(ctx, device, 10)
 				if err != nil {
 					mu.Lock()
 					result.Failed++
@@ -62,11 +71,13 @@ func refreshKnownDeviceIdentities(
 
 				pi.Serial = device.Serial
 				pi.DiscoveryMethods = append(pi.DiscoveryMethods, "post-update-identity-refresh")
-				if err := persist(ctx, *pi); err != nil {
-					mu.Lock()
-					result.Failed++
-					mu.Unlock()
-					continue
+				if persist != nil {
+					if err := persist(ctx, *pi); err != nil {
+						mu.Lock()
+						result.Failed++
+						mu.Unlock()
+						continue
+					}
 				}
 
 				mu.Lock()
@@ -128,8 +139,35 @@ func refreshKnownDeviceIdentitiesFromStore(ctx context.Context, store storage.De
 		return identityRefreshResult{}, err
 	}
 
-	adapter := &deviceStorageAdapter{store: store}
-	result := refreshKnownDeviceIdentities(ctx, devices, LiveDiscoveryDetect, adapter.StoreDiscoveredDevice)
+	var result identityRefreshResult
+	if mainScanner != nil {
+		runtime := mainScanner
+		result = refreshKnownDeviceIdentitiesWithDevice(ctx, devices, func(ctx context.Context, device *storage.Device, timeout int) (*agent.PrinterInfo, error) {
+			observation, err := scannerObservation(device.IP, scanner.SourceManual)
+			if err != nil {
+				return nil, err
+			}
+			obtained, err := runtime.request(ctx, observation, scanner.IntentManual, scanner.WorkOptions{TimeoutSeconds: timeout, SNMPAfterTCPFailure: true, MissingSerialFallback: true}, device.Serial, false, nil)
+			if err != nil {
+				return nil, err
+			}
+			pi, err := convertScannerResult(obtained, runtime.parsePDUs)
+			return &pi, err
+		}, nil)
+	} else {
+		result = refreshKnownDeviceIdentities(ctx, devices, LiveDiscoveryDetect, func(ctx context.Context, pi agent.PrinterInfo) error {
+			staged, ok := store.(storage.StageCommitStore)
+			if !ok {
+				return fmt.Errorf("staged scanner storage unavailable")
+			}
+			patch := storage.DevicePatch{ValidatedSerial: &pi.Serial, Manufacturer: &pi.Manufacturer, Model: &pi.Model, Hostname: &pi.Hostname, Firmware: &pi.Firmware, LastSeen: &pi.LastSeen}
+			if err := staged.CommitScannerFacts(ctx, pi.Serial, pi.IP, patch, nil, nil); err != nil {
+				return err
+			}
+			scannerUploadWake()
+			return nil
+		})
+	}
 	log.Info("Identity refresh completed",
 		"attempted", result.Attempted,
 		"refreshed", result.Refreshed,
@@ -154,7 +192,7 @@ func startIdentityRefreshForVersionChange(ctx context.Context, configStore stora
 	}
 
 	log.Info("Identity refresh scheduled for new agent version", "version", version)
-	go func() {
+	refresh := func() {
 		result, err := refreshKnownDeviceIdentitiesFromStore(ctx, store, log)
 		if err != nil {
 			log.Warn("Identity refresh failed", "error", err)
@@ -167,5 +205,10 @@ func startIdentityRefreshForVersionChange(ctx context.Context, configStore stora
 		if err := configStore.SetConfigValue(identityRefreshVersionConfigKey, version); err != nil {
 			log.Warn("Failed to record identity refresh version", "error", err, "version", version)
 		}
-	}()
+	}
+	if mainScanner != nil {
+		mainScanner.launch(refresh)
+	} else {
+		go refresh()
+	}
 }

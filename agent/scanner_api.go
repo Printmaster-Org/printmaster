@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"printmaster/agent/agent"
@@ -10,697 +12,220 @@ import (
 	"printmaster/agent/storage"
 )
 
-// Discover performs discovery using the new modular scanner pipeline.
-// This bridges the new scanner package to the existing agent API.
-//
-// Parameters:
-//   - ctx: Context for cancellation
-//   - ranges: IP ranges to scan (empty = auto-detect local subnet)
-//   - mode: "quick" for fast TCP probe, "full" for complete SNMP scan
-//   - discoveryConfig: Discovery settings (ARP, TCP, SNMP enabled flags)
-//   - deviceStore: Storage for checking saved devices
-//   - concurrency: Number of worker goroutines
-//   - timeout: Timeout in seconds for SNMP operations
-//
-// Returns discovered devices as agent.PrinterInfo structs
-func Discover(
-	ctx context.Context,
-	ranges []string,
-	mode string,
-	discoveryConfig *agent.DiscoveryConfig,
-	deviceStore storage.DeviceStore,
-	concurrency int,
-	timeout int,
-) ([]agent.PrinterInfo, error) {
-
-	// Respect master IP scanning toggle stored in discovery_settings.
-	if agentConfigStore != nil {
-		var stored map[string]interface{}
-		if err := agentConfigStore.GetConfigValue("discovery_settings", &stored); err == nil && stored != nil {
-			if v, ok := stored["ip_scanning_enabled"]; ok {
-				if vb, ok2 := v.(bool); ok2 && !vb {
-					return nil, fmt.Errorf("ip scanning is disabled in agent settings")
-				}
-			}
-		}
-	}
-
-	if concurrency <= 0 {
-		concurrency = 50
-	}
-	if timeout <= 0 {
-		timeout = 5
-	}
-
-	// Step 1: Parse ranges and enumerate IPs
-	parseAdapter := func(text string, maxAddrs int) (*scanner.ParseResult, error) {
-		// Use existing agent.ParseRangeText
-		agentResult, err := agent.ParseRangeText(text, maxAddrs)
-		if err != nil {
-			return nil, err
-		}
-		// Convert to scanner.ParseResult
-		scannerResult := &scanner.ParseResult{
-			IPs:        agentResult.IPs,
-			Count:      agentResult.Count,
-			Normalized: agentResult.Normalized,
-		}
-		// Convert errors
-		for _, e := range agentResult.Errors {
-			scannerResult.Errors = append(scannerResult.Errors, scanner.ParseError{
-				Line: e.Line,
-				Msg:  e.Msg,
-			})
-		}
-		return scannerResult, nil
-	}
-
-	// Step 2: Build saved device checker
-	savedDeviceChecker := &savedDeviceCheckerImpl{
-		store: deviceStore,
-		cache: make(map[string]interface{}),
-	}
-	if deviceStore != nil {
-		// Load saved devices into cache
-		saved := true
-		savedDevices, err := deviceStore.List(ctx, storage.DeviceFilter{IsSaved: &saved})
-		if err == nil {
-			for _, dev := range savedDevices {
-				savedDeviceChecker.cache[dev.IP] = dev
-			}
-			appLogger.Info("Loaded saved devices for bypass", "count", len(savedDeviceChecker.cache))
-		}
-	}
-
-	// Step 3: Configure detector
-	detectorConfig := scanner.DetectorConfig{
-		SavedDeviceChecker: savedDeviceChecker,
-		SkipSavedDevices:   !discoveryConfig.SNMPEnabled, // Skip if SNMP disabled
-		SNMPTimeout:        timeout,
-	}
-
-	// Step 4: Choose mode
-	switch mode {
-	case "quick":
-		// Quick mode: Just TCP probe + minimal SNMP (like old /discover_now)
-		results, err := quickDiscovery(ctx, ranges, parseAdapter, detectorConfig, concurrency)
-		if err != nil {
-			return nil, fmt.Errorf("quick discovery failed: %w", err)
-		}
-		return results, nil
-
-	case "full":
-		// Full mode: Complete pipeline with deep SNMP walks
-		results, err := fullDiscovery(ctx, ranges, parseAdapter, detectorConfig, discoveryConfig, concurrency)
-		if err != nil {
-			return nil, fmt.Errorf("full discovery failed: %w", err)
-		}
-		return results, nil
-
-	default:
+// Discover shares startup's coordinator. Quick read-only; full persists.
+func Discover(ctx context.Context, ranges []string, mode string, cfg *agent.DiscoveryConfig, store storage.DeviceStore, concurrency, timeout int) ([]agent.PrinterInfo, error) {
+	if mode != "quick" && mode != "full" {
 		return nil, fmt.Errorf("invalid discovery mode: %s (must be 'quick' or 'full')", mode)
 	}
-}
-
-// savedDeviceCheckerImpl implements scanner.SavedDeviceChecker
-type savedDeviceCheckerImpl struct {
-	store storage.DeviceStore
-	cache map[string]interface{}
-}
-
-func (s *savedDeviceCheckerImpl) IsKnownDevice(ip string) (bool, interface{}) {
-	if data, ok := s.cache[ip]; ok {
-		return true, data
+	if err := scannerIPScanningAllowed(); err != nil {
+		return nil, err
 	}
-	return false, nil
-}
-
-// quickDiscovery performs fast TCP probe + minimal SNMP check
-func quickDiscovery(
-	ctx context.Context,
-	ranges []string,
-	parseAdapter scanner.ParseRangeAdapter,
-	detectorConfig scanner.DetectorConfig,
-	concurrency int,
-) ([]agent.PrinterInfo, error) {
-
-	var results []agent.PrinterInfo
-
-	// Step 1: Enumerate IPs from ranges
-	var allIPs []string
-	if len(ranges) == 0 {
-		// Auto-detect local subnet
-		subnets, err := agent.GetLocalSubnets()
-		if err != nil || len(subnets) == 0 {
-			return results, fmt.Errorf("no ranges provided and could not auto-detect subnet")
-		}
-		// Use first subnet
-		ranges = []string{subnets[0].String()}
+	if cfg == nil {
+		cfg = &agent.DiscoveryConfig{TCPEnabled: true, SNMPEnabled: true}
 	}
-
-	// Parse each range
-	for _, rangeText := range ranges {
-		scannerResult, err := parseAdapter(rangeText, 10000)
-		if err != nil {
-			appLogger.Warn("Failed to parse range", "range", rangeText, "error", err)
-			continue
-		}
-		allIPs = append(allIPs, scannerResult.IPs...)
+	if !cfg.TCPEnabled && !cfg.SNMPEnabled {
+		return nil, errors.New("TCP and SNMP discovery are disabled")
 	}
-
-	if len(allIPs) == 0 {
-		return results, fmt.Errorf("no IPs to scan after parsing ranges")
-	}
-
-	appLogger.Info("Quick discovery starting", "ips", len(allIPs))
-
-	// Step 2: Create scanner config for liveness probe
-	scannerConfig := scanner.ScannerConfig{
-		LivenessWorkers:  concurrency,
-		LivenessTimeout:  500 * time.Millisecond,
-		LivenessPorts:    []int{9100, 80, 443},
-		DetectionWorkers: 10,
-		DetectFunc:       scanner.DetectFunc(detectorConfig),
-	}
-
-	// Step 3: Create job channel
-	jobs := make(chan scanner.ScanJob, len(allIPs))
-	for _, ip := range allIPs {
-		jobs <- scanner.ScanJob{
-			IP:     ip,
-			Source: "quick-discovery",
-		}
-	}
-	close(jobs)
-
-	// Step 4: Run liveness pool -> detection pool
-	livenessResults := scanner.StartLivenessPool(ctx, scannerConfig, jobs)
-	detectionResults := scanner.StartDetectionPool(ctx, scannerConfig, livenessResults)
-
-	// Step 5: Collect results and convert QueryResult to PrinterInfo
-	for dr := range detectionResults {
-		if !dr.IsPrinter {
-			continue
-		}
-
-		// Extract basic info from QueryResult
-		if qr, ok := dr.Info.(*scanner.QueryResult); ok {
-			// Parse PDUs to get printer info
-			pi, _ := agent.ParsePDUs(qr.IP, qr.PDUs, nil, nil)
-			// Merge vendor-specific metrics (ICE-style OIDs)
-			agent.MergeVendorMetrics(&pi, qr.PDUs, qr.VendorHint)
-			pi.DiscoveryMethods = append(pi.DiscoveryMethods, "quick-discovery")
-
-			// Copy capabilities from QueryResult
-			if qr.Capabilities != nil {
-				pi.IsColor = qr.Capabilities.IsColor
-				pi.IsMono = qr.Capabilities.IsMono
-				pi.IsCopier = qr.Capabilities.IsCopier
-				pi.IsScanner = qr.Capabilities.IsScanner
-				pi.IsFax = qr.Capabilities.IsFax
-				pi.IsLaser = qr.Capabilities.IsLaser
-				pi.IsInkjet = qr.Capabilities.IsInkjet
-				pi.HasDuplex = qr.Capabilities.HasDuplex
-				pi.FormFactor = qr.Capabilities.FormFactor
-				pi.DeviceType = qr.Capabilities.DeviceType
-			}
-
-			results = append(results, pi)
-		}
-	}
-
-	appLogger.Info("Quick discovery complete", "found", len(results))
-	return results, nil
-}
-
-// fullDiscovery performs complete SNMP scan with worker pools
-func fullDiscovery(
-	ctx context.Context,
-	ranges []string,
-	parseAdapter scanner.ParseRangeAdapter,
-	detectorConfig scanner.DetectorConfig,
-	discoveryConfig *agent.DiscoveryConfig,
-	concurrency int,
-) ([]agent.PrinterInfo, error) {
-
-	var results []agent.PrinterInfo
-
-	// Step 1: Enumerate IPs from ranges
-	var allIPs []string
-	if len(ranges) == 0 {
-		// Auto-detect local subnet
-		subnets, err := agent.GetLocalSubnets()
-		if err != nil || len(subnets) == 0 {
-			return results, fmt.Errorf("no ranges provided and could not auto-detect subnet")
-		}
-		ranges = []string{subnets[0].String()}
-	}
-
-	// Parse each range
-	for _, rangeText := range ranges {
-		scannerResult, err := parseAdapter(rangeText, 10000)
-		if err != nil {
-			appLogger.Warn("Failed to parse range", "range", rangeText, "error", err)
-			continue
-		}
-		allIPs = append(allIPs, scannerResult.IPs...)
-	}
-
-	if len(allIPs) == 0 {
-		return results, fmt.Errorf("no IPs to scan after parsing ranges")
-	}
-
-	appLogger.Info("Full discovery starting", "ips", len(allIPs), "ranges", ranges)
-
-	// Step 2: Configure scanner pipeline
-	// Adjust timeout based on discovery config
-	deepScanTimeout := 30
-	if !discoveryConfig.SNMPEnabled {
-		deepScanTimeout = 5 // Fast scan if SNMP disabled
-	}
-
-	deepScanConfig := detectorConfig
-	deepScanConfig.SNMPTimeout = deepScanTimeout
-
-	scannerConfig := scanner.ScannerConfig{
-		LivenessWorkers:  concurrency,
-		LivenessTimeout:  500 * time.Millisecond,
-		LivenessPorts:    []int{9100, 80, 443, 515, 631},
-		DetectionWorkers: concurrency / 5,
-		DetectFunc:       scanner.DetectFunc(detectorConfig),
-		DeepScanWorkers:  concurrency / 10,
-		DeepScanFunc:     scanner.DeepScanFunc(deepScanConfig),
-	}
-
-	// Step 3: Create job channel
-	jobs := make(chan scanner.ScanJob, len(allIPs))
-	for _, ip := range allIPs {
-		jobs <- scanner.ScanJob{
-			IP:     ip,
-			Source: "full-discovery",
-		}
-	}
-	close(jobs)
-
-	// Step 4: Run full pipeline: Liveness -> Detection -> DeepScan
-	// Wrap channels with debug logging to track flow through pipeline
-	livenessResults := scanner.StartLivenessPool(ctx, scannerConfig, jobs)
-
-	// Tap liveness results to count alive hosts
-	livenessLogged := make(chan scanner.LivenessResult)
-	go func() {
-		aliveCount := 0
-		totalCount := 0
-		for lr := range livenessResults {
-			totalCount++
-			if lr.Alive {
-				aliveCount++
-				appLogger.Debug("Liveness: host alive", "ip", lr.Job.IP, "ports", lr.OpenPorts)
-			}
-			livenessLogged <- lr
-		}
-		close(livenessLogged)
-		appLogger.Debug("Liveness scan complete", "total_scanned", totalCount, "alive", aliveCount)
-	}()
-
-	detectionResults := scanner.StartDetectionPool(ctx, scannerConfig, livenessLogged)
-
-	// Tap detection results to count printers
-	detectionLogged := make(chan scanner.DetectionResult)
-	go func() {
-		printerCount := 0
-		nonPrinterCount := 0
-		for dr := range detectionResults {
-			if dr.IsPrinter {
-				printerCount++
-				appLogger.Debug("Detection: printer found", "ip", dr.Job.IP)
-			} else {
-				nonPrinterCount++
-			}
-			detectionLogged <- dr
-		}
-		close(detectionLogged)
-		appLogger.Debug("Detection scan complete", "printers", printerCount, "non_printers", nonPrinterCount)
-	}()
-
-	deepScanResults := scanner.StartDeepScanPool(ctx, scannerConfig, detectionLogged)
-
-	// Step 5: Collect results and convert QueryResult to PrinterInfo
-	for rawResult := range deepScanResults {
-		// Handle errors
-		if err, ok := rawResult.(error); ok {
-			appLogger.Warn("Deep scan error", "error", err)
-			continue
-		}
-
-		// Convert QueryResult to PrinterInfo
-		if qr, ok := rawResult.(*scanner.QueryResult); ok {
-			pi, isPrinter := agent.ParsePDUs(qr.IP, qr.PDUs, nil, nil)
-			// Merge vendor-specific metrics (ICE-style OIDs)
-			agent.MergeVendorMetrics(&pi, qr.PDUs, qr.VendorHint)
-			if isPrinter {
-				pi.DiscoveryMethods = append(pi.DiscoveryMethods, "full-discovery")
-				pi.LastSeen = time.Now()
-
-				// Transfer detected capabilities from QueryResult
-				if qr.Capabilities != nil {
-					pi.IsColor = qr.Capabilities.IsColor
-					pi.IsMono = qr.Capabilities.IsMono
-					pi.IsCopier = qr.Capabilities.IsCopier
-					pi.IsScanner = qr.Capabilities.IsScanner
-					pi.IsFax = qr.Capabilities.IsFax
-					pi.IsLaser = qr.Capabilities.IsLaser
-					pi.IsInkjet = qr.Capabilities.IsInkjet
-					pi.HasDuplex = qr.Capabilities.HasDuplex
-					pi.FormFactor = qr.Capabilities.FormFactor
-					pi.DeviceType = qr.Capabilities.DeviceType
-				}
-
-				results = append(results, pi)
-
-				// Store device using the helper function
-				agent.UpsertDiscoveredPrinter(pi)
-			}
-		}
-	}
-
-	appLogger.Info("Full discovery complete", "found", len(results))
-	return results, nil
-}
-
-// DiscoveredDevice holds a discovery result with source hints
-type DiscoveredDevice struct {
-	IP     string `json:"ip"`
-	Source string `json:"source"` // tcp, arp, mdns
-	Ports  []int  `json:"ports,omitempty"`
-}
-
-// DiscoverNow performs a quick synchronous discovery (replacement for /discover_now)
-// This is a convenience wrapper around Discover with mode="quick"
-func DiscoverNow(ctx context.Context, timeout time.Duration) ([]DiscoveredDevice, error) {
-	// Convert timeout to seconds
-	timeoutSec := int(timeout.Seconds())
-	if timeoutSec == 0 {
-		timeoutSec = 5
-	}
-
-	// Auto-detect local subnet ranges
-	ranges := []string{} // Empty = auto-detect
-
-	discoveryConfig := &agent.DiscoveryConfig{
-		TCPEnabled:  true,
-		SNMPEnabled: false, // Quick mode doesn't need SNMP
-	}
-
-	results, err := Discover(
-		ctx,
-		ranges,
-		"quick",
-		discoveryConfig,
-		nil, // no device store for quick mode
-		50,  // concurrency
-		timeoutSec,
-	)
+	runtime, err := requireScanner()
 	if err != nil {
 		return nil, err
 	}
-
-	// Convert agent.PrinterInfo to DiscoveredDevice
-	var discovered []DiscoveredDevice
-	for _, pi := range results {
-		discovered = append(discovered, DiscoveredDevice{
-			IP:     pi.IP,
-			Source: "tcp",
-			Ports:  pi.OpenPorts,
-		})
-	}
-
-	return discovered, nil
-}
-
-// LiveDiscoveryDetect performs detection on a single IP for live discovery (mDNS, SSDP, WS-Discovery).
-// This is a lightweight wrapper around the new scanner that uses QueryEssential for detailed device info.
-//
-// Returns the discovered printer info or an error if detection fails.
-func LiveDiscoveryDetect(ctx context.Context, ip string, timeoutSeconds int) (*agent.PrinterInfo, error) {
-	if timeoutSeconds <= 0 {
-		timeoutSeconds = 5
-	}
-
-	// Use QueryDevice directly with QueryEssential profile
-	// This gets serial + toner + page counts in one operation
-	result, err := scanner.QueryDevice(
-		ctx,
-		ip,
-		scanner.QueryEssential,
-		"", // vendor auto-detected
-		timeoutSeconds,
-	)
+	ips, err := discoveryIPs(ranges)
 	if err != nil {
-		return nil, fmt.Errorf("query failed for %s: %w", ip, err)
+		return nil, err
 	}
-
-	// Check if we got any data
-	if result == nil || len(result.PDUs) == 0 {
-		return nil, fmt.Errorf("no SNMP data received from %s", ip)
+	if concurrency <= 0 {
+		concurrency = 50
 	}
-
-	// Parse the SNMP result to get PrinterInfo
-	meta := &agent.ScanMeta{
-		OpenPorts:        []int{9100}, // Assume printer port for live discovery
-		DiscoveryMethods: []string{},
+	if concurrency > 50 {
+		concurrency = 50
 	}
-	pi, _ := agent.ParsePDUs(ip, result.PDUs, meta, func(msg string) {
-		appLogger.Debug("SNMP parse", "ip", ip, "msg", msg)
-	})
-	// Merge vendor-specific metrics (ICE-style OIDs)
-	agent.MergeVendorMetrics(&pi, result.PDUs, result.VendorHint)
-
-	// Copy capabilities from QueryResult
-	if result.Capabilities != nil {
-		pi.IsColor = result.Capabilities.IsColor
-		pi.IsMono = result.Capabilities.IsMono
-		pi.IsCopier = result.Capabilities.IsCopier
-		pi.IsScanner = result.Capabilities.IsScanner
-		pi.IsFax = result.Capabilities.IsFax
-		pi.IsLaser = result.Capabilities.IsLaser
-		pi.IsInkjet = result.Capabilities.IsInkjet
-		pi.HasDuplex = result.Capabilities.HasDuplex
-		pi.DeviceType = result.Capabilities.DeviceType
+	// Preserve legacy JSON null for no candidates (not an invented empty array).
+	var results []agent.PrinterInfo
+	jobs := make(chan string)
+	var mu sync.Mutex
+	var workers sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for ip := range jobs {
+				observation, err := scannerObservation(ip, scanner.SourceRange)
+				if err != nil {
+					continue
+				}
+				preset := scanner.IntentQuick
+				if mode == "full" {
+					preset = scanner.IntentFull
+				}
+				var result scanner.Result
+				ports := []uint16{9100, 80, 443}
+				if mode == "full" {
+					ports = append(ports, 515, 631)
+				}
+				if !cfg.SNMPEnabled {
+					result, err = runtime.coordinator.Do(ctx, scanner.Request{Observation: observation, Intent: scanner.Intent{Reachability: true}, Options: scanner.WorkOptions{ReadOnly: true, Ports: ports}})
+				} else {
+					result, err = runtime.request(ctx, observation, preset, scanner.WorkOptions{TimeoutSeconds: timeout, Ports: ports, SkipTCP: !cfg.TCPEnabled, SNMPAfterTCPFailure: !cfg.TCPEnabled, MissingSerialFallback: mode == "full"}, "", mode == "quick", nil)
+				}
+				if err != nil {
+					if appLogger != nil {
+						appLogger.Debug("Range scanner candidate rejected", "ip", ip, "error", true)
+					}
+					continue
+				}
+				var pi agent.PrinterInfo
+				if !cfg.SNMPEnabled {
+					if result.Outcomes[scanner.StageReachability].Status != scanner.StatusSucceeded {
+						continue
+					}
+					pi.IP = ip
+					for _, port := range result.OpenPorts {
+						pi.OpenPorts = append(pi.OpenPorts, int(port))
+					}
+				} else {
+					pi, err = scannerPrinterInfo(result)
+					if err != nil {
+						continue
+					}
+				}
+				if !cfg.SNMPEnabled {
+					pi.DiscoveryMethods = []string{mode + "-discovery"}
+				}
+				mu.Lock()
+				results = append(results, pi)
+				mu.Unlock()
+			}
+		}()
 	}
-
-	return &pi, nil
+	for _, ip := range ips {
+		select {
+		case jobs <- ip:
+		case <-ctx.Done():
+			close(jobs)
+			workers.Wait()
+			return results, ctx.Err()
+		}
+	}
+	close(jobs)
+	workers.Wait()
+	return results, ctx.Err()
 }
 
-// LiveDiscoveryDeepScan performs a full SNMP WALK on a single IP discovered via live methods.
-// This is used when the lightweight QueryEssential didn't return a serial number.
-// Since the device was already discovered by mDNS/WS-Discovery/etc, we know it's alive
-// and worth doing a complete scan.
-func LiveDiscoveryDeepScan(ctx context.Context, ip string, timeoutSeconds int) (*agent.PrinterInfo, error) {
-	if timeoutSeconds <= 0 {
-		timeoutSeconds = 30 // Use longer timeout for full WALK
-	}
-
-	appLogger.Debug("Live discovery: performing deep scan", "ip", ip)
-
-	// Use QueryDevice with QueryFull profile to get everything
-	result, err := scanner.QueryDevice(
-		ctx,
-		ip,
-		scanner.QueryFull,
-		"", // vendor auto-detected
-		timeoutSeconds,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("deep scan failed for %s: %w", ip, err)
-	}
-
-	// Check if we got any data
-	if result == nil || len(result.PDUs) == 0 {
-		return nil, fmt.Errorf("no SNMP data received from deep scan of %s", ip)
-	}
-
-	// Parse the SNMP result to get PrinterInfo
-	meta := &agent.ScanMeta{
-		OpenPorts:        []int{9100}, // Assume printer port for live discovery
-		DiscoveryMethods: []string{},
-	}
-	pi, _ := agent.ParsePDUs(ip, result.PDUs, meta, func(msg string) {
-		appLogger.Debug("SNMP deep scan parse", "ip", ip, "msg", msg)
-	})
-	// Merge vendor-specific metrics (ICE-style OIDs)
-	agent.MergeVendorMetrics(&pi, result.PDUs, result.VendorHint)
-
-	// Copy capabilities from QueryResult
-	if result.Capabilities != nil {
-		pi.IsColor = result.Capabilities.IsColor
-		pi.IsMono = result.Capabilities.IsMono
-		pi.IsCopier = result.Capabilities.IsCopier
-		pi.IsScanner = result.Capabilities.IsScanner
-		pi.IsFax = result.Capabilities.IsFax
-		pi.IsLaser = result.Capabilities.IsLaser
-		pi.IsInkjet = result.Capabilities.IsInkjet
-		pi.HasDuplex = result.Capabilities.HasDuplex
-		pi.DeviceType = result.Capabilities.DeviceType
-	}
-
-	appLogger.Debug("Live discovery: deep scan complete", "ip", ip, "serial", pi.Serial, "manufacturer", pi.Manufacturer, "model", pi.Model)
-
-	return &pi, nil
-}
-
-// CollectMetrics performs metrics collection using the new scanner's QueryMetrics profile.
-// This replaces agent.CollectMetricsSnapshot when the feature flag is enabled.
-//
-// Returns vendor-specific metrics snapshot optimized for scheduled collection.
-func CollectMetrics(ctx context.Context, ip string, serial string, vendorHint string, timeoutSeconds int) (*agent.DeviceMetricsSnapshot, error) {
-	return CollectMetricsWithOIDs(ctx, ip, serial, vendorHint, timeoutSeconds, nil)
-}
-
-// CollectMetricsWithOIDs collects metrics from a device, optionally using learned OIDs for efficiency
-func CollectMetricsWithOIDs(ctx context.Context, ip string, serial string, vendorHint string, timeoutSeconds int, learnedOIDs *agent.LearnedOIDMap) (*agent.DeviceMetricsSnapshot, error) {
-	if timeoutSeconds <= 0 {
-		timeoutSeconds = 5
-	}
-
-	// Build OID list from learned OIDs if available
-	var oidList []string
-	useLearnedOIDs := learnedOIDs != nil && (learnedOIDs.PageCountOID != "" || learnedOIDs.MonoPagesOID != "")
-
-	if useLearnedOIDs {
-		appLogger.Info("Using learned OIDs for metrics collection", "ip", ip, "serial", serial)
-
-		// Add learned OIDs to query list
-		if learnedOIDs.PageCountOID != "" {
-			oidList = append(oidList, learnedOIDs.PageCountOID)
+// First-local-subnet default retained; overlapping ranges deduplicated.
+func discoveryIPs(ranges []string) ([]string, error) {
+	if len(ranges) == 0 {
+		subnets, err := agent.GetLocalSubnets()
+		if err != nil || len(subnets) == 0 {
+			return nil, errors.New("no ranges provided and could not auto-detect subnet")
 		}
-		if learnedOIDs.MonoPagesOID != "" && learnedOIDs.MonoPagesOID != learnedOIDs.PageCountOID {
-			oidList = append(oidList, learnedOIDs.MonoPagesOID)
-		}
-		if learnedOIDs.ColorPagesOID != "" {
-			oidList = append(oidList, learnedOIDs.ColorPagesOID)
-		}
-		if learnedOIDs.CyanOID != "" {
-			oidList = append(oidList, learnedOIDs.CyanOID)
-		}
-		if learnedOIDs.MagentaOID != "" {
-			oidList = append(oidList, learnedOIDs.MagentaOID)
-		}
-		if learnedOIDs.YellowOID != "" {
-			oidList = append(oidList, learnedOIDs.YellowOID)
-		}
-		// Add vendor-specific OIDs
-		for _, oid := range learnedOIDs.VendorSpecificOIDs {
-			oidList = append(oidList, oid)
-		}
-
-		// Also add standard OIDs for serial, model, status
-		oidList = append(oidList,
-			"1.3.6.1.2.1.43.5.1.1.17.1", // prtGeneralSerialNumber
-			"1.3.6.1.2.1.1.1.0",         // sysDescr
-			"1.3.6.1.2.1.25.3.2.1.3.1",  // hrDeviceDescr (model)
-		)
+		ranges = []string{subnets[0].String()}
 	}
-
-	var result *scanner.QueryResult
-	var err error
-
-	if useLearnedOIDs && len(oidList) > 0 {
-		// Query specific learned OIDs directly using SNMP GET
-		cfg, err := scanner.GetSNMPConfig()
+	seen := make(map[string]bool)
+	var ips []string
+	for _, text := range ranges {
+		parsed, err := agent.ParseRangeText(text, 10000)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get SNMP config: %w", err)
+			continue
 		}
-
-		client, err := scanner.NewSNMPClient(cfg, ip, timeoutSeconds)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create SNMP client: %w", err)
-		}
-		defer client.Close()
-
-		packet, err := client.Get(oidList)
-		if err != nil {
-			appLogger.Warn("Learned OID query failed, falling back to vendor defaults", "ip", ip, "error", err)
-			useLearnedOIDs = false
-		} else if packet != nil {
-			result = &scanner.QueryResult{
-				IP:   ip,
-				PDUs: packet.Variables,
+		for _, ip := range parsed.IPs {
+			if !seen[ip] {
+				seen[ip] = true
+				ips = append(ips, ip)
 			}
 		}
 	}
+	if len(ips) == 0 {
+		return nil, errors.New("no IPs to scan after parsing ranges")
+	}
+	return ips, nil
+}
 
-	// Fall back to vendor defaults if no learned OIDs or if query failed
-	if !useLearnedOIDs || result == nil {
-		// Use QueryDevice with QueryMetrics profile
-		// This queries vendor-specific metrics OIDs (page counts, toner, scans, jams, etc.)
-		result, err = scanner.QueryDevice(
-			ctx,
-			ip,
-			scanner.QueryMetrics,
-			vendorHint, // Use vendor hint for targeted OID selection
-			timeoutSeconds,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("metrics query failed for %s: %w", ip, err)
+type DiscoveredDevice struct {
+	IP     string `json:"ip"`
+	Source string `json:"source"`
+	Ports  []int  `json:"ports,omitempty"`
+}
+
+func DiscoverNow(ctx context.Context, timeout time.Duration) ([]DiscoveredDevice, error) {
+	// timeout remains a per-query setting, not a new whole-subnet deadline.
+	timeoutSeconds := int(timeout.Seconds())
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = 5
+	}
+	results, err := Discover(ctx, nil, "quick", &agent.DiscoveryConfig{TCPEnabled: true}, nil, 50, timeoutSeconds)
+	if err != nil {
+		return nil, err
+	}
+	var out []DiscoveredDevice
+	for _, pi := range results {
+		out = append(out, DiscoveredDevice{IP: pi.IP, Source: "tcp", Ports: pi.OpenPorts})
+	}
+	return out, err
+}
+
+// Compatibility wrappers query through the coordinator without persistence.
+func LiveDiscoveryDetect(ctx context.Context, ip string, timeout int) (*agent.PrinterInfo, error) {
+	return scannerReadPrinter(ctx, ip, timeout, false)
+}
+func LiveDiscoveryDeepScan(ctx context.Context, ip string, timeout int) (*agent.PrinterInfo, error) {
+	return scannerReadPrinter(ctx, ip, timeout, true)
+}
+func scannerReadPrinter(ctx context.Context, ip string, timeout int, full bool) (*agent.PrinterInfo, error) {
+	runtime, err := requireScanner()
+	if err != nil {
+		return nil, err
+	}
+	observation, err := scannerObservation(ip, scanner.SourceManual)
+	if err != nil {
+		return nil, err
+	}
+	result, err := runtime.request(ctx, observation, scanner.IntentManual, scanner.WorkOptions{TimeoutSeconds: timeout, FullTimeoutSeconds: timeout, FullDetail: full, SNMPAfterTCPFailure: true, MissingSerialFallback: true}, "", true, nil)
+	if err != nil {
+		return nil, err
+	}
+	pi, err := scannerPrinterInfo(result)
+	return &pi, err
+}
+func CollectMetrics(ctx context.Context, ip, serial, vendor string, timeout int) (*agent.DeviceMetricsSnapshot, error) {
+	return CollectMetricsWithOIDs(ctx, ip, serial, vendor, timeout, nil)
+}
+
+// Read-only metrics: callers save once, wake only after successful save.
+func CollectMetricsWithOIDs(ctx context.Context, ip, serial, vendor string, timeout int, learned *agent.LearnedOIDMap) (*agent.DeviceMetricsSnapshot, error) {
+	runtime, err := requireScanner()
+	if err != nil {
+		return nil, err
+	}
+	observation, err := scannerObservation(ip, scanner.SourceManual)
+	if err != nil {
+		return nil, err
+	}
+	options := scanner.WorkOptions{TimeoutSeconds: timeout, VendorHint: vendor, SNMPAfterTCPFailure: true}
+	var fields []scanner.MetricField
+	if learned != nil {
+		options.LearnedSerialOID = learned.SerialOID
+		for _, field := range []scanner.MetricField{{Name: "page_count", OID: learned.PageCountOID}, {Name: "mono_pages", OID: learned.MonoPagesOID}, {Name: "color_pages", OID: learned.ColorPagesOID},
+			{Name: "toner_cyan", OID: learned.CyanOID, Kind: scanner.MetricGauge},
+			{Name: "toner_magenta", OID: learned.MagentaOID, Kind: scanner.MetricGauge},
+			{Name: "toner_yellow", OID: learned.YellowOID, Kind: scanner.MetricGauge}} {
+			if field.OID != "" {
+				fields = append(fields, field)
+			}
 		}
 	}
-
-	// Check if we got any data
-	if result == nil || len(result.PDUs) == 0 {
-		return nil, fmt.Errorf("no SNMP metrics data received from %s", ip)
+	result, err := runtime.request(ctx, observation, scanner.IntentMetrics, options, serial, true, fields)
+	if err != nil {
+		return nil, err
 	}
-
-	appLogger.Info("Metrics SNMP query complete", "ip", ip, "vendor", vendorHint, "pdus_received", len(result.PDUs))
-
-	// Debug log all PDU values
-	for i, pdu := range result.PDUs {
-		appLogger.Debug("Metrics PDU received",
-			"ip", ip,
-			"index", i,
-			"oid", pdu.Name,
-			"type", pdu.Type,
-			"value", pdu.Value)
+	pi, err := scannerPrinterInfo(result)
+	if err != nil {
+		return nil, err
 	}
-
-	// Parse PDUs to get PrinterInfo with metrics
-	meta := &agent.ScanMeta{
-		OpenPorts:        []int{9100},
-		DiscoveryMethods: []string{"metrics"},
-	}
-	pi, _ := agent.ParsePDUs(ip, result.PDUs, meta, func(msg string) {
-		appLogger.Debug("Metrics parse", "ip", ip, "msg", msg)
-	})
-	// Merge vendor-specific metrics (ICE-style OIDs)
-	agent.MergeVendorMetrics(&pi, result.PDUs, vendorHint)
-
-	// Copy capabilities from QueryResult if present
-	if result.Capabilities != nil {
-		pi.IsColor = result.Capabilities.IsColor
-		pi.IsMono = result.Capabilities.IsMono
-		pi.IsCopier = result.Capabilities.IsCopier
-		pi.IsScanner = result.Capabilities.IsScanner
-		pi.IsFax = result.Capabilities.IsFax
-		pi.IsLaser = result.Capabilities.IsLaser
-		pi.IsInkjet = result.Capabilities.IsInkjet
-		pi.HasDuplex = result.Capabilities.HasDuplex
-		pi.DeviceType = result.Capabilities.DeviceType
-	}
-
-	appLogger.Info("Metrics parsed from PrinterInfo",
-		"ip", ip,
-		"page_count", pi.PageCount,
-		"mono_impressions", pi.MonoImpressions,
-		"color_impressions", pi.ColorImpressions,
-		"meters_count", len(pi.Meters))
-
-	// Convert PrinterInfo to DeviceMetricsSnapshot
-	snapshot := &agent.DeviceMetricsSnapshot{
-		Serial:      serial,
-		TonerLevels: make(map[string]interface{}),
-	}
-
-	// Extract page counts
+	return scannerAgentMetrics(pi), nil
+}
+func scannerAgentMetrics(pi agent.PrinterInfo) *agent.DeviceMetricsSnapshot {
+	snapshot := &agent.DeviceMetricsSnapshot{Serial: pi.Serial, TonerLevels: make(map[string]interface{})}
 	if pi.PageCount > 0 {
 		snapshot.PageCount = pi.PageCount
 	}
@@ -710,54 +235,47 @@ func CollectMetricsWithOIDs(ctx context.Context, ip string, serial string, vendo
 	if pi.ColorImpressions > 0 {
 		snapshot.ColorPages = pi.ColorImpressions
 	}
-
-	// Use Meters map if available (vendor-specific metrics)
-	if pi.Meters != nil {
-		if v, ok := pi.Meters["total_pages"]; ok && v > 0 {
-			snapshot.PageCount = v
-		}
-		if v, ok := pi.Meters["mono_pages"]; ok && v > 0 {
-			snapshot.MonoPages = v
-		}
-		if v, ok := pi.Meters["color_pages"]; ok && v > 0 {
-			snapshot.ColorPages = v
-		}
-		if v, ok := pi.Meters["scans"]; ok && v > 0 {
-			snapshot.ScanCount = v
-		}
-		if v, ok := pi.Meters["copies"]; ok && v > 0 {
-			snapshot.CopyPages = v
-		}
-		if v, ok := pi.Meters["faxes"]; ok && v > 0 {
-			snapshot.FaxPages = v
-		}
-		if v, ok := pi.Meters["jams"]; ok && v > 0 {
-			snapshot.JamEvents = v
+	// Vendor meters win only when positive: an absent counter is not a reset.
+	meter := func(dst *int, keys ...string) {
+		for _, key := range keys {
+			if v := pi.Meters[key]; v > 0 {
+				*dst = v
+				return
+			}
 		}
 	}
-
-	// Extract toner levels - only record expected levels based on device type
-	// Use >= 0 since 0 is a valid level (empty toner)
-	// For mono printers, only record black toner (ignore color OIDs)
+	meter(&snapshot.PageCount, "total_pages")
+	meter(&snapshot.MonoPages, "mono_pages")
+	meter(&snapshot.ColorPages, "color_pages")
+	meter(&snapshot.ScanCount, "scans")
+	meter(&snapshot.CopyPages, "copy_pages", "copies")
+	meter(&snapshot.FaxPages, "fax_pages", "faxes")
+	meter(&snapshot.JamEvents, "jams")
+	// Mono devices often report zero-valued color supplies; record only black.
 	isMono := pi.IsMono || (!pi.IsColor && pi.TonerLevelBlack > 0 &&
 		pi.TonerLevelCyan == 0 && pi.TonerLevelMagenta == 0 && pi.TonerLevelYellow == 0)
-
-	if pi.TonerLevelBlack >= 0 && (pi.TonerDescBlack != "" || pi.TonerLevelBlack > 0) {
-		snapshot.TonerLevels["black"] = pi.TonerLevelBlack
+	toner := func(key string, level int, desc string) {
+		if level >= 0 && (desc != "" || level > 0) {
+			snapshot.TonerLevels[key] = level
+		}
 	}
-
-	// Only record color toner for color devices
+	toner("black", pi.TonerLevelBlack, pi.TonerDescBlack)
 	if !isMono {
-		if pi.TonerLevelCyan >= 0 && (pi.TonerDescCyan != "" || pi.TonerLevelCyan > 0) {
-			snapshot.TonerLevels["cyan"] = pi.TonerLevelCyan
-		}
-		if pi.TonerLevelMagenta >= 0 && (pi.TonerDescMagenta != "" || pi.TonerLevelMagenta > 0) {
-			snapshot.TonerLevels["magenta"] = pi.TonerLevelMagenta
-		}
-		if pi.TonerLevelYellow >= 0 && (pi.TonerDescYellow != "" || pi.TonerLevelYellow > 0) {
-			snapshot.TonerLevels["yellow"] = pi.TonerLevelYellow
-		}
+		toner("cyan", pi.TonerLevelCyan, pi.TonerDescCyan)
+		toner("magenta", pi.TonerLevelMagenta, pi.TonerDescMagenta)
+		toner("yellow", pi.TonerLevelYellow, pi.TonerDescYellow)
 	}
+	return snapshot
+}
 
-	return snapshot, nil
+// scannerStorageMetrics is the single agent→storage metrics conversion.
+func scannerStorageMetrics(a *agent.DeviceMetricsSnapshot, at time.Time) *storage.MetricsSnapshot {
+	s := &storage.MetricsSnapshot{}
+	s.Serial, s.Timestamp = a.Serial, at
+	s.PageCount, s.ColorPages, s.MonoPages, s.ScanCount, s.TonerLevels = a.PageCount, a.ColorPages, a.MonoPages, a.ScanCount, a.TonerLevels
+	s.FaxPages, s.CopyPages, s.OtherPages, s.CopyMonoPages = a.FaxPages, a.CopyPages, a.OtherPages, a.CopyMonoPages
+	s.CopyFlatbedScans, s.CopyADFScans, s.FaxFlatbedScans, s.FaxADFScans = a.CopyFlatbedScans, a.CopyADFScans, a.FaxFlatbedScans, a.FaxADFScans
+	s.ScanToHostFlatbed, s.ScanToHostADF, s.DuplexSheets = a.ScanToHostFlatbed, a.ScanToHostADF, a.DuplexSheets
+	s.JamEvents, s.ScannerJamEvents = a.JamEvents, a.ScannerJamEvents
+	return s
 }

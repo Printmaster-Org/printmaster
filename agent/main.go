@@ -2414,13 +2414,32 @@ func tryLearnOIDForValue(ctx context.Context, ip string, vendorHint string, fiel
 	// Perform a targeted SNMP walk on common MIB roots
 	appLogger.Info("Attempting to learn OID for locked field", "ip", ip, "field", fieldName, "target_value", targetStr)
 
-	result, err := scanner.QueryDevice(ctx, ip, scanner.QueryFull, vendorHint, 10)
+	runtime, err := requireScanner()
 	if err != nil {
-		appLogger.Warn("Failed to query device for OID learning", "ip", ip, "error", err)
 		return ""
 	}
+	observation, err := scannerObservation(ip, scanner.SourceManual)
+	if err != nil {
+		return ""
+	}
+	work, err := runtime.request(ctx, observation, scanner.IntentManual, scanner.WorkOptions{
+		FullDetail:            true,
+		VendorHint:            vendorHint,
+		TimeoutSeconds:        10,
+		SNMPAfterTCPFailure:   true,
+		MissingSerialFallback: true,
+	}, "", true, nil)
+	if err != nil {
+		return ""
+	}
+	result := &scanner.QueryResult{}
+	for _, query := range work.Queries {
+		if query.Result != nil {
+			result.PDUs = append(result.PDUs, query.Result.PDUs...)
+		}
+	}
 
-	if result == nil || len(result.PDUs) == 0 {
+	if len(result.PDUs) == 0 {
 		return ""
 	}
 
@@ -3382,7 +3401,25 @@ func runInteractive(ctx context.Context, configFlag string) {
 	storageAdapter := &deviceStorageAdapter{store: deviceStore}
 	agent.SetDeviceStorage(storageAdapter)
 	appLogger.Info("Device storage connected", "mode", "auto_persist")
-	startIdentityRefreshForVersionChange(ctx, agentConfigStore, deviceStore, appLogger)
+
+	mainScanner, err = newScannerRuntime(ctx, deviceStore, productionScannerBackend())
+	if err != nil {
+		appLogger.Error("Failed to initialize scanner runtime", "error", err)
+		return
+	}
+	defer mainScanner.Close()
+	mainScanner.OnCommitted = func(pi agent.PrinterInfo, isNew bool) {
+		if sseHub == nil {
+			return
+		}
+		eventType := "device_updated"
+		if isNew {
+			eventType = "device_discovered"
+		}
+		sseHub.Broadcast(SSEEvent{Type: eventType, Data: map[string]interface{}{
+			"serial": pi.Serial, "ip": pi.IP, "make": pi.Manufacturer, "model": pi.Model,
+		}})
+	}
 
 	// Start garbage collection goroutine
 	retentionConfig := agent.GetRetentionConfig()
@@ -3403,17 +3440,14 @@ func runInteractive(ctx context.Context, configFlag string) {
 		liveMDNSMu      sync.Mutex
 		liveMDNSCancel  context.CancelFunc
 		liveMDNSRunning bool
-		liveMDNSSeen    = map[string]time.Time{}
 
 		liveWSDiscoveryMu      sync.Mutex
 		liveWSDiscoveryCancel  context.CancelFunc
 		liveWSDiscoveryRunning bool
-		liveWSDiscoverySeen    = map[string]time.Time{}
 
 		liveSSDPMu      sync.Mutex
 		liveSSDPCancel  context.CancelFunc
 		liveSSDPRunning bool
-		liveSSDPSeen    = map[string]time.Time{}
 
 		metricsRescanMu       sync.Mutex
 		metricsRescanCancel   context.CancelFunc
@@ -3423,12 +3457,10 @@ func runInteractive(ctx context.Context, configFlag string) {
 		snmpTrapMu      sync.Mutex
 		snmpTrapCancel  context.CancelFunc
 		snmpTrapRunning bool
-		snmpTrapSeen    = map[string]time.Time{}
 
 		llmnrMu      sync.Mutex
 		llmnrCancel  context.CancelFunc
 		llmnrRunning bool
-		llmnrSeen    = map[string]time.Time{}
 	)
 
 	// Periodic discovery worker
@@ -3438,12 +3470,12 @@ func runInteractive(ctx context.Context, configFlag string) {
 		if autoDiscoverRunning {
 			return
 		}
-		ctx, cancel := context.WithCancel(context.Background())
+		workerCtx, cancel := context.WithCancel(mainScanner.ctx)
 		autoDiscoverCancel = cancel
 		autoDiscoverRunning = true
 		appLogger.Info("Auto Discover: starting periodic scanner", "interval", autoDiscoverInterval.String())
 
-		go func() {
+		mainScanner.launch(func() {
 			ticker := time.NewTicker(autoDiscoverInterval)
 			defer ticker.Stop()
 
@@ -3487,8 +3519,8 @@ func runInteractive(ctx context.Context, configFlag string) {
 				}
 
 				// Use new scanner for periodic discovery (full mode)
-				_, err := Discover(ctx, ranges, "full", discoveryCfg, deviceStore, 50, 10)
-				if err != nil && ctx.Err() == nil {
+				_, err := Discover(workerCtx, ranges, "full", discoveryCfg, deviceStore, 50, 10)
+				if err != nil && workerCtx.Err() == nil {
 					appLogger.Error("Auto Discover scan error", "error", err, "ranges", len(ranges))
 				}
 			}
@@ -3496,7 +3528,7 @@ func runInteractive(ctx context.Context, configFlag string) {
 
 			for {
 				select {
-				case <-ctx.Done():
+				case <-workerCtx.Done():
 					autoDiscoverMu.Lock()
 					autoDiscoverRunning = false
 					autoDiscoverCancel = nil
@@ -3507,7 +3539,7 @@ func runInteractive(ctx context.Context, configFlag string) {
 					runPeriodicScan()
 				}
 			}
-		}()
+		})
 	}
 
 	stopAutoDiscover := func() {
@@ -3531,506 +3563,77 @@ func runInteractive(ctx context.Context, configFlag string) {
 		return timeoutSec
 	}
 
-	// handleLiveDiscovery processes a single IP from live discovery (mDNS, SSDP, WS-Discovery)
-	// Uses the new scanner to detect and store the device
-	handleLiveDiscovery := func(ip string, discoveryMethod string) {
-		ctx := context.Background()
-
-		// Check if we already know this IP from a saved device
-		// If so, do a quick refresh instead of full detection
-		if deviceStore != nil {
-			visibleTrue := true
-			devices, err := deviceStore.List(ctx, storage.DeviceFilter{
-				Visible: &visibleTrue,
-			})
-			if err == nil {
-				for _, device := range devices {
-					if device.IP == ip {
-						// Known device - liveness confirmed, do quick refresh
-						appLogger.Debug(discoveryMethod+": known device liveness confirmed, refreshing",
-							"ip", ip, "serial", device.Serial)
-
-						// Perform quick SNMP query to get updated metrics
-						pi, err := LiveDiscoveryDetect(ctx, ip, getSNMPTimeoutSeconds())
-						if err != nil {
-							appLogger.Debug(discoveryMethod+": refresh failed, updating last_seen only",
-								"ip", ip, "serial", device.Serial, "error", err)
-							// Just update last seen time even if SNMP fails
-							device.LastSeen = time.Now()
-							deviceStore.Update(ctx, device)
-							return
-						}
-
-						// Update device with fresh data
-						device.LastSeen = time.Now()
-						if pi.Serial != "" && pi.Serial == device.Serial {
-							// Serials match, update other fields if not locked
-							if device.LockedFields == nil {
-								device.LockedFields = []storage.FieldLock{}
-							}
-							isLocked := func(field string) bool {
-								for _, lf := range device.LockedFields {
-									if strings.EqualFold(lf.Field, field) {
-										return true
-									}
-								}
-								return false
-							}
-
-							if !isLocked("manufacturer") && pi.Manufacturer != "" {
-								device.Manufacturer = pi.Manufacturer
-							}
-							if !isLocked("model") && pi.Model != "" {
-								device.Model = pi.Model
-							}
-							if !isLocked("hostname") && pi.Hostname != "" {
-								device.Hostname = pi.Hostname
-							}
-
-							deviceStore.Update(ctx, device)
-
-							// Broadcast SSE update
-							sseHub.Broadcast(SSEEvent{
-								Type: "device_updated",
-								Data: map[string]interface{}{
-									"serial":       device.Serial,
-									"ip":           ip,
-									"manufacturer": device.Manufacturer,
-									"model":        device.Model,
-									"last_seen":    device.LastSeen.Format(time.RFC3339),
-									"method":       discoveryMethod,
-								},
-							})
-						}
-						return
-					}
-				}
-			}
+	sourceError := func(err error) {
+		if ctx.Err() == nil && err != nil {
+			appLogger.Warn("Live discovery source failed", "error", err.Error())
 		}
-
-		// Not a known device - do full detection
-		// Use new scanner for live discovery detection
-		pi, err := LiveDiscoveryDetect(ctx, ip, getSNMPTimeoutSeconds())
-		if err != nil {
-			appLogger.WarnRateLimited(discoveryMethod+"_detect_"+ip, 5*time.Minute,
-				discoveryMethod+" detection failed", "ip", ip, "error", err)
-			// Don't store device without serial - it will just create errors
+	}
+	startSource := func(mu *sync.Mutex, running *bool, cancelSlot *context.CancelFunc, browse func(context.Context, agent.ObservationCallback, agent.SourceErrorCallback)) {
+		mu.Lock()
+		defer mu.Unlock()
+		if *running {
 			return
 		}
-
-		// If lightweight query didn't get a serial, try a full deep scan
-		// We already have proof of life from live discovery, so it's worth the extra query
-		if pi.Serial == "" {
-			appLogger.Debug(discoveryMethod+": no serial from quick scan, trying deep scan",
-				"ip", ip, "manufacturer", pi.Manufacturer, "model", pi.Model)
-
-			deepPi, deepErr := LiveDiscoveryDeepScan(ctx, ip, 30)
-			if deepErr != nil {
-				appLogger.Debug(discoveryMethod+": deep scan failed",
-					"ip", ip, "error", deepErr)
-				return
-			}
-
-			// Use deep scan result if it has a serial
-			if deepPi != nil && deepPi.Serial != "" {
-				pi = deepPi
-				appLogger.Info(discoveryMethod+": deep scan found device",
-					"ip", ip, "serial", pi.Serial, "manufacturer", pi.Manufacturer, "model", pi.Model)
-			} else {
-				appLogger.Debug(discoveryMethod+": deep scan completed but no serial found",
-					"ip", ip)
-				return
-			}
-		}
-
-		// Add discovery method
-		pi.DiscoveryMethods = append(pi.DiscoveryMethods, discoveryMethod)
-
-		// Check if this is a known device
-		if pi.Serial != "" {
-			existing, err := deviceStore.Get(ctx, pi.Serial)
-			if err == nil && existing != nil {
-				// Known device - broadcast SSE update immediately
-				existing.LastSeen = time.Now()
-				existing.IP = ip
-				if updateErr := deviceStore.Update(ctx, existing); updateErr == nil {
-					sseHub.Broadcast(SSEEvent{
-						Type: "device_updated",
-						Data: map[string]interface{}{
-							"serial":       pi.Serial,
-							"ip":           ip,
-							"manufacturer": pi.Manufacturer,
-							"model":        pi.Model,
-							"last_seen":    existing.LastSeen.Format(time.RFC3339),
-							"method":       discoveryMethod,
-						},
-					})
-					appLogger.Debug(discoveryMethod+": known device updated",
-						"ip", ip, "serial", pi.Serial)
+		sourceCtx, cancel := context.WithCancel(mainScanner.ctx)
+		*cancelSlot, *running = cancel, true
+		if !mainScanner.launch(func() {
+			defer func() {
+				// A stopped generation was already cleared; never clobber its replacement.
+				if sourceCtx.Err() == nil {
+					mu.Lock()
+					*running = false
+					*cancelSlot = nil
+					mu.Unlock()
 				}
-			} else {
-				// New device - broadcast discovery event
-				sseHub.Broadcast(SSEEvent{
-					Type: "device_discovered",
-					Data: map[string]interface{}{
-						"ip":           ip,
-						"serial":       pi.Serial,
-						"manufacturer": pi.Manufacturer,
-						"model":        pi.Model,
-						"method":       discoveryMethod,
-					},
+			}()
+			browse(sourceCtx, func(observation scanner.Observation) bool {
+				// Adapter already stamped receipt; scanning runs off the listener goroutine.
+				return mainScanner.launch(func() {
+					_, err := mainScanner.RequestSource(sourceCtx, observation, scanner.IntentLive,
+						scanner.WorkOptions{TimeoutSeconds: getSNMPTimeoutSeconds(), MissingSerialFallback: true})
+					if err != nil && sourceCtx.Err() == nil {
+						appLogger.Debug("Live scanner observation rejected", "source", observation.Source, "ip", observation.IP.String(), "error", err.Error())
+					}
 				})
-				appLogger.Debug(discoveryMethod+": new device discovered",
-					"ip", ip, "serial", pi.Serial)
-			}
+			}, sourceError)
+		}) {
+			cancel()
+			*running = false
+			*cancelSlot = nil
 		}
-
-		// Store/update the device
-		agent.UpsertDiscoveredPrinter(*pi)
 	}
-
-	// Live mDNS discovery worker (only works when auto discover is enabled)
+	stopSource := func(mu *sync.Mutex, running *bool, cancelSlot *context.CancelFunc) {
+		mu.Lock()
+		defer mu.Unlock()
+		if *cancelSlot != nil {
+			(*cancelSlot)()
+			*cancelSlot = nil
+		}
+		*running = false
+	}
 	startLiveMDNS := func() {
-		liveMDNSMu.Lock()
-		defer liveMDNSMu.Unlock()
-		if liveMDNSRunning {
-			return
-		}
-		ctx, cancel := context.WithCancel(context.Background())
-		liveMDNSCancel = cancel
-		liveMDNSRunning = true
-		appLogger.Info("Live mDNS discovery: starting background browser")
-
-		go func() {
-			h := func(ip string) bool {
-				ip = strings.TrimSpace(ip)
-				if ip == "" {
-					return false
-				}
-				liveMDNSMu.Lock()
-				last, ok := liveMDNSSeen[ip]
-				if ok && time.Since(last) < 10*time.Minute {
-					liveMDNSMu.Unlock()
-					return false
-				}
-				liveMDNSSeen[ip] = time.Now()
-				liveMDNSMu.Unlock()
-				agent.AppendScanEvent("LIVE MDNS: discovered " + ip)
-
-				// Call LiveDiscoveryDetect directly
-				go handleLiveDiscovery(ip, "mdns")
-				return true
-			}
-			agent.StartMDNSBrowser(ctx, h)
-			liveMDNSMu.Lock()
-			liveMDNSRunning = false
-			liveMDNSCancel = nil
-			liveMDNSMu.Unlock()
-			appLogger.Info("Live mDNS discovery: stopped")
-		}()
+		startSource(&liveMDNSMu, &liveMDNSRunning, &liveMDNSCancel, agent.StartMDNSObservationBrowser)
 	}
-
-	stopLiveMDNS := func() {
-		liveMDNSMu.Lock()
-		defer liveMDNSMu.Unlock()
-		if liveMDNSCancel != nil {
-			appLogger.Info("Live mDNS discovery: stopping background browser")
-			liveMDNSCancel()
-			liveMDNSCancel = nil
-		}
-	}
-
-	// Live WS-Discovery worker (Windows network printer discovery)
+	stopLiveMDNS := func() { stopSource(&liveMDNSMu, &liveMDNSRunning, &liveMDNSCancel) }
 	startLiveWSDiscovery := func() {
-		liveWSDiscoveryMu.Lock()
-		defer liveWSDiscoveryMu.Unlock()
-		if liveWSDiscoveryRunning {
-			return
-		}
-		ctx, cancel := context.WithCancel(context.Background())
-		liveWSDiscoveryCancel = cancel
-		liveWSDiscoveryRunning = true
-		appLogger.Info("Live WS-Discovery: starting background listener")
-
-		go func() {
-			h := func(ip string) bool {
-				ip = strings.TrimSpace(ip)
-				if ip == "" {
-					return false
-				}
-				liveWSDiscoveryMu.Lock()
-				last, ok := liveWSDiscoverySeen[ip]
-				if ok && time.Since(last) < 10*time.Minute {
-					liveWSDiscoveryMu.Unlock()
-					return false
-				}
-				liveWSDiscoverySeen[ip] = time.Now()
-				liveWSDiscoveryMu.Unlock()
-				agent.AppendScanEvent("LIVE WS-DISCOVERY: discovered " + ip)
-
-				// Call LiveDiscoveryDetect directly
-				go handleLiveDiscovery(ip, "wsdiscovery")
-				return true
-			}
-			agent.StartWSDiscoveryBrowser(ctx, h)
-			liveWSDiscoveryMu.Lock()
-			liveWSDiscoveryRunning = false
-			liveWSDiscoveryCancel = nil
-			liveWSDiscoveryMu.Unlock()
-			appLogger.Info("Live WS-Discovery: stopped")
-		}()
+		startSource(&liveWSDiscoveryMu, &liveWSDiscoveryRunning, &liveWSDiscoveryCancel, agent.StartWSDiscoveryObservationBrowser)
 	}
-
-	stopLiveWSDiscovery := func() {
-		liveWSDiscoveryMu.Lock()
-		defer liveWSDiscoveryMu.Unlock()
-		if liveWSDiscoveryCancel != nil {
-			appLogger.Info("Live WS-Discovery: stopping background listener")
-			liveWSDiscoveryCancel()
-			liveWSDiscoveryCancel = nil
-		}
-	}
-
-	// Live SSDP/UPnP discovery worker
+	stopLiveWSDiscovery := func() { stopSource(&liveWSDiscoveryMu, &liveWSDiscoveryRunning, &liveWSDiscoveryCancel) }
 	startLiveSSDP := func() {
-		liveSSDPMu.Lock()
-		defer liveSSDPMu.Unlock()
-		if liveSSDPRunning {
-			return
-		}
-		ctx, cancel := context.WithCancel(context.Background())
-		liveSSDPCancel = cancel
-		liveSSDPRunning = true
-		appLogger.Info("Live SSDP: starting background listener")
-
-		go func() {
-			h := func(ip string) bool {
-				ip = strings.TrimSpace(ip)
-				if ip == "" {
-					return false
-				}
-				liveSSDPMu.Lock()
-				last, ok := liveSSDPSeen[ip]
-				if ok && time.Since(last) < 10*time.Minute {
-					liveSSDPMu.Unlock()
-					return false
-				}
-				liveSSDPSeen[ip] = time.Now()
-				liveSSDPMu.Unlock()
-				agent.AppendScanEvent("LIVE SSDP: discovered " + ip)
-
-				// Call LiveDiscoveryDetect directly
-				go handleLiveDiscovery(ip, "ssdp")
-				return true
-			}
-			agent.StartSSDPBrowser(ctx, h)
-			liveSSDPMu.Lock()
-			liveSSDPRunning = false
-			liveSSDPCancel = nil
-			liveSSDPMu.Unlock()
-			appLogger.Info("Live SSDP: stopped")
-		}()
+		startSource(&liveSSDPMu, &liveSSDPRunning, &liveSSDPCancel, agent.StartSSDPObservationBrowser)
 	}
-
-	stopLiveSSDP := func() {
-		liveSSDPMu.Lock()
-		defer liveSSDPMu.Unlock()
-		if liveSSDPCancel != nil {
-			appLogger.Info("Live SSDP: stopping background listener")
-			liveSSDPCancel()
-			liveSSDPCancel = nil
-		}
-	}
-
-	// SNMP Trap Listener: Event-driven discovery via trap notifications
+	stopLiveSSDP := func() { stopSource(&liveSSDPMu, &liveSSDPRunning, &liveSSDPCancel) }
 	startSNMPTrap := func() {
-		snmpTrapMu.Lock()
-		defer snmpTrapMu.Unlock()
-
-		if snmpTrapRunning {
-			appLogger.Debug("SNMP Trap listener already running")
-			return
-		}
-
-		ctx, cancel := context.WithCancel(context.Background())
-		snmpTrapCancel = cancel
-		snmpTrapRunning = true
-
-		appLogger.Info("SNMP Trap: starting listener", "port", 162, "requires_admin", true)
-
-		go func() {
-			h := func(ip string) bool {
-				// Async SNMP enrichment + metrics collection
-				go func(ip string) {
-					// Use new scanner for trap handling
-					ctx := context.Background()
-					pi, err := LiveDiscoveryDetect(ctx, ip, getSNMPTimeoutSeconds())
-					if err != nil {
-						appLogger.WarnRateLimited("trap_enrich_"+ip, 5*time.Minute, "SNMP Trap: enrichment failed", "ip", ip, "error", err)
-						return
-					}
-
-					serial := pi.Serial
-					if serial == "" {
-						appLogger.Debug("SNMP Trap: no serial found for device", "ip", ip)
-						return
-					}
-
-					// Check if device exists in DB
-					existing, err := deviceStore.Get(ctx, serial)
-					if err == nil && existing != nil {
-						// Known device - update LastSeen
-						existing.LastSeen = time.Now()
-						existing.IP = ip
-						if updateErr := deviceStore.Update(ctx, existing); updateErr == nil {
-							appLogger.Debug("SNMP Trap: known device updated", "ip", ip, "serial", serial)
-						}
-					} else {
-						// New device
-						appLogger.Debug("SNMP Trap: new device discovered", "ip", ip, "serial", serial)
-					}
-
-					// Store/update the device
-					agent.UpsertDiscoveredPrinter(*pi)
-					appLogger.Info("SNMP Trap: discovered device", "ip", ip, "serial", serial)
-
-					// If metrics monitoring is enabled and device is saved, collect metrics immediately
-					metricsRescanMu.Lock()
-					metricsEnabled := metricsRescanRunning
-					metricsRescanMu.Unlock()
-
-					if metricsEnabled && deviceStore != nil && serial != "" {
-						// Check if device is saved
-						ctx := context.Background()
-						device, err := deviceStore.Get(ctx, serial)
-						if err == nil && device != nil && device.IsSaved {
-							// Extract learned OIDs from device for efficient metrics collection
-							pi := storage.DeviceToPrinterInfo(device)
-							learnedOIDs := &pi.LearnedOIDs
-
-							// Collect metrics for this device using learned OIDs if available
-							agentSnapshot, err := CollectMetricsWithOIDs(ctx, ip, serial, device.Manufacturer, 10, learnedOIDs)
-							if err != nil {
-								appLogger.WarnRateLimited("trap_metrics_"+serial, 5*time.Minute, "SNMP Trap: metrics collection failed", "serial", serial, "error", err)
-							} else {
-								// Convert to storage format
-								storageSnapshot := &storage.MetricsSnapshot{}
-								storageSnapshot.Serial = agentSnapshot.Serial
-								storageSnapshot.Timestamp = time.Now()
-								storageSnapshot.PageCount = agentSnapshot.PageCount
-								storageSnapshot.ColorPages = agentSnapshot.ColorPages
-								storageSnapshot.MonoPages = agentSnapshot.MonoPages
-								storageSnapshot.ScanCount = agentSnapshot.ScanCount
-								storageSnapshot.TonerLevels = agentSnapshot.TonerLevels
-								storageSnapshot.FaxPages = agentSnapshot.FaxPages
-								storageSnapshot.CopyPages = agentSnapshot.CopyPages
-								storageSnapshot.OtherPages = agentSnapshot.OtherPages
-								storageSnapshot.CopyMonoPages = agentSnapshot.CopyMonoPages
-								storageSnapshot.CopyFlatbedScans = agentSnapshot.CopyFlatbedScans
-								storageSnapshot.CopyADFScans = agentSnapshot.CopyADFScans
-								storageSnapshot.FaxFlatbedScans = agentSnapshot.FaxFlatbedScans
-								storageSnapshot.FaxADFScans = agentSnapshot.FaxADFScans
-								storageSnapshot.ScanToHostFlatbed = agentSnapshot.ScanToHostFlatbed
-								storageSnapshot.ScanToHostADF = agentSnapshot.ScanToHostADF
-								storageSnapshot.DuplexSheets = agentSnapshot.DuplexSheets
-								storageSnapshot.JamEvents = agentSnapshot.JamEvents
-								storageSnapshot.ScannerJamEvents = agentSnapshot.ScannerJamEvents
-
-								// Save to database (error already logged in storage layer)
-								if err := deviceStore.SaveMetricsSnapshot(ctx, storageSnapshot); err == nil {
-									appLogger.Debug("SNMP Trap: collected metrics", "serial", serial)
-								}
-							}
-						}
-					}
-				}(ip)
-				return true
-			} // Call browser with 10-minute throttle window
-			agent.StartSNMPTrapBrowser(ctx, h, snmpTrapSeen, 10*time.Minute)
-
-			snmpTrapMu.Lock()
-			snmpTrapRunning = false
-			snmpTrapCancel = nil
-			snmpTrapMu.Unlock()
-			appLogger.Info("SNMP Trap: stopped")
-		}()
+		startSource(&snmpTrapMu, &snmpTrapRunning, &snmpTrapCancel, agent.StartSNMPTrapObservationBrowser)
 	}
-
-	stopSNMPTrap := func() {
-		snmpTrapMu.Lock()
-		defer snmpTrapMu.Unlock()
-		if snmpTrapCancel != nil {
-			appLogger.Info("SNMP Trap: stopping listener")
-			snmpTrapCancel()
-			snmpTrapCancel = nil
-		}
-	}
-
-	// LLMNR: Windows hostname resolution for printer discovery
+	stopSNMPTrap := func() { stopSource(&snmpTrapMu, &snmpTrapRunning, &snmpTrapCancel) }
 	startLLMNR := func() {
-		llmnrMu.Lock()
-		defer llmnrMu.Unlock()
-
-		if llmnrRunning {
-			appLogger.Debug("LLMNR listener already running")
-			return
-		}
-
-		ctx, cancel := context.WithCancel(context.Background())
-		llmnrCancel = cancel
-		llmnrRunning = true
-
-		appLogger.Info("LLMNR: starting listener")
-
-		go func() {
-			h := func(job scanner.ScanJob) bool {
-				ip := job.IP
-				hostname := ""
-				if job.Meta != nil {
-					if meta, ok := job.Meta.(map[string]interface{}); ok {
-						if hn, ok := meta["hostname"].(string); ok {
-							hostname = hn
-						}
-					}
-				}
-
-				// Async SNMP enrichment
-				go func(ip, hostname string) {
-					ctx := context.Background()
-					pi, err := LiveDiscoveryDetect(ctx, ip, getSNMPTimeoutSeconds())
-					if err != nil {
-						appLogger.WarnRateLimited("llmnr_enrich_"+ip, 5*time.Minute, "LLMNR: enrichment failed", "ip", ip, "hostname", hostname, "error", err)
-					} else {
-						agent.UpsertDiscoveredPrinter(*pi)
-						appLogger.Info("LLMNR: discovered device", "ip", ip, "hostname", hostname, "serial", pi.Serial)
-					}
-				}(ip, hostname)
-				return true
-			}
-
-			// Call browser with 10-minute throttle window
-			agent.StartLLMNRBrowser(ctx, h, llmnrSeen, 10*time.Minute)
-
-			llmnrMu.Lock()
-			llmnrRunning = false
-			llmnrCancel = nil
-			llmnrMu.Unlock()
-			appLogger.Info("LLMNR: stopped")
-		}()
+		startSource(&llmnrMu, &llmnrRunning, &llmnrCancel, agent.StartLLMNRObservationBrowser)
 	}
-
-	stopLLMNR := func() {
-		llmnrMu.Lock()
-		defer llmnrMu.Unlock()
-		if llmnrCancel != nil {
-			appLogger.Info("LLMNR: stopping listener")
-			llmnrCancel()
-			llmnrCancel = nil
-		}
-	}
+	stopLLMNR := func() { stopSource(&llmnrMu, &llmnrRunning, &llmnrCancel) }
 
 	// Declare collectMetricsForSavedDevices first so it can be used in startMetricsRescan
-	var collectMetricsForSavedDevices func()
+	var collectMetricsForSavedDevices func(context.Context)
 
 	// Metrics Rescan: Periodically collect metrics from saved devices
 	// intervalMinutes: legacy minutes-based interval (min 1, max 1440)
@@ -4068,13 +3671,13 @@ func runInteractive(ctx context.Context, configFlag string) {
 		}
 
 		metricsRescanInterval = interval
-		ctx, cancel := context.WithCancel(context.Background())
+		rescanCtx, cancel := context.WithCancel(mainScanner.ctx)
 		metricsRescanCancel = cancel
 		metricsRescanRunning = true
 
 		appLogger.Info("Metrics rescan: starting", "interval_minutes", intervalMinutes)
 
-		go func() {
+		mainScanner.launch(func() {
 			defer func() {
 				metricsRescanMu.Lock()
 				metricsRescanRunning = false
@@ -4083,21 +3686,21 @@ func runInteractive(ctx context.Context, configFlag string) {
 			}()
 
 			// Run immediately on start
-			collectMetricsForSavedDevices()
+			collectMetricsForSavedDevices(rescanCtx)
 
 			ticker := time.NewTicker(metricsRescanInterval)
 			defer ticker.Stop()
 
 			for {
 				select {
-				case <-ctx.Done():
+				case <-rescanCtx.Done():
 					appLogger.Info("Metrics rescan: stopped")
 					return
 				case <-ticker.C:
-					collectMetricsForSavedDevices()
+					collectMetricsForSavedDevices(rescanCtx)
 				}
 			}
-		}()
+		})
 	}
 
 	stopMetricsRescan := func() {
@@ -4112,9 +3715,11 @@ func runInteractive(ctx context.Context, configFlag string) {
 
 	// Define the collection function
 	// Collect metrics from ALL devices (saved + discovered) for tiered storage
-	collectMetricsForSavedDevices = func() {
+	collectMetricsForSavedDevices = func(ctx context.Context) {
 		appLogger.Debug("Metrics rescan: collecting snapshots from all devices")
-		ctx := context.Background()
+		if ctx == nil {
+			return
+		}
 
 		// Get all devices (no IsSaved filter - collect from discovered devices too)
 		devices, err := deviceStore.List(ctx, storage.DeviceFilter{})
@@ -4125,6 +3730,13 @@ func runInteractive(ctx context.Context, configFlag string) {
 
 		count := 0
 		for _, device := range devices {
+			if ctx.Err() != nil {
+				return
+			}
+			if device.IP == "" || device.Serial == "" || device.IsUSB || device.DeviceType == "local" || device.DeviceType == "virtual" || device.SourceType == "spooler" {
+				continue
+			}
+
 			// Extract learned OIDs from device for efficient metrics collection
 			pi := storage.DeviceToPrinterInfo(device)
 			learnedOIDs := &pi.LearnedOIDs
@@ -4136,33 +3748,12 @@ func runInteractive(ctx context.Context, configFlag string) {
 				continue
 			}
 
-			// Convert to storage type
-			storageSnapshot := &storage.MetricsSnapshot{}
-			storageSnapshot.Serial = agentSnapshot.Serial
-			storageSnapshot.PageCount = agentSnapshot.PageCount
-			storageSnapshot.ColorPages = agentSnapshot.ColorPages
-			storageSnapshot.MonoPages = agentSnapshot.MonoPages
-			storageSnapshot.ScanCount = agentSnapshot.ScanCount
-			storageSnapshot.TonerLevels = agentSnapshot.TonerLevels
-			storageSnapshot.FaxPages = agentSnapshot.FaxPages
-			storageSnapshot.CopyPages = agentSnapshot.CopyPages
-			storageSnapshot.OtherPages = agentSnapshot.OtherPages
-			storageSnapshot.CopyMonoPages = agentSnapshot.CopyMonoPages
-			storageSnapshot.CopyFlatbedScans = agentSnapshot.CopyFlatbedScans
-			storageSnapshot.CopyADFScans = agentSnapshot.CopyADFScans
-			storageSnapshot.FaxFlatbedScans = agentSnapshot.FaxFlatbedScans
-			storageSnapshot.FaxADFScans = agentSnapshot.FaxADFScans
-			storageSnapshot.ScanToHostFlatbed = agentSnapshot.ScanToHostFlatbed
-			storageSnapshot.ScanToHostADF = agentSnapshot.ScanToHostADF
-			storageSnapshot.DuplexSheets = agentSnapshot.DuplexSheets
-			storageSnapshot.JamEvents = agentSnapshot.JamEvents
-			storageSnapshot.ScannerJamEvents = agentSnapshot.ScannerJamEvents
+			storageSnapshot := scannerStorageMetrics(agentSnapshot, time.Now().UTC())
 
 			// Save to database (error already logged in storage layer)
-			if err := deviceStore.SaveMetricsSnapshot(ctx, storageSnapshot); err != nil {
+			if err := saveScannerMetrics(ctx, device.IP, storageSnapshot); err != nil {
 				continue
 			}
-
 			count++
 		}
 
@@ -4173,6 +3764,9 @@ func runInteractive(ctx context.Context, configFlag string) {
 	applyDiscoveryEffects := func(req map[string]interface{}) {
 		if req == nil {
 			return
+		}
+		if err := mainScanner.refreshIndex(mainScanner.ctx); err != nil {
+			appLogger.Warn("Scanner settings inventory refresh failed", "error", err)
 		}
 		autoDiscoverEnabled := false
 		if v, ok := req["auto_discover_enabled"]; ok {
@@ -4431,6 +4025,7 @@ func runInteractive(ctx context.Context, configFlag string) {
 
 	// Start only after SNMP/environment settings are initialized. Reachability
 	// is independent of optional heavy metrics collection and auto-discovery.
+	startIdentityRefreshForVersionChange(mainScanner.ctx, agentConfigStore, deviceStore, appLogger)
 	stopLiveness := startDeviceLivenessMonitor(ctx, deviceStore.(deviceLivenessStore), func() bool {
 		base := pmsettings.DefaultSettings()
 		managed := false
@@ -5661,46 +5256,34 @@ func runInteractive(ctx context.Context, configFlag string) {
 			http.Error(w, "serial or ip required", http.StatusBadRequest)
 			return
 		}
-		// if serial provided but no IP, try load existing device to get IP
+
 		targetIP := strings.TrimSpace(req.IP)
-		if targetIP == "" && req.Serial != "" {
-			// Sanitize serial to prevent path traversal attacks
-			safeSerial := filepath.Base(req.Serial)
-			if safeSerial == "." || safeSerial == ".." || safeSerial != req.Serial {
-				http.Error(w, "invalid serial number", http.StatusBadRequest)
+		if req.Serial != "" && targetIP == "" {
+			device, err := deviceStore.Get(r.Context(), req.Serial)
+			if err != nil {
+				http.Error(w, "device not found", http.StatusNotFound)
 				return
 			}
-			devPath := filepath.Join(".", "logs", "devices", safeSerial+".json")
-			if b, err := os.ReadFile(devPath); err == nil {
-				var doc map[string]interface{}
-				if json.Unmarshal(b, &doc) == nil {
-					if pi, ok := doc["printer_info"].(map[string]interface{}); ok {
-						if ipval, ok2 := pi["ip"].(string); ok2 {
-							targetIP = strings.TrimSpace(ipval)
-						}
-						if targetIP == "" {
-							if ipval2, ok3 := pi["IP"].(string); ok3 {
-								targetIP = strings.TrimSpace(ipval2)
-							}
-						}
-					}
-				}
-			}
+			targetIP = device.IP
 		}
 		if targetIP == "" {
 			http.Error(w, "unable to determine target ip for refresh", http.StatusBadRequest)
 			return
 		}
-		ctx := context.Background()
-		pi, err := LiveDiscoveryDetect(ctx, targetIP, getSNMPTimeoutSeconds())
+		observation, err := scannerObservation(targetIP, scanner.SourceManual)
 		if err != nil {
-			appLogger.Error("Device refresh failed", "ip", targetIP, "error", err)
-			http.Error(w, "refresh failed: "+err.Error(), http.StatusInternalServerError)
+			http.Error(w, "invalid ip", http.StatusBadRequest)
 			return
 		}
-		agent.UpsertDiscoveredPrinter(*pi)
+		result, err := mainScanner.request(r.Context(), observation, scanner.IntentManual,
+			scanner.WorkOptions{TimeoutSeconds: getSNMPTimeoutSeconds(), SNMPAfterTCPFailure: true, MissingSerialFallback: true}, req.Serial, false, nil)
+		if err != nil {
+			appLogger.Warn("Device refresh rejected", "ip", targetIP, "error", err.Error())
+			http.Error(w, "refresh failed", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "serial": pi.Serial})
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "serial": result.Serial})
 	})
 
 	// Update device fields (now supports many fields; respects locked fields at the UI level)
@@ -7807,32 +7390,12 @@ window.top.location.href = '/proxy/%s/';
 			return
 		}
 
-		// Convert to storage type
-		storageSnapshot := &storage.MetricsSnapshot{}
-		storageSnapshot.Serial = agentSnapshot.Serial
-		storageSnapshot.PageCount = agentSnapshot.PageCount
-		storageSnapshot.ColorPages = agentSnapshot.ColorPages
-		storageSnapshot.MonoPages = agentSnapshot.MonoPages
-		storageSnapshot.ScanCount = agentSnapshot.ScanCount
-		storageSnapshot.TonerLevels = agentSnapshot.TonerLevels
-		storageSnapshot.FaxPages = agentSnapshot.FaxPages
-		storageSnapshot.CopyPages = agentSnapshot.CopyPages
-		storageSnapshot.OtherPages = agentSnapshot.OtherPages
-		storageSnapshot.CopyMonoPages = agentSnapshot.CopyMonoPages
-		storageSnapshot.CopyFlatbedScans = agentSnapshot.CopyFlatbedScans
-		storageSnapshot.CopyADFScans = agentSnapshot.CopyADFScans
-		storageSnapshot.FaxFlatbedScans = agentSnapshot.FaxFlatbedScans
-		storageSnapshot.FaxADFScans = agentSnapshot.FaxADFScans
-		storageSnapshot.ScanToHostFlatbed = agentSnapshot.ScanToHostFlatbed
-		storageSnapshot.ScanToHostADF = agentSnapshot.ScanToHostADF
-		storageSnapshot.DuplexSheets = agentSnapshot.DuplexSheets
-		storageSnapshot.JamEvents = agentSnapshot.JamEvents
-		storageSnapshot.ScannerJamEvents = agentSnapshot.ScannerJamEvents
+		storageSnapshot := scannerStorageMetrics(agentSnapshot, time.Now().UTC())
 
 		// Save to database
 		saveCtx, cancelSave := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancelSave()
-		if err := deviceStore.SaveMetricsSnapshot(saveCtx, storageSnapshot); err != nil {
+		if err := saveScannerMetrics(saveCtx, req.IP, storageSnapshot); err != nil {
 			http.Error(w, "failed to save metrics: "+err.Error(), http.StatusInternalServerError)
 			return
 		}

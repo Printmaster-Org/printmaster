@@ -102,9 +102,29 @@ func QueryDeviceWithCapabilities(ctx context.Context, ip string, profile QueryPr
 	return queryDeviceWithCapabilitiesAndClient(ctx, ip, profile, vendorHint, timeoutSeconds, caps, NewSNMPClient)
 }
 
+// ContextQueryOptions augments the existing profiles without replacing vendor
+// catalogs. RequestedOIDs includes learned scalar OIDs or requested table columns.
+type ContextQueryOptions struct {
+	Capabilities  *capabilities.DeviceCapabilities
+	Retries       int
+	RequestedOIDs []string
+}
+
+// QueryDeviceWithContext binds the transport and retries to this operation while
+// retaining QueryDevice's vendor profiles, table walks and capability detection.
+func QueryDeviceWithContext(ctx context.Context, ip string, profile QueryProfile, vendorHint string, timeoutSeconds int, options ContextQueryOptions) (*QueryResult, error) {
+	return queryDeviceWithContextAndClient(ctx, ip, profile, vendorHint, timeoutSeconds, options, NewSNMPClientWithContext)
+}
+
+func queryDeviceWithContextAndClient(ctx context.Context, ip string, profile QueryProfile, vendorHint string, timeoutSeconds int, options ContextQueryOptions, factory func(context.Context, *SNMPConfig, string, int, int) (SNMPClient, error)) (*QueryResult, error) {
+	return queryDeviceWithCapabilitiesAndClient(ctx, ip, profile, vendorHint, timeoutSeconds, options.Capabilities, func(cfg *SNMPConfig, target string, timeout int) (SNMPClient, error) {
+		return factory(ctx, cfg, target, timeout, options.Retries)
+	}, options.RequestedOIDs...)
+}
+
 // queryDeviceWithCapabilitiesAndClient is the internal implementation that accepts a client factory.
 // This allows tests to inject mock clients without modifying global state.
-func queryDeviceWithCapabilitiesAndClient(ctx context.Context, ip string, profile QueryProfile, vendorHint string, timeoutSeconds int, caps *capabilities.DeviceCapabilities, clientFactory func(*SNMPConfig, string, int) (SNMPClient, error)) (*QueryResult, error) {
+func queryDeviceWithCapabilitiesAndClient(ctx context.Context, ip string, profile QueryProfile, vendorHint string, timeoutSeconds int, caps *capabilities.DeviceCapabilities, clientFactory func(*SNMPConfig, string, int) (SNMPClient, error), requestedOIDs ...string) (*QueryResult, error) {
 	if ip == "" {
 		return nil, fmt.Errorf("ip address required")
 	}
@@ -273,7 +293,7 @@ func queryDeviceWithCapabilitiesAndClient(ctx context.Context, ip string, profil
 
 		// GET scalar values using batched requests to avoid oversized PDUs
 		if len(scalarOIDs) > 0 {
-			scalarPDUs, err := batchedGet(ctx, client, scalarOIDs, defaultOIDBatchSize)
+			scalarPDUs, err := batchedGet(ctx, optionalQueryClient{SNMPClient: client, ctx: ctx}, scalarOIDs, defaultOIDBatchSize)
 			if err != nil {
 				return nil, err
 			}
@@ -308,6 +328,54 @@ func queryDeviceWithCapabilitiesAndClient(ctx context.Context, ip string, profil
 		}
 	}
 
+	// Optional/learned OIDs supplement every profile, including OIDs outside a
+	// full walk's roots. Query separately: unsupported SNMPv1 OIDs must not poison
+	// the established profile's batched GET. Missing table instances use WALK.
+	for _, oid := range appendUniqueOIDs(nil, requestedOIDs...) {
+		oid = normalizeOID(oid)
+		if oid == "" {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		present := false
+		for _, pdu := range pdus {
+			name := normalizeOID(pdu.Name)
+			if (name == oid || strings.HasPrefix(name, oid+".")) && pdu.Type != gosnmp.NoSuchObject && pdu.Type != gosnmp.NoSuchInstance && pdu.Type != gosnmp.EndOfMibView && pdu.Type != gosnmp.Null {
+				present = true
+				break
+			}
+		}
+		if present {
+			continue
+		}
+		packet, getErr := client.Get([]string{oid})
+		if getErr == nil && packet != nil && packet.Error == gosnmp.NoError {
+			for _, pdu := range packet.Variables {
+				if pdu.Type != gosnmp.NoSuchObject && pdu.Type != gosnmp.NoSuchInstance && pdu.Type != gosnmp.EndOfMibView && pdu.Type != gosnmp.Null {
+					pdus = append(pdus, pdu)
+					present = true
+				}
+			}
+		}
+		if !present {
+			_ = client.Walk(oid, func(pdu gosnmp.SnmpPDU) error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if len(pdus) >= 10000 {
+					return fmt.Errorf("walk limit exceeded")
+				}
+				pdus = append(pdus, pdu)
+				return nil
+			})
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	if len(pdus) == 0 {
 		return nil, fmt.Errorf("no SNMP data received from %s", ip)
 	}
@@ -333,6 +401,40 @@ func queryDeviceWithCapabilitiesAndClient(ctx context.Context, ip string, profil
 	}
 
 	return result, nil
+}
+
+// SNMPv1 rejects an entire GET when one optional profile OID is unsupported.
+// Keep established batching, retry only that rejected batch as individual GETs,
+// and never treat error-status variable bindings as obtained facts.
+type optionalQueryClient struct {
+	SNMPClient
+	ctx context.Context
+}
+
+func (c optionalQueryClient) Get(requested []string) (*gosnmp.SnmpPacket, error) {
+	packet, err := c.SNMPClient.Get(requested)
+	if err != nil || packet == nil || packet.Error == gosnmp.NoError {
+		return packet, err
+	}
+	if packet.Error != gosnmp.NoSuchName {
+		return nil, fmt.Errorf("SNMP GET error status: %v", packet.Error)
+	}
+	var pdus []gosnmp.SnmpPDU
+	if len(requested) > 1 {
+		for _, oid := range requested {
+			if err := c.ctx.Err(); err != nil {
+				return nil, err
+			}
+			one, err := c.SNMPClient.Get([]string{oid})
+			if err != nil {
+				return nil, err
+			}
+			if one != nil && one.Error == gosnmp.NoError {
+				pdus = append(pdus, one.Variables...)
+			}
+		}
+	}
+	return &gosnmp.SnmpPacket{Variables: pdus}, nil
 }
 
 // buildQueryOIDs constructs the list of OIDs to query based on profile.

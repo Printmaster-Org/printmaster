@@ -765,7 +765,8 @@ func (c *Coordinator) execute(ctx context.Context, req Request, protocol *protoc
 		if err := c.cfg.Commit(ctx, cloneCoordinatorResult(result)); err != nil {
 			failures = append(failures, fmt.Errorf("scanner commit: %w", err))
 			if c.cfg.Logger != nil {
-				c.cfg.Logger.Error("Scanner commit failed", "ip", req.Observation.IP.String(), "error", true)
+				// Commit errors are local storage errors, not remote payloads.
+				c.cfg.Logger.Error("Scanner commit failed", "ip", req.Observation.IP.String(), "error", err.Error())
 			}
 		} else {
 			result.Committed = true

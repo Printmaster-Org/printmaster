@@ -341,6 +341,16 @@ func probeWebUI(probeURL string) string {
 // populated PrinterInfo and a boolean indicating whether the heuristics
 // consider the device a printer.
 func ParsePDUs(scanIP string, vars []gosnmp.SnmpPDU, meta *ScanMeta, logFn func(string)) (PrinterInfo, bool) {
+	return parsePDUs(scanIP, vars, meta, logFn, true)
+}
+
+// ParsePDUsWithoutNetwork converts obtained PDUs without HTTP probes or diagnostic
+// file writes. Scanner stage commits must not trigger additional network work.
+func ParsePDUsWithoutNetwork(scanIP string, vars []gosnmp.SnmpPDU, meta *ScanMeta, logFn func(string)) (PrinterInfo, bool) {
+	return parsePDUs(scanIP, vars, meta, logFn, false)
+}
+
+func parsePDUs(scanIP string, vars []gosnmp.SnmpPDU, meta *ScanMeta, logFn func(string), sideEffects bool) (PrinterInfo, bool) {
 	allVars := vars
 
 	// build a parse debug structure we will persist for diagnostics
@@ -1010,7 +1020,7 @@ func ParsePDUs(scanIP string, vars []gosnmp.SnmpPDU, meta *ScanMeta, logFn func(
 	debug.ManufacturerHints = hints
 
 	// persist a small flat log listing manufacturer-related OIDs for quick inspection
-	{
+	if sideEffects {
 		logDir := ensureLogDir()
 		fname := fmt.Sprintf("manufacturer_oids_%s.log", strings.ReplaceAll(scanIP, ".", "_"))
 		fpath := filepath.Join(logDir, fname)
@@ -1390,9 +1400,10 @@ func ParsePDUs(scanIP string, vars []gosnmp.SnmpPDU, meta *ScanMeta, logFn func(
 	}
 
 	// Detect web UI URL from open ports or SNMP data
-	webUIURL := detectWebUIURL(scanIP, meta, pduByOid)
-	if webUIURL != "" {
-		pi.WebUIURL = webUIURL
+	if sideEffects {
+		if webUIURL := detectWebUIURL(scanIP, meta, pduByOid); webUIURL != "" {
+			pi.WebUIURL = webUIURL
+		}
 	}
 
 	// finalize debug info and persist
@@ -1410,9 +1421,11 @@ func ParsePDUs(scanIP string, vars []gosnmp.SnmpPDU, meta *ScanMeta, logFn func(
 	debug.DetectionReasons = reasons
 
 	// store the debug snapshot for this IP (best-effort)
-	if err := RecordParseDebug(scanIP, debug); err != nil {
-		if logFn != nil {
-			logFn("failed to persist parse debug: " + err.Error())
+	if sideEffects {
+		if err := RecordParseDebug(scanIP, debug); err != nil {
+			if logFn != nil {
+				logFn("failed to persist parse debug: " + err.Error())
+			}
 		}
 	}
 	return pi, isPrinter

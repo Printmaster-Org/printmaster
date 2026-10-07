@@ -3,14 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
 	"printmaster/agent/agent"
 	"printmaster/agent/scanner"
 	"printmaster/agent/storage"
-	"printmaster/common/snmp/oids"
 
 	"github.com/gosnmp/gosnmp"
 )
@@ -71,46 +69,18 @@ func monitorDeviceLiveness(ctx context.Context, store deviceLivenessStore, probe
 }
 
 func probeKnownDeviceIdentity(ctx context.Context, device *storage.Device) (bool, error) {
-	cfg, err := scanner.GetSNMPConfig()
+	runtime, err := requireScanner()
 	if err != nil {
 		return false, err
 	}
-	client, err := scanner.NewSNMPClientWithContext(ctx, cfg, device.IP, 2, 1)
+	observation, err := scannerObservation(device.IP, scanner.SourceManual)
 	if err != nil {
 		return false, err
 	}
-	defer client.Close()
 	pi := storage.DeviceToPrinterInfo(device)
-	identityOIDs := []string{oids.PrtGeneralSerialNumber}
-	if pi.LearnedOIDs.SerialOID != "" && strings.TrimPrefix(pi.LearnedOIDs.SerialOID, ".") != oids.PrtGeneralSerialNumber {
-		identityOIDs = append(identityOIDs, pi.LearnedOIDs.SerialOID)
-	}
-	identityOIDs = append(identityOIDs, scanner.VendorIDTargetOIDs()...)
-	packet, err := client.Get(identityOIDs)
-	if err != nil {
-		return false, err
-	}
-	// SNMPv1 rejects a whole multi-GET if any optional vendor OID is absent.
-	// Retry only that protocol error one OID at a time within the same deadline.
-	if packet != nil && packet.Error == gosnmp.NoSuchName && cfg.Version == gosnmp.Version1 {
-		for _, oid := range identityOIDs {
-			if err := ctx.Err(); err != nil {
-				return false, err
-			}
-			response, err := client.Get([]string{oid})
-			if err != nil {
-				return false, err
-			}
-			if response != nil && response.Error == gosnmp.NoError && matchesKnownDeviceIdentity(device, response.Variables, pi.LearnedOIDs.SerialOID) {
-				return true, nil
-			}
-		}
-		return false, nil
-	}
-	if packet == nil || packet.Error != gosnmp.NoError {
-		return false, fmt.Errorf("no successful identity response from %s", device.IP)
-	}
-	return matchesKnownDeviceIdentity(device, packet.Variables, pi.LearnedOIDs.SerialOID), nil
+	result, err := runtime.request(ctx, observation, scanner.IntentLiveness,
+		scanner.WorkOptions{SNMPAfterTCPFailure: true, TimeoutSeconds: 2, LearnedSerialOID: pi.LearnedOIDs.SerialOID}, device.Serial, true, nil)
+	return err == nil && result.Serial == device.Serial, err
 }
 
 func matchesKnownDeviceIdentity(device *storage.Device, pdus []gosnmp.SnmpPDU, learnedSerialOID string) bool {
@@ -120,6 +90,9 @@ func matchesKnownDeviceIdentity(device *storage.Device, pdus []gosnmp.SnmpPDU, l
 // startDeviceLivenessMonitor returns a stop-and-join function. Each round drains
 // before another starts, keeping network work bounded even with many old devices.
 func startDeviceLivenessMonitor(ctx context.Context, store deviceLivenessStore, enabled func() bool) func() {
+	if mainScanner != nil {
+		store = scannerLivenessStore{deviceLivenessStore: store, runtime: mainScanner}
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
@@ -140,4 +113,28 @@ func startDeviceLivenessMonitor(ctx context.Context, store deviceLivenessStore, 
 		}
 	}()
 	return func() { cancel(); <-done }
+}
+
+type scannerLivenessStore struct {
+	deviceLivenessStore
+	runtime *scannerRuntime
+}
+
+func (s scannerLivenessStore) TouchDeviceSeen(ctx context.Context, serial, ip string, at time.Time) error {
+	store, ok := s.runtime.store.(storage.StageCommitStore)
+	if !ok {
+		return fmt.Errorf("staged scanner storage unavailable")
+	}
+	if err := store.CommitScannerFacts(ctx, serial, ip, storage.DevicePatch{LastSeen: &at}, nil, nil); err != nil {
+		return err
+	}
+	scannerUploadWake()
+	return nil
+}
+
+// Production monitors all known network devices, including hidden inventory;
+// a liveness touch never changes visibility or saved state. Legacy monitor
+// callers retain their existing visible-only filter.
+func (s scannerLivenessStore) List(ctx context.Context, _ storage.DeviceFilter) ([]*storage.Device, error) {
+	return s.deviceLivenessStore.List(ctx, storage.DeviceFilter{})
 }
