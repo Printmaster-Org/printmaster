@@ -533,7 +533,7 @@ function applyAutoUpdateStatusToUI(data) {
     setAutoUpdateMeta('autoupdate_latest_version', data && data.latest_version);
 
     const channelBits = [];
-    if (data && data.channel) channelBits.push(String(data.channel).toUpperCase());
+    if (data && data.channel) channelBits.push(({ stable: 'Stable', beta: 'Beta', dev: 'Dev' })[data.channel] || String(data.channel));
     const platformArch = [data && data.platform, data && data.arch].filter(Boolean).join(' / ');
     if (platformArch) channelBits.push(platformArch);
     setAutoUpdateMeta('autoupdate_channel', channelBits.join(' · ') || null);
@@ -4161,9 +4161,16 @@ function applyServerManagedState() {
             '.settings-grid .panel:has(#auto_discover_checkbox)',
             '.settings-grid .panel:has(#passive_discovery_enabled)',
             '.settings-grid .panel:has(#metrics_rescan_enabled)'
-        ]
+        ],
+        'snmp': ['.settings-grid .panel:has(#dev_snmp_version)'],
+        'features': ['.settings-grid .panel:has(#dev_asset_id_regex)', '.settings-grid .panel:has(#enable_saved_credentials)', '.settings-grid .panel:has(#dev_epson_remote_mode)'],
+        'spooler': ['.settings-grid .panel:has(#spooler_enabled)']
     };
 
+    document.querySelectorAll('[data-server-managed-lock]').forEach(input => {
+        input.disabled = false;
+        delete input.dataset.serverManagedLock;
+    });
     // Remove any existing server-managed badges
     document.querySelectorAll('.server-managed-badge').forEach(el => el.remove());
 
@@ -4183,7 +4190,13 @@ function applyServerManagedState() {
                 }
                 // Disable all inputs within the panel
                 panel.querySelectorAll('input, select, textarea').forEach(input => {
+                    const localIds = ['show_discover_button_anyway', 'show_discovered_devices_anyway',
+                        'dev_debug_logging', 'dev_dump_parse_debug'];
+                    if (localIds.includes(input.id)) return;
+                    if (section === 'snmp' && !input.id.startsWith('dev_snmp_')) return;
+                    if (section === 'features' && !['dev_asset_id_regex', 'enable_saved_credentials', 'dev_epson_remote_mode'].includes(input.id)) return;
                     input.disabled = true;
+                    input.dataset.serverManagedLock = 'true';
                 });
             });
         }
@@ -4198,14 +4211,16 @@ function applyServerManagedState() {
             'discovery_live_mdns_enabled', 'discovery_live_wsd_enabled',
             'discovery_live_ssdp_enabled', 'discovery_live_snmptrap_enabled',
             'discovery_live_llmnr_enabled', 'passive_discovery_enabled',
-            'metrics_rescan_enabled', 'metrics_rescan_interval',
+            'metrics_rescan_enabled', 'metrics_rescan_interval', 'metrics_rescan_interval_seconds',
             'auto_discover_checkbox', 'autosave_checkbox',
-            'show_discover_button_anyway', 'show_discovered_devices_anyway',
-            'ranges_input'
+            'dev_discover_concurrency', 'ranges_text', 'ranges_input'
         ];
         for (const id of discoveryInputIds) {
             const el = document.getElementById(id);
-            if (el) el.disabled = true;
+            if (el) {
+                el.disabled = true;
+                el.dataset.serverManagedLock = 'true';
+            }
         }
     }
 }
@@ -4244,14 +4259,14 @@ function loadSettings() {
         document.getElementById('dev_snmp_version').value = snmp.version || '2c';
         document.getElementById('dev_snmp_community').value = snmp.community || '';
         document.getElementById('dev_snmp_timeout').value = snmp.timeout_ms || 2000;
-        document.getElementById('dev_snmp_retries').value = snmp.retries || 1;
+        document.getElementById('dev_snmp_retries').value = snmp.retries ?? 1;
         
         // SNMP settings - v3 security
-        document.getElementById('dev_snmp_security_level').value = snmp.security_level || 'authPriv';
+        document.getElementById('dev_snmp_security_level').value = snmp.security_level || 'noAuthNoPriv';
         document.getElementById('dev_snmp_username').value = snmp.username || '';
-        document.getElementById('dev_snmp_auth_protocol').value = snmp.auth_protocol || 'SHA256';
+        document.getElementById('dev_snmp_auth_protocol').value = snmp.auth_protocol || '';
         document.getElementById('dev_snmp_auth_password').value = snmp.auth_password || '';
-        document.getElementById('dev_snmp_priv_protocol').value = snmp.priv_protocol || 'AES';
+        document.getElementById('dev_snmp_priv_protocol').value = snmp.priv_protocol || '';
         document.getElementById('dev_snmp_priv_password').value = snmp.priv_password || '';
         document.getElementById('dev_snmp_context_name').value = snmp.context_name || '';
         
@@ -4269,7 +4284,7 @@ function loadSettings() {
         // Discovery settings
         document.getElementById('dev_discover_concurrency').value = disc.concurrency || 50;
         document.getElementById('scan_local_subnet_enabled').checked = disc.subnet_scan !== false;
-        document.getElementById('manual_ranges_enabled').checked = disc.manual_ranges !== false;
+        document.getElementById('manual_ranges_enabled').checked = disc.manual_ranges === true;
     // Master IP scanning toggle (default enabled)
     const ipScanEl = document.getElementById('ip_scanning_enabled');
     if (ipScanEl) { ipScanEl.checked = disc.ip_scanning_enabled !== false; }
@@ -4285,6 +4300,8 @@ function loadSettings() {
         document.getElementById('discovery_live_llmnr_enabled').checked = disc.auto_discover_live_llmnr === true;
         document.getElementById('metrics_rescan_enabled').checked = disc.metrics_rescan_enabled === true;
         document.getElementById('metrics_rescan_interval').value = disc.metrics_rescan_interval_minutes ?? 60;
+        const secondsInterval = document.getElementById('metrics_rescan_interval_seconds');
+        if (secondsInterval) secondsInterval.value = disc.metrics_rescan_interval_seconds ?? 0;
         document.getElementById('auto_discover_checkbox').checked = disc.auto_discover_enabled === true;
         document.getElementById('autosave_checkbox').checked = disc.autosave_discovered_devices === true;
 
@@ -4293,12 +4310,7 @@ function loadSettings() {
         document.getElementById('show_discovered_devices_anyway').checked = disc.show_discovered_devices_anyway === true;
 
         // Load passive discovery master toggle and determine if any methods are enabled
-        const anyPassiveMethodEnabled = disc.auto_discover_live_mdns === true ||
-            disc.auto_discover_live_wsd === true ||
-            disc.auto_discover_live_ssdp === true ||
-            disc.auto_discover_live_snmptrap === true ||
-            disc.auto_discover_live_llmnr === true;
-        const passiveEnabled = disc.passive_discovery_enabled !== false && anyPassiveMethodEnabled;
+        const passiveEnabled = disc.passive_discovery_enabled !== false;
         document.getElementById('passive_discovery_enabled').checked = passiveEnabled;
 
         // Update UI state based on loaded settings
@@ -4306,7 +4318,7 @@ function loadSettings() {
     // or racey initialization can cause the checkbox state to be overwritten by
     // other startup handlers; apply the desired state and re-run the UI toggles
     // immediately and once again after a short delay to be robust.
-    const desiredManualRanges = disc.manual_ranges !== false;
+    const desiredManualRanges = disc.manual_ranges === true;
     const manualRangesEl = document.getElementById('manual_ranges_enabled');
     if (manualRangesEl) {
         manualRangesEl.checked = desiredManualRanges;
@@ -4970,6 +4982,7 @@ function addAutoSaveHandlers() {
     document.getElementById('metrics_rescan_enabled')?.addEventListener('change', window.__settingsChangeHandler);
     // Remove IP scanning handlers when autosave disabled
     document.getElementById('metrics_rescan_interval')?.addEventListener('change', window.__settingsChangeHandler);
+    document.getElementById('metrics_rescan_interval_seconds')?.addEventListener('change', window.__settingsChangeHandler);
 
     // Spooler/local printer tracking settings
     window.__spoolerEnabledHandler = function() {
@@ -4993,6 +5006,12 @@ function addAutoSaveHandlers() {
     document.getElementById('dev_epson_remote_mode')?.addEventListener('change', window.__settingsChangeHandler);
     document.getElementById('dev_discover_concurrency')?.addEventListener('change', window.__settingsChangeHandler);
     document.getElementById('dev_asset_id_regex')?.addEventListener('change', window.__settingsChangeHandler);
+    for (const id of ['dev_snmp_version', 'dev_snmp_security_level', 'dev_snmp_username', 'dev_snmp_auth_protocol',
+        'dev_snmp_auth_password', 'dev_snmp_priv_protocol', 'dev_snmp_priv_password', 'dev_snmp_context_name',
+        'enable_saved_credentials', 'enable_http', 'http_port', 'enable_https', 'https_port',
+        'redirect_http_to_https', 'custom_cert_path', 'custom_key_path']) {
+        document.getElementById(id)?.addEventListener('change', window.__settingsChangeHandler);
+    }
 }
 
 // Remove auto-save handlers
@@ -5029,6 +5048,7 @@ function removeAutoSaveHandlers() {
     document.getElementById('metrics_rescan_enabled')?.removeEventListener('change', window.__settingsChangeHandler);
     document.getElementById('ip_scanning_enabled')?.removeEventListener('change', window.__ipScanningHandler);
     document.getElementById('metrics_rescan_interval')?.removeEventListener('change', window.__settingsChangeHandler);
+    document.getElementById('metrics_rescan_interval_seconds')?.removeEventListener('change', window.__settingsChangeHandler);
 
     // Spooler settings
     const spoolerEnabledEl = document.getElementById('spooler_enabled');
@@ -5045,6 +5065,12 @@ function removeAutoSaveHandlers() {
     document.getElementById('dev_epson_remote_mode')?.removeEventListener('change', window.__settingsChangeHandler);
     document.getElementById('dev_discover_concurrency')?.removeEventListener('change', window.__settingsChangeHandler);
     document.getElementById('dev_asset_id_regex')?.removeEventListener('change', window.__settingsChangeHandler);
+    for (const id of ['dev_snmp_version', 'dev_snmp_security_level', 'dev_snmp_username', 'dev_snmp_auth_protocol',
+        'dev_snmp_auth_password', 'dev_snmp_priv_protocol', 'dev_snmp_priv_password', 'dev_snmp_context_name',
+        'enable_saved_credentials', 'enable_http', 'http_port', 'enable_https', 'https_port',
+        'redirect_http_to_https', 'custom_cert_path', 'custom_key_path']) {
+        document.getElementById(id)?.removeEventListener('change', window.__settingsChangeHandler);
+    }
 }
 
 // Unified save for both discovery and developer settings
@@ -5097,13 +5123,20 @@ async function saveAllSettings(btn) {
                 metrics_rescan_enabled: document.getElementById('metrics_rescan_enabled')?.checked ?? false,
                 // Validate and clamp interval to avoid sending NaN/null which the
                 // backend treats as missing and falls back to default (60). Ensure
-                // interval is an integer between 5 and 1440.
+                // interval is an integer between 1 and 1440.
                 metrics_rescan_interval_minutes: (function(){
                     const el = document.getElementById('metrics_rescan_interval');
                     let iv = el ? parseInt(el.value, 10) : NaN;
                     if (isNaN(iv)) iv = 60; // default
-                    if (iv < 5) iv = 5;
+                    if (iv < 1) iv = 1;
                     if (iv > 1440) iv = 1440;
+                    return iv;
+                })(),
+                metrics_rescan_interval_seconds: (function(){
+                    const iv = Number(document.getElementById('metrics_rescan_interval_seconds')?.value ?? 0);
+                    if (!Number.isInteger(iv) || iv < 0 || iv > 300 || (iv > 0 && iv < 15)) {
+                        throw new Error('Seconds override must be 0 or an integer between 15 and 300');
+                    }
                     return iv;
                 })(),
 
@@ -5126,7 +5159,7 @@ async function saveAllSettings(btn) {
             version: snmpVersion,
             community: document.getElementById('dev_snmp_community').value,
             timeout_ms: parseInt(document.getElementById('dev_snmp_timeout').value) || 2000,
-            retries: parseInt(document.getElementById('dev_snmp_retries').value) || 1
+            retries: parseInt(document.getElementById('dev_snmp_retries').value) || 0
         };
         // Add SNMPv3 settings if version 3 is selected
         if (snmpVersion === '3') {
@@ -5178,10 +5211,21 @@ async function saveAllSettings(btn) {
             include_virtual_printers: document.getElementById('spooler_include_virtual')?.checked ?? false
         };
 
+        const payload = { discovery: discoverySettings, snmp: snmpSettings, features: featuresSettings, spooler: spoolerSettings, logging: loggingSettings, web: webSettings };
+        for (const section of serverManagedSections) {
+            if (section === 'discovery') {
+                payload.discovery = {
+                    show_discover_button_anyway: discoverySettings.show_discover_button_anyway,
+                    show_discovered_devices_anyway: discoverySettings.show_discovered_devices_anyway
+                };
+            } else {
+                delete payload[section];
+            }
+        }
         const rUnified = await fetch('/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ discovery: discoverySettings, snmp: snmpSettings, features: featuresSettings, spooler: spoolerSettings, logging: loggingSettings, web: webSettings })
+            body: JSON.stringify(payload)
         });
         if (!rUnified.ok) {
             const t = await rUnified.text();

@@ -527,7 +527,7 @@ const SERVER_SETTINGS_SCHEMA = [
         description: 'Adjust how the server checks for and stages new versions.',
         fields: [
             { key: 'enabled', label: 'Enable Self-Update', type: 'checkbox', helper: 'Allow the server to download and stage signed updates automatically.', configKey: 'server.self_update_enabled' },
-            { key: 'channel', label: 'Update Channel', type: 'text', placeholder: 'stable', required: true, helper: 'Release channel to follow (e.g. stable, beta).', configKey: 'self_update.channel' },
+            { key: 'channel', label: 'Update Channel', type: 'select', options: [{ value: 'stable', label: 'Stable' }, { value: 'beta', label: 'Beta' }, { value: 'dev', label: 'Dev' }], required: true, helper: 'Release channel to follow: Stable, Beta, or Dev. Requires cached releases for the selected channel.', configKey: 'self_update.channel' },
             { key: 'max_artifacts', label: 'Max Cached Artifacts', type: 'number', min: 1, required: true, helper: 'Number of newest artifacts evaluated when picking an update candidate.', configKey: 'self_update.max_artifacts' },
             { key: 'check_interval_minutes', label: 'Check Interval (minutes)', type: 'number', min: 30, required: true, helper: 'Frequency of automatic self-update checks.', configKey: 'self_update.check_interval_minutes' }
         ]
@@ -14878,6 +14878,19 @@ function renderSettingsForm() {
         }
     }
 
+    const channelField = (settingsUIState.groupedFields.features || []).find(field => field.path === 'features.agent_update_channel');
+    if (channelField) {
+        const panel = document.createElement('div');
+        panel.className = 'settings-section-panel';
+        panel.id = 'fleet_update_channel_section';
+        panel.innerHTML = '<div class="settings-section-header"><h4>Agent Builds / Release Channel</h4><p>Choose Stable, Beta, or Dev builds for this fleet scope. A channel must have cached releases before it can supply updates. Channel selection is managed with the Features section; auto-update scheduling is configured below.</p></div>';
+        const row = renderSettingsFieldRow(channelField, getValueByPath(draft, channelField.path), scope,
+            settingsUIState.managedSections.has('features'),
+            scope === 'agent' && settingsUIState.agentEnforcedSections.has('features'));
+        if (row) panel.appendChild(row);
+        root.appendChild(panel);
+    }
+
     orderedSettingsSections().forEach(sectionKey => {
         const fields = settingsUIState.groupedFields[sectionKey];
         if (!fields || !fields.length) {
@@ -14889,7 +14902,7 @@ function renderSettingsForm() {
 
         const sectionEl = document.createElement('div');
         sectionEl.className = 'settings-section-panel';
-        if (scope === 'global' && !isSectionManaged) {
+        if (!isSectionManaged) {
             sectionEl.classList.add('section-disabled');
         }
         if (scope === 'agent' && (!isSectionManaged || isSectionEnforced)) {
@@ -14898,7 +14911,7 @@ function renderSettingsForm() {
         const header = document.createElement('div');
         header.className = 'settings-section-header';
         let managedBadge = '';
-        if ((scope === 'global' || scope === 'agent') && !isSectionManaged) {
+        if (!isSectionManaged) {
             managedBadge = '<span class="section-status-badge agent-controlled">Agent Controlled</span>';
         } else if (scope === 'agent' && isSectionEnforced) {
             managedBadge = '<span class="section-status-badge agent-controlled">Tenant Enforced</span>';
@@ -14914,6 +14927,7 @@ function renderSettingsForm() {
             renderDiscoveryWithSubsections(list, fields, draft, scope, isSectionManaged, isSectionEnforced);
         } else {
             fields.forEach(field => {
+                if (field.path === 'features.agent_update_channel') return;
                 const value = getValueByPath(draft, field.path);
                 const row = renderSettingsFieldRow(field, value, scope, isSectionManaged, isSectionEnforced);
                 if (row) {
@@ -15152,7 +15166,7 @@ function renderSettingsFieldRow(field, value, scope, isSectionManaged = true, is
     // Check if this field is locked by environment variable
     const isLocked = settingsUIState.lockedKeys.has(field.path);
     // Section not managed means fields are read-only indicators
-    const sectionNotManaged = (scope === 'global' || scope === 'agent') && !isSectionManaged;
+    const sectionNotManaged = !isSectionManaged;
     const sectionTenantEnforced = scope === 'agent' && !!isSectionEnforced;
 
     // For locked fields, use the effective runtime value instead of DB value
@@ -15584,7 +15598,8 @@ function createInputForField(field, value) {
         field.enum.forEach(optionValue => {
             const opt = document.createElement('option');
             opt.value = optionValue;
-            opt.textContent = field.path === 'features.agent_update_channel' && optionValue === '' ? 'Use Agent configuration' : optionValue;
+            const channelLabels = { '': 'Use Agent configuration', stable: 'Stable', beta: 'Beta', dev: 'Dev' };
+            opt.textContent = field.path === 'features.agent_update_channel' ? channelLabels[optionValue] : optionValue;
             if (optionValue === resolvedValue) {
                 opt.selected = true;
             }
@@ -15600,7 +15615,7 @@ function createInputForField(field, value) {
         element = input;
     } else {
         input = document.createElement('input');
-        input.type = 'text';
+        input.type = type === 'password' ? 'password' : 'text';
         input.value = resolvedValue === null || resolvedValue === undefined ? '' : resolvedValue;
         element = input;
     }

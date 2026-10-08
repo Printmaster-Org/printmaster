@@ -126,15 +126,29 @@ test('Fleet persistent channel selector renders and saves through existing setti
         settingsUIState.scope = 'global';
         settingsUIState.globalDraft = { features: { agent_update_channel: '' } };
         const field = { path: 'features.agent_update_channel', type: 'select', title: 'Agent Update Channel', enum: ['', 'stable', 'beta', 'dev'], default: '', editable_by: ['server_admin'] };
-        const row = renderSettingsFieldRow(field, '', 'global', true);
-        document.getElementById('settings_form_root').appendChild(row);
-        const input = row.querySelector('select');
-        input.value = 'dev';
-        handleSettingsFieldChange({ target: input });
-        return { labels: Array.from(input.options).map(option => option.textContent), draft: settingsUIState.globalDraft.features.agent_update_channel };
+        settingsUIState.schema = { fields: [field] };
+        settingsUIState.groupedFields = { features: [field] };
+        settingsUIState.managedSections = new Set(['features']);
+        bindSettingsEvents();
+        renderSettingsForm();
+        const root = document.getElementById('settings_form_root');
+        const input = root.querySelector('select[data-settings-path="features.agent_update_channel"]');
+        const drafts = [];
+        for (const channel of ['stable', 'beta', 'dev']) {
+            input.value = channel;
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            drafts.push(settingsUIState.globalDraft.features.agent_update_channel);
+        }
+        return {
+            labels: Array.from(input.options).map(option => option.textContent),
+            drafts, count: root.querySelectorAll('select[data-settings-path="features.agent_update_channel"]').length,
+            firstPanel: root.querySelector('.settings-section-panel').id
+        };
     });
-    expect(selected.labels).toEqual(['Use Agent configuration', 'stable', 'beta', 'dev']);
-    expect(selected.draft).toBe('dev');
+    expect(selected.labels).toEqual(['Use Agent configuration', 'Stable', 'Beta', 'Dev']);
+    expect(selected.drafts).toEqual(['stable', 'beta', 'dev']);
+    expect(selected.count).toBe(1);
+    expect(selected.firstPanel).toBe('fleet_update_channel_section');
 });
 
 test('last-seen aging marks temporary printers offline; filters, table and recovery agree', async ({ page }) => {

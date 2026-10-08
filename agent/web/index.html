@@ -516,9 +516,14 @@
                     </label>
                     <label style="display:flex;align-items:center;gap:8px;margin-left:20px;">
                         <span style="min-width:120px;">Rescan Interval:</span>
-                        <input type="number" id="metrics_rescan_interval" min="5" max="1440" step="5" value="60"
+                        <input type="number" id="metrics_rescan_interval" min="1" max="1440" step="1" value="60"
                             style="width:80px;" />
-                        <span style="color:var(--muted);font-size:12px;">minutes (5-1440)</span>
+                        <span style="color:var(--muted);font-size:12px;">minutes (1-1440)</span>
+                    </label>
+                    <label style="display:flex;align-items:center;gap:8px;margin-left:20px;">
+                        <span>Seconds override:</span>
+                        <input type="number" id="metrics_rescan_interval_seconds" min="0" max="300" step="1" value="0" style="width:80px;" />
+                        <span style="color:var(--muted);font-size:12px;">0 uses minutes; otherwise 15-300 seconds</span>
                     </label>
                 </div>
             </div>
@@ -638,6 +643,8 @@
                                     <option value="AES" selected>AES-128</option>
                                     <option value="AES192">AES-192</option>
                                     <option value="AES256">AES-256</option>
+                                    <option value="AES192C">AES-192 (Cisco)</option>
+                                    <option value="AES256C">AES-256 (Cisco)</option>
                                 </select>
                                 <span style="color:var(--muted);font-size:12px;">Encryption algorithm for data privacy</span>
                             </label>
@@ -659,9 +666,9 @@
                     <!-- Common SNMP settings -->
                     <label style="display:flex;align-items:center;gap:8px;">
                         <span style="min-width:200px;">Timeout (milliseconds):</span>
-                        <input id="dev_snmp_timeout" type="number" style="width:120px" min="500" max="10000"
+                        <input id="dev_snmp_timeout" type="number" style="width:120px" min="500" max="60000"
                             step="100" />
-                        <span style="color:var(--muted);font-size:12px;">500-10000ms, affects network wait
+                        <span style="color:var(--muted);font-size:12px;">500-60000ms, affects network wait
                             time</span>
                     </label>
                     <label style="display:flex;align-items:center;gap:8px;">
@@ -738,9 +745,9 @@
                     </div>
                     <label style="display:flex;align-items:center;gap:8px;">
                         <span style="min-width:200px;">Discovery Concurrency:</span>
-                        <input id="dev_discover_concurrency" type="number" style="width:120px" min="1" max="500"
+                        <input id="dev_discover_concurrency" type="number" style="width:120px" min="1" max="200"
                             step="10" />
-                        <span style="color:var(--muted);font-size:12px;">Parallel device probes (1-500)</span>
+                        <span style="color:var(--muted);font-size:12px;">Parallel device probes (1-200)</span>
                     </label>
                 </div>
             </div>

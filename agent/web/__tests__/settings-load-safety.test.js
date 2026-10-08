@@ -109,4 +109,60 @@ describe('agent settings load safety', () => {
         document.getElementById('http_port').value = '8.5';
         expect(() => context.readWebPort('http_port', 'HTTP')).toThrow('HTTP port must be an integer');
     });
+
+    function settingsContext(managed = []) {
+        document.body.innerHTML = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+        const context = {
+            document, globalSettings: {}, serverManagedSections: new Set(managed),
+            settingsLoadedSuccessfully: true, settingsDirty: false,
+            window: { __pm_shared: { error: jest.fn(), log: jest.fn(), showToast: jest.fn() } },
+            fetch: jest.fn().mockResolvedValue({ ok: true }),
+            setTimeout: jest.fn(), updateSettingsDirtyState: jest.fn(), updateSettingsLoadState: jest.fn(),
+            showSettingsSaveError: jest.fn()
+        };
+        vm.createContext(context);
+        vm.runInContext([declaration('readWebPort'), declaration('saveAllSettings'), declaration('applyServerManagedState')].join('\n'), context);
+        return context;
+    }
+
+    test('Apply omits managed sections but keeps local discovery preferences, logging and web', async () => {
+        const context = settingsContext(['discovery', 'snmp', 'features', 'spooler']);
+        document.getElementById('show_discover_button_anyway').checked = true;
+        await expect(context.saveAllSettings()).resolves.toBe(true);
+        const payload = JSON.parse(context.fetch.mock.calls[0][1].body);
+        expect(Object.keys(payload).sort()).toEqual(['discovery', 'logging', 'web']);
+        expect(payload.discovery).toEqual({ show_discover_button_anyway: true, show_discovered_devices_anyway: false });
+    });
+
+    test('local save preserves zero retries, one-minute intervals and seconds overrides', async () => {
+        const context = settingsContext();
+        document.getElementById('dev_snmp_retries').value = '0';
+        document.getElementById('metrics_rescan_interval').value = '1';
+        document.getElementById('metrics_rescan_interval_seconds').value = '15';
+        await expect(context.saveAllSettings()).resolves.toBe(true);
+        const payload = JSON.parse(context.fetch.mock.calls[0][1].body);
+        expect(payload.snmp.retries).toBe(0);
+        expect(payload.discovery.metrics_rescan_interval_minutes).toBe(1);
+        expect(payload.discovery.metrics_rescan_interval_seconds).toBe(15);
+    });
+
+    test('managed locks follow section ownership and unlock on disconnect without locking local preferences', () => {
+        const context = settingsContext(['features']);
+        context.applyServerManagedState();
+        expect(document.getElementById('dev_epson_remote_mode').disabled).toBe(true);
+        expect(document.getElementById('dev_snmp_version').disabled).toBe(false);
+        context.serverManagedSections = new Set(['discovery', 'snmp', 'features', 'spooler']);
+        context.applyServerManagedState();
+        for (const id of ['dev_snmp_version', 'dev_asset_id_regex', 'dev_discover_concurrency', 'spooler_enabled', 'metrics_rescan_interval_seconds']) {
+            expect(document.getElementById(id).disabled).toBe(true);
+        }
+        for (const id of ['show_discover_button_anyway', 'show_discovered_devices_anyway', 'dev_debug_logging', 'http_port']) {
+            expect(document.getElementById(id).disabled).toBe(false);
+        }
+        context.serverManagedSections = new Set();
+        context.applyServerManagedState();
+        expect(document.getElementById('dev_snmp_version').disabled).toBe(false);
+        expect(document.getElementById('spooler_enabled').disabled).toBe(false);
+        expect(document.querySelectorAll('.server-managed-badge')).toHaveLength(0);
+    });
 });

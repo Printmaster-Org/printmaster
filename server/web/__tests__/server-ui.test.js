@@ -230,7 +230,70 @@ describe('server control accessibility', () => {
             expect(close.type).toBe('button');
             expect(close.getAttribute('aria-label')).toBeTruthy();
         });
+
     });
+
+        describe('fleet channel and SNMP controls', () => {
+            test('channel options are explicit and SNMP passwords are masked', () => {
+                const { context } = setup(['createInputForField'], {
+                    resolveFieldValue: (field, value) => value ?? field.default
+                });
+                const { input } = context.createInputForField({
+                    path: 'features.agent_update_channel', type: 'select',
+                    enum: ['', 'stable', 'beta', 'dev'], default: ''
+                }, 'dev');
+                expect(Array.from(input.options).map(option => option.textContent)).toEqual([
+                    'Use Agent configuration', 'Stable', 'Beta', 'Dev'
+                ]);
+                expect(input.value).toBe('dev');
+                expect(context.createInputForField({ path: 'snmp.auth_password', type: 'password' }, 'secret').input.type).toBe('password');
+            });
+
+            test('unmanaged fleet fields are read-only at global, customer and Agent scope', () => {
+                const { context } = setup(['renderSettingsFieldRow', 'createInputForField'], {
+                    settingsUIState: {
+                        lockedKeys: new Set(), selectedTenantId: 'tenant-1', selectedAgentId: 'agent-1'
+                    },
+                    resolveFieldValue: (field, value) => value,
+                    escapeHtml: value => value, userCan: () => true,
+                    hasOverride: () => false, pathToArray: path => path.split('.')
+                });
+                const field = { path: 'features.agent_update_channel', type: 'select', enum: ['', 'stable', 'beta', 'dev'] };
+                for (const scope of ['global', 'tenant', 'agent']) {
+                    expect(context.renderSettingsFieldRow(field, 'dev', scope, false).querySelector('select').disabled).toBe(true);
+                    expect(context.renderSettingsFieldRow(field, 'dev', scope, true).querySelector('select').disabled).toBe(false);
+                }
+            });
+
+            test('release channel is prominent, unique, and respects Features ownership', () => {
+                const field = { path: 'features.agent_update_channel', type: 'select' };
+                const state = {
+                    schema: {}, globalDraft: { features: { agent_update_channel: 'dev' } },
+                    scope: 'global', groupedFields: { features: [field] }, managedSections: new Set(['features'])
+                };
+                const renderRow = jest.fn((meta, value) => {
+                    const row = document.createElement('div');
+                    row.dataset.settingsPath = meta.path;
+                    row.textContent = value;
+                    return row;
+                });
+                const { context, document } = setup(['renderSettingsForm'], {
+                    settingsUIState: state, renderManagedSectionsPanel: () => null,
+                    renderSettingsFieldRow: renderRow, orderedSettingsSections: () => ['features'],
+                    getValueByPath: (draft) => draft.features.agent_update_channel,
+                    SETTINGS_SECTION_LABELS: { features: 'Features' }, escapeHtml: value => value,
+                    refreshPolicyPanel: jest.fn()
+                });
+                context.renderSettingsForm();
+                const root = document.getElementById('settings_form_root');
+                expect(root.firstElementChild.id).toBe('fleet_update_channel_section');
+                expect(root.querySelectorAll('[data-settings-path="features.agent_update_channel"]')).toHaveLength(1);
+                expect(renderRow).toHaveBeenLastCalledWith(field, 'dev', 'global', true, false);
+                state.managedSections.clear();
+                context.renderSettingsForm();
+                expect(renderRow).toHaveBeenLastCalledWith(field, 'dev', 'global', false, false);
+            });
+        });
 
     test('reopening login replaces the Enter handler and pending submissions are guarded', async () => {
         let resolveFetch;
