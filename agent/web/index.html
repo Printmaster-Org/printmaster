@@ -49,7 +49,7 @@
             </div>
         </div>
         <label class="theme-toggle">
-            <input type="checkbox" id="theme-toggle-checkbox">
+            <input type="checkbox" id="theme-toggle-checkbox" aria-label="Dark mode">
             <div class="theme-toggle-slider">
                 <div class="theme-toggle-icon"></div>
             </div>
@@ -777,7 +777,7 @@
                     </label>
                     <label style="display:flex;align-items:center;gap:8px;">
                         <span style="min-width:200px;">HTTP port:</span>
-                        <input id="http_port" type="text" style="width:120px" placeholder="8080" value="8080" />
+                        <input id="http_port" type="number" min="1" max="65535" step="1" required style="width:120px" placeholder="8080" value="8080" />
                         <span style="color:var(--muted);font-size:12px;">Port for HTTP server</span>
                     </label>
                     <label style="display:flex;align-items:center;gap:8px;">
@@ -787,7 +787,7 @@
                     </label>
                     <label style="display:flex;align-items:center;gap:8px;">
                         <span style="min-width:200px;">HTTPS port:</span>
-                        <input id="https_port" type="text" style="width:120px" placeholder="8443" value="8443" />
+                        <input id="https_port" type="number" min="1" max="65535" step="1" required style="width:120px" placeholder="8443" value="8443" />
                         <span style="color:var(--muted);font-size:12px;">Port for HTTPS server</span>
                     </label>
                     <label style="display:flex;align-items:center;gap:8px;">
@@ -938,6 +938,11 @@
             <button id="copy_logs_btn">Copy Logs</button>
             <button id="download_logs_btn">Download Log Package</button>
             <button id="clear_log_btn">Clear Log</button>
+        </div>
+        <div id="logs_load_error" role="alert" hidden
+            style="color:#b42318;background:rgba(180,35,24,.1);padding:8px 12px;border-radius:4px;margin-bottom:8px;">
+            <span id="logs_load_error_message"></span>
+            <button id="logs_load_retry_btn" type="button">Retry</button>
         </div>
         <div id="log_table_container" class="log-table-container">
             <table class="log-table" id="log_table">

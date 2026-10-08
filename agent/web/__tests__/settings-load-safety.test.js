@@ -96,4 +96,17 @@ describe('agent settings load safety', () => {
         expect(context.fetch).not.toHaveBeenCalled();
         expect(context.updateSettingsLoadState).toHaveBeenCalled();
     });
+
+    test('web port values must be integers within the valid port range', () => {
+        document.body.innerHTML += '<input id="http_port" value="8080">';
+        const context = { document };
+        vm.createContext(context);
+        vm.runInContext(declaration('readWebPort'), context);
+
+        expect(context.readWebPort('http_port', 'HTTP')).toBe(8080);
+        document.getElementById('http_port').value = '65536';
+        expect(() => context.readWebPort('http_port', 'HTTP')).toThrow('HTTP port must be an integer');
+        document.getElementById('http_port').value = '8.5';
+        expect(() => context.readWebPort('http_port', 'HTTP')).toThrow('HTTP port must be an integer');
+    });
 });

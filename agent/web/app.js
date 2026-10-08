@@ -841,6 +841,46 @@ async function clearDiscovered(evt) {
 
 // Update the discovered and saved printers UI by querying the backend and
 // rendering cards using the shared card renderers in `common/web/cards.js`.
+async function fetchInventoryList(url, section) {
+    try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Request failed (' + response.status + ')');
+        const data = await response.json();
+        if (!Array.isArray(data)) throw new Error('Invalid inventory response');
+        return data;
+    } catch (error) {
+        error.inventorySection = section;
+        throw error;
+    }
+}
+
+function showInventoryLoadError(container, error) {
+    if (!container) return;
+    let panel = container.querySelector('[data-inventory-load-error]');
+    if (!panel) {
+        panel = document.createElement('div');
+        panel.dataset.inventoryLoadError = '';
+        panel.style.cssText = 'color:var(--error,#b42318);padding:12px;';
+        const message = document.createElement('span');
+        message.dataset.inventoryErrorMessage = '';
+        panel.appendChild(message);
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.textContent = 'Retry';
+        retry.addEventListener('click', updatePrinters);
+        panel.appendChild(retry);
+        container.appendChild(panel);
+    }
+    panel.querySelector('[data-inventory-error-message]').textContent =
+        'Failed to load inventory: ' + error.message + '. ';
+}
+
+function hasLowToner(printer) {
+    const getTonerData = window.__pm_shared_cards && window.__pm_shared_cards.getDeviceTonerBarData;
+    if (typeof getTonerData !== 'function') return false;
+    return getTonerData(printer).some(supply => Number.isFinite(supply.level) && supply.level < 20);
+}
+
 function updatePrinters() {
     try {
         const showKnownDevices = document.getElementById('show_saved_in_discovered')?.checked || false;
@@ -849,13 +889,14 @@ function updatePrinters() {
         let discoveredEndpoint = '/devices/discovered?include_known=' + showKnownDevices;
 
         Promise.all([
-            fetch(discoveredEndpoint).then(r => r.ok ? r.json() : []),
-            fetch('/devices/list').then(r => r.ok ? r.json() : [])
+            fetchInventoryList(discoveredEndpoint, 'discovered'),
+            fetchInventoryList('/devices/list', 'saved')
         ]).then(([discovered, saved]) => {
             window.discoveredPrinters = discovered || [];
 
             const discoveredContainer = document.getElementById('discovered_devices_cards');
             if (!discoveredContainer) return;
+            discoveredContainer.querySelector('[data-inventory-load-error]')?.remove();
 
                 // If any card is currently animating (saving/removing), defer
                 // this re-render so we don't interrupt exit animations. SSE or
@@ -898,10 +939,7 @@ function updatePrinters() {
                 const statsEl = document.getElementById('discovered_stats'); if (statsEl) statsEl.innerHTML = '';
             } else {
                 let lowTonerCount = 0;
-                discovered.forEach(p => {
-                    const toners = p.toners || p.toner || {};
-                    for (const c in toners) { if (toners[c] < 20) { lowTonerCount++; break; } }
-                });
+                discovered.forEach(p => { if (hasLowToner(p)) lowTonerCount++; });
                 const statsHtml = '<span style="color:var(--text)"><strong>Total:</strong> ' + discovered.length + '</span>' +
                     '<span style="color:#b58900"><strong>Low Toner:</strong> ' + lowTonerCount + '</span>';
                 const statsEl = document.getElementById('discovered_stats'); if (statsEl) statsEl.innerHTML = statsHtml;
@@ -937,23 +975,24 @@ function updatePrinters() {
                 });
             }
 
-        }).catch(e => { window.__pm_shared.error('updatePrinters discovered error', e); });
+        }).catch(e => {
+            window.__pm_shared.error('updatePrinters discovered error', e);
+            const targetId = e.inventorySection === 'saved' ? 'saved_devices_cards' : 'discovered_devices_cards';
+            showInventoryLoadError(document.getElementById(targetId), e);
+        });
 
         // Render saved devices
-        fetch('/devices/list').then(r => r.ok ? r.json() : []).then(saved => {
+        fetchInventoryList('/devices/list', 'saved').then(saved => {
             const savedContainer = document.getElementById('saved_devices_cards');
             if (!savedContainer) return;
+            savedContainer.querySelector('[data-inventory-load-error]')?.remove();
 
             if (!Array.isArray(saved) || saved.length === 0) {
                 savedContainer.innerHTML = '<div style="color:var(--muted);padding:12px">No saved devices</div>';
                 const statsEl = document.getElementById('saved_stats'); if (statsEl) statsEl.innerHTML = '';
             } else {
                 let lowTonerCount = 0;
-                saved.forEach(item => {
-                    const p = item.printer_info || {};
-                    const toners = p.toners || p.toner || {};
-                    for (const c in toners) { if (toners[c] < 20) { lowTonerCount++; break; } }
-                });
+                saved.forEach(item => { if (hasLowToner(item.printer_info || {})) lowTonerCount++; });
                 const statsHtml = '<span style="color:var(--text)"><strong>Total:</strong> ' + saved.length + '</span>' +
                     '<span style="color:#b58900"><strong>Low Toner:</strong> ' + lowTonerCount + '</span>';
                 const statsEl = document.getElementById('saved_stats'); if (statsEl) statsEl.innerHTML = statsHtml;
@@ -1008,7 +1047,10 @@ function updatePrinters() {
             
             // Update manufacturer filter options
             updateManufacturerFilter(saved);
-        }).catch(e => { window.__pm_shared.error('updatePrinters saved error', e); });
+        }).catch(e => {
+            window.__pm_shared.error('updatePrinters saved error', e);
+            showInventoryLoadError(document.getElementById('saved_devices_cards'), e);
+        });
 
     } catch (e) {
         window.__pm_shared.error('updatePrinters failed', e);
@@ -1900,13 +1942,29 @@ function renderLogsRaw(entries) {
     }
 }
 
+function setLogsLoadError(error) {
+    const panel = document.getElementById('logs_load_error');
+    const message = document.getElementById('logs_load_error_message');
+    if (panel) panel.hidden = !error;
+    if (message) message.textContent = error ? 'Failed to load logs: ' + error.message : '';
+}
+
 // Load initial log contents once (SSE will stream new entries in real-time)
-function updateLog() {
-    fetch('/logs').then(r => r.text()).then(t => {
+async function updateLog() {
+    try {
+        const response = await fetch('/logs');
+        if (!response.ok) throw new Error('Request failed (' + response.status + ')');
+        const t = await response.text();
         const lines = t.split('\n').filter(line => line.trim());
         allLogEntries = lines;
         filterAndDisplayLogs();
-    });
+        setLogsLoadError(null);
+        return true;
+    } catch (error) {
+        window.__pm_shared.error('updateLog failed', error);
+        setLogsLoadError(error);
+        return false;
+    }
 }
 
 async function copyLogs() {
@@ -3840,6 +3898,8 @@ document.addEventListener('DOMContentLoaded', async function () {
     if (clearLogBtn) {
         clearLogBtn.addEventListener('click', clearLogs);
     }
+    const retryLogsBtn = document.getElementById('logs_load_retry_btn');
+    if (retryLogsBtn) retryLogsBtn.addEventListener('click', updateLog);
     
     // Log filters
     const logLevelFilter = document.getElementById('log_level_filter');
@@ -4452,6 +4512,7 @@ async function loadTraceTags(options = {}) {
         const enabledTagsMap = data.tags || {};
 
         container.querySelector('[data-trace-tags-error]')?.remove();
+        Array.from(container.children).filter(el => el.textContent.trim() === 'Loading...').forEach(el => el.remove());
         container.querySelectorAll('.trace-tag-content').forEach(el => el.remove());
         const content = document.createElement('div');
         content.className = 'trace-tag-content';
@@ -4987,6 +5048,15 @@ function removeAutoSaveHandlers() {
 }
 
 // Unified save for both discovery and developer settings
+function readWebPort(id, label) {
+    const raw = document.getElementById(id)?.value.trim() || '';
+    const port = Number(raw);
+    if (!/^\d+$/.test(raw) || !Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new Error(label + ' port must be an integer from 1 to 65535');
+    }
+    return port;
+}
+
 async function saveAllSettings(btn) {
     try {
         if (!settingsLoadedSuccessfully) {
@@ -5085,9 +5155,9 @@ async function saveAllSettings(btn) {
         // Compose web settings (agent-local)
         const webSettings = {
             enable_http: document.getElementById('enable_http')?.checked ?? true,
-            http_port: document.getElementById('http_port')?.value || '8080',
+            http_port: readWebPort('http_port', 'HTTP'),
             enable_https: document.getElementById('enable_https')?.checked ?? true,
-            https_port: document.getElementById('https_port')?.value || '8443',
+            https_port: readWebPort('https_port', 'HTTPS'),
             redirect_http_to_https: document.getElementById('redirect_http_to_https')?.checked ?? false,
             custom_cert_path: document.getElementById('custom_cert_path')?.value || '',
             custom_key_path: document.getElementById('custom_key_path')?.value || ''
@@ -6014,4 +6084,3 @@ function initServerConnectionControls() {
 }
 
 try { document.addEventListener('DOMContentLoaded', initServerConnectionControls); } catch (e) {}
-        Array.from(container.children).filter(el => el.textContent.trim() === 'Loading...').forEach(el => el.remove());
