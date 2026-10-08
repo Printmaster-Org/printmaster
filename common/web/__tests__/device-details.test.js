@@ -143,6 +143,20 @@ describe('device details', () => {
         expect(document.getElementById('printer_metrics_summary').textContent).toContain('No metrics data available');
     });
 
+    test('a scan completed for a previously open device does not add its updates to the current device', async () => {
+        let finishScan;
+        fetch.mockImplementation(url => url === '/devices/preview'
+            ? new Promise(resolve => { finishScan = resolve; })
+            : Promise.resolve({ ok: true, json: async () => [] }));
+        render({ ...device, serial: 'A' });
+        document.getElementById('refresh_data_btn').click();
+        render({ ...device, serial: 'B' });
+        finishScan({ ok: true, json: async () => ({ proposed: { location: 'Old device location' } }) });
+        await flush();
+        expect(document.getElementById('diff_container').textContent).toBe('');
+        expect(document.getElementById('field_location_display').textContent).toBe('Reception');
+    });
+
     test('color supplies are evidence of color capability but explicit monochrome still wins', () => {
         const toner_levels = { Black: 60, Cyan: 50, Magenta: 40, Yellow: 30 };
         expect(window.__pm_shared_cards.getDeviceTonerBarData({ toner_levels })).toHaveLength(4);

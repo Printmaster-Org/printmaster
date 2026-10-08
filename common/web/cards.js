@@ -1235,8 +1235,9 @@
                 try {
                     const body = { serial: p.serial || '', ip: p.ip };
                     const r = await fetch('/devices/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-                    if (!r.ok) { const t = await r.text(); if (statusEl) statusEl.textContent = ' Error: ' + t; btn.disabled = false; return; }
+                    if (!r.ok) throw new Error('Device scan failed (HTTP ' + r.status + ')');
                     const { proposed } = await r.json();
+                    if (!isCurrent()) return;
                     if (statusEl) statusEl.textContent = '';
                     const fields = ['manufacturer', 'model', 'hostname', 'firmware', 'ip', 'subnet_mask', 'gateway', 'dns_servers', 'dhcp_server', 'asset_number', 'location', 'description', 'web_ui_url'];
                     
@@ -1295,6 +1296,7 @@
                                         headers: { 'Content-Type': 'application/json' },
                                         body: JSON.stringify({ serial: p.serial, [field]: value })
                                     });
+                                    if (!isCurrent()) return;
                                     if (!ur.ok) {
                                         const t = await ur.text();
                                         window.__pm_shared.showToast('Update failed: ' + t, 'error');
@@ -1313,6 +1315,7 @@
                                     p[field] = value;
                                     window.__pm_shared.showToast(field.replace(/_/g, ' ') + ' updated', 'success');
                                 } catch (err) {
+                                    window.__pm_shared.error('Scanned field update failed', { serial: p.serial, field, error: err });
                                     window.__pm_shared.showToast('Update failed', 'error');
                                     applyBtn.disabled = false;
                                     applyBtn.textContent = 'Apply';
@@ -1338,16 +1341,19 @@
                                 window.__pm_shared.showToast('All updates applied', 'success');
                                 // Refresh the modal to show updated values
                                 await new Promise(res => setTimeout(res, 400));
+                                if (!isCurrent()) return;
                                 const serialId = p.serial || p.Serial;
                                 if (serialId && window.__pm_shared && typeof window.__pm_shared.showPrinterDetails === 'function') {
                                     window.__pm_shared.showPrinterDetails(serialId, source);
                                 }
                             } catch (err) {
+                                window.__pm_shared.error('Scanned updates failed', { serial: p.serial, error: err });
                                 window.__pm_shared.showToast('Update failed', 'error');
                             }
                         });
                     }
                 } catch (err) {
+                    window.__pm_shared.error('Device scan failed', { serial: p.serial, error: err });
                     if (statusEl) statusEl.textContent = ' Failed: ' + err;
                 } finally {
                     btn.disabled = false;
@@ -1504,7 +1510,10 @@
                                 const body = { ip: p.IP || p.ip, max_entries: 5000 };
                                 const r = await fetch('/mib_walk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
                                 clearInterval(dotInterval);
-                                if (r.ok) { const j = await r.json(); updatePrinters(); }
+                                if (!r.ok) throw new Error('Additional device details failed (HTTP ' + r.status + ')');
+                                await r.json();
+                                if (!isCurrent()) return;
+                                updatePrinters();
                                 statusLine.textContent = '✓ Details updated'; statusLine.style.color = '#859900';
                                 setTimeout(() => { overlay.style.display = 'none'; document.body.style.overflow = ''; delete overlay.dataset.currentPrinterIp; }, 1200);
                             } catch (e) { window.__pm_shared.warn('Background refresh failed:', e); statusLine.textContent = '⚠ Refresh incomplete (device saved)'; statusLine.style.color = '#b58900'; setTimeout(() => { overlay.style.display = 'none'; document.body.style.overflow = ''; delete overlay.dataset.currentPrinterIp; }, 1500); }
@@ -1523,6 +1532,7 @@
                     try {
                         const r = await fetch('/device/webui-credentials?serial=' + encodeURIComponent(p.serial));
                         if (!isCurrent()) return;
+                        if (!r.ok) throw new Error('Credentials request failed (HTTP ' + r.status + ')');
                         if (r.ok) {
                             const creds = await r.json();
                             if (!isCurrent()) return;
