@@ -241,14 +241,19 @@
 
             <!-- Settings Controls (Sticky) -->
             <div class="settings-sticky-bar">
+                <div id="settings_load_error" role="alert" hidden
+                    style="color:#b42318;background:rgba(180,35,24,.1);padding:8px 12px;border-radius:4px;">
+                    <span id="settings_load_error_message"></span>
+                    <button id="settings_load_retry_btn" type="button">Retry</button>
+                </div>
                 <label id="autosave_label">
                     <input type="checkbox" id="settings_autosave" />
                     <span style="font-weight:500;font-size:14px;">Auto-save</span>
                 </label>
                 <div id="settings_buttons" class="settings-buttons">
-                    <button id="settings_apply_btn">Apply</button>
+                    <button id="settings_apply_btn" disabled>Apply</button>
                     <button id="settings_revert_btn">Revert</button>
-                    <button id="settings_reset_btn">Reset</button>
+                    <button id="settings_reset_btn" disabled>Reset</button>
                 </div>
                 <label id="advanced_toggle_label">
                     <input type="checkbox" id="settings_advanced_toggle" />
@@ -256,6 +261,8 @@
                 </label>
                 <div id="autosave_feedback" class="autosave-feedback">✓ Settings saved</div>
             </div>
+            <div id="settings_save_error" role="alert" hidden
+                style="color:#b42318;padding:8px 12px;"></div>
 
             <!-- Settings Grid Container -->
             <div class="settings-grid agent-settings-stack" data-layout="single">

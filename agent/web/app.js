@@ -3742,10 +3742,18 @@ document.addEventListener('DOMContentLoaded', async function () {
             saveAllSettings(this);
         });
     }
+    const retrySettingsBtn = document.getElementById('settings_load_retry_btn');
+    if (retrySettingsBtn) retrySettingsBtn.addEventListener('click', () => loadSettings().catch(() => {}));
+    document.querySelectorAll('[data-tab="settings"] input, [data-tab="settings"] select, [data-tab="settings"] textarea')
+        .forEach(input => {
+            if (input.id === 'settings_autosave' || input.id === 'settings_advanced_toggle') return;
+            input.addEventListener('input', markSettingsDirty);
+            input.addEventListener('change', markSettingsDirty);
+        });
 
     const revertBtn = document.getElementById('settings_revert_btn');
     if (revertBtn) {
-        revertBtn.addEventListener('click', loadSettings);
+        revertBtn.addEventListener('click', () => loadSettings().catch(() => {}));
     }
 
     const resetBtn = document.getElementById('settings_reset_btn');
@@ -4004,7 +4012,7 @@ function showTab(name) {
 
     // if settings tab, load settings
     if (name === 'settings') {
-        loadSettings();
+        loadSettings().catch(() => {});
     }
 
     if (isAgentTabSelectable(name)) {
@@ -4039,6 +4047,48 @@ function restoreAgentActiveTab() {
 
 // Track server-managed state globally
 let serverManagedSections = new Set();
+let settingsLoadedSuccessfully = false;
+let settingsDirty = false;
+
+function updateSettingsDirtyState() {
+    const applyButton = document.getElementById('settings_apply_btn');
+    if (applyButton) {
+        applyButton.disabled = !settingsLoadedSuccessfully;
+        applyButton.textContent = settingsDirty ? 'Apply *' : 'Apply';
+    }
+}
+
+function markSettingsDirty() {
+    if (!settingsLoadedSuccessfully) return;
+    settingsDirty = true;
+    updateSettingsDirtyState();
+}
+
+function updateSettingsLoadState(error) {
+    const errorPanel = document.getElementById('settings_load_error');
+    const message = document.getElementById('settings_load_error_message');
+    if (errorPanel) errorPanel.hidden = !error;
+    if (message) {
+        if (!error) {
+            message.textContent = '';
+        } else if (settingsLoadedSuccessfully) {
+            message.textContent = 'Settings could not be refreshed: ' + error.message + '. Previously loaded settings remain available.';
+        } else {
+            message.textContent = 'Settings could not be loaded: ' + error.message + '. Apply and auto-save are paused until settings load successfully.';
+        }
+    }
+    const applyButton = document.getElementById('settings_apply_btn');
+    const resetButton = document.getElementById('settings_reset_btn');
+    if (applyButton) applyButton.disabled = !settingsLoadedSuccessfully;
+    if (resetButton) resetButton.disabled = !settingsLoadedSuccessfully;
+}
+
+function showSettingsSaveError(error) {
+    const errorPanel = document.getElementById('settings_save_error');
+    if (!errorPanel) return;
+    errorPanel.textContent = 'Settings were not saved: ' + error.message;
+    errorPanel.hidden = false;
+}
 
 // Apply server-managed state to UI elements - disables fields and shows badge
 function applyServerManagedState() {
@@ -4103,7 +4153,11 @@ function applyServerManagedState() {
 // Load settings from /settings endpoint and populate ALL UI elements
 function loadSettings() {
     return fetch('/settings').then(async r => {
-        if (!r.ok) { window.__pm_shared.warn('failed to load settings'); return; }
+        if (!r.ok) {
+            let detail = '';
+            try { detail = await r.text(); } catch (e) {}
+            throw new Error('Request failed (' + r.status + ')' + (detail ? ': ' + detail : ''));
+        }
         const s = await r.json();
         const snmp = s.snmp || {};
         const feat = s.features || {};
@@ -4311,8 +4365,18 @@ function loadSettings() {
             updateLocalPrintersTabVisibility(spooler.enabled !== false);
         }
 
+        settingsLoadedSuccessfully = true;
+        settingsDirty = false;
+        updateSettingsLoadState();
+        updateSettingsDirtyState();
+        const saveError = document.getElementById('settings_save_error');
+        if (saveError) { saveError.hidden = true; saveError.textContent = ''; }
         loadTraceTags();
-    }).catch(e => { window.__pm_shared.error('loadSettings failed', e); });
+    }).catch(e => {
+        updateSettingsLoadState(e);
+        window.__pm_shared.error('loadSettings failed', e);
+        throw e;
+    });
 }
 
 let traceTagsDirty = false;
@@ -4653,6 +4717,10 @@ function renderPrinterInfo(pi) {
 
 
 function saveDevSettings() {
+    if (!settingsLoadedSuccessfully) {
+        updateSettingsLoadState(new Error('waiting for a successful settings load'));
+        return;
+    }
     const logLevel = document.getElementById('dev_debug_logging').value;
     // Compose the new settings structure
     const snmpVersion = document.getElementById('dev_snmp_version').value || '2c';
@@ -4762,9 +4830,9 @@ function showAutosaveFeedback() {
 // Add auto-save handlers to all settings inputs
 function addAutoSaveHandlers() {
     // keep references so we can remove listeners later
-    window.__settingsChangeHandler = () => { saveAllSettings().then(() => showAutosaveFeedback()); };
-    window.__manualRangesHandler = () => { toggleRangesDropdown(); saveAllSettings().then(() => showAutosaveFeedback()); };
-    window.__ipScanningHandler = () => { toggleIPScanningUI(); saveAllSettings().then(() => showAutosaveFeedback()); };
+    window.__settingsChangeHandler = () => { saveAllSettings().then(saved => { if (saved) showAutosaveFeedback(); }); };
+    window.__manualRangesHandler = () => { toggleRangesDropdown(); saveAllSettings().then(saved => { if (saved) showAutosaveFeedback(); }); };
+    window.__ipScanningHandler = () => { toggleIPScanningUI(); saveAllSettings().then(saved => { if (saved) showAutosaveFeedback(); }); };
 
     // Discovery settings
     document.getElementById('scan_local_subnet_enabled')?.addEventListener('change', window.__settingsChangeHandler);
@@ -4780,8 +4848,8 @@ function addAutoSaveHandlers() {
     const rangesEl = document.getElementById('ranges_text');
     if (rangesEl) { rangesEl.addEventListener('blur', window.__settingsChangeHandler); }
     // Auto Discover and Autosave toggles (with UI effects)
-    window.__autoDiscoverHandler = () => { toggleAutoDiscoverUI(); saveAllSettings().then(() => showAutosaveFeedback()); };
-    window.__autosaveHandler = () => { toggleAutosaveUI(); saveAllSettings().then(() => showAutosaveFeedback()); };
+    window.__autoDiscoverHandler = () => { toggleAutoDiscoverUI(); saveAllSettings().then(saved => { if (saved) showAutosaveFeedback(); }); };
+    window.__autosaveHandler = () => { toggleAutosaveUI(); saveAllSettings().then(saved => { if (saved) showAutosaveFeedback(); }); };
     const autoDiscoverEl = document.getElementById('auto_discover_checkbox');
     if (autoDiscoverEl) { autoDiscoverEl.addEventListener('change', window.__autoDiscoverHandler); }
     const autosaveEl = document.getElementById('autosave_checkbox');
@@ -4804,7 +4872,7 @@ function addAutoSaveHandlers() {
             }
         }
         
-        saveAllSettings().then(() => showAutosaveFeedback());
+        saveAllSettings().then(saved => { if (saved) showAutosaveFeedback(); });
     };
     window.__showDiscoveredAnywayHandler = () => {
         const checked = document.getElementById('show_discovered_devices_anyway')?.checked;
@@ -4824,7 +4892,7 @@ function addAutoSaveHandlers() {
         updatePrinters();
         
         // Save the preference
-        saveAllSettings().then(() => showAutosaveFeedback());
+        saveAllSettings().then(saved => { if (saved) showAutosaveFeedback(); });
     };
     const showDiscoverAnywayEl = document.getElementById('show_discover_button_anyway');
     if (showDiscoverAnywayEl) { showDiscoverAnywayEl.addEventListener('change', window.__showDiscoverAnywayHandler); }
@@ -4848,7 +4916,7 @@ function addAutoSaveHandlers() {
         if (spoolerOptionsContainer) {
             spoolerOptionsContainer.style.display = this.checked ? 'block' : 'none';
         }
-        saveAllSettings().then(() => showAutosaveFeedback());
+        saveAllSettings().then(saved => { if (saved) showAutosaveFeedback(); });
     };
     document.getElementById('spooler_enabled')?.addEventListener('change', window.__spoolerEnabledHandler);
     document.getElementById('spooler_poll_interval')?.addEventListener('change', window.__settingsChangeHandler);
@@ -4921,6 +4989,10 @@ function removeAutoSaveHandlers() {
 // Unified save for both discovery and developer settings
 async function saveAllSettings(btn) {
     try {
+        if (!settingsLoadedSuccessfully) {
+            updateSettingsLoadState(new Error('waiting for a successful settings load'));
+            return false;
+        }
         if (btn) { btn.disabled = true; btn.textContent = 'Applying...'; }
         // Compose discovery settings
         const discoverySettings = {
@@ -5046,28 +5118,33 @@ async function saveAllSettings(btn) {
             throw new Error('Failed to save settings: ' + t);
         }
 
+        settingsDirty = false;
+        updateSettingsDirtyState();
+        const saveError = document.getElementById('settings_save_error');
+        if (saveError) { saveError.hidden = true; saveError.textContent = ''; }
     window.__pm_shared.log('All settings saved successfully');
         if (btn) {
             btn.textContent = '✓ Applied';
-            setTimeout(() => { btn.textContent = 'Apply'; btn.disabled = false; }, 1500);
+            setTimeout(() => { updateSettingsDirtyState(); }, 1500);
         }
     window.__pm_shared.showToast('Settings saved successfully', 'success');
-        return Promise.resolve();
+        return true;
     } catch (e) {
         window.__pm_shared.error('Save failed:', e);
+        showSettingsSaveError(e);
         if (!btn) {
             // Autosave failed silently in background, just log it
             window.__pm_shared.warn('Autosave failed:', e.message);
             } else {
             window.__pm_shared.showToast('Save failed: ' + e.message, 'error');
-            btn.textContent = 'Apply';
-            btn.disabled = false;
+            updateSettingsDirtyState();
         }
         return Promise.reject(e);
     }
 }
 
 async function resetSettings() {
+    if (!settingsLoadedSuccessfully) return;
     const confirmed = await window.__pm_shared.showConfirm(
         'Reset all settings to defaults?\n\nThis will restore default settings unless they are manually configured in config.json.',
         'Reset Settings',
