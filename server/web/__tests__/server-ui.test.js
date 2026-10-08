@@ -190,6 +190,24 @@ describe('server settings recovery', () => {
         expect(document.getElementById('server_settings_load_error').textContent).toMatch(/unavailable/);
     });
 
+    test('authorization failure takes priority over a concurrent service failure', async () => {
+        const fetch = jest.fn().mockResolvedValueOnce({ ok: false, status: 503 })
+            .mockResolvedValueOnce({ ok: false, status: 403 });
+        const { context, document, state } = settingsSetup(fetch);
+        await context.loadServerSettings();
+        expect(document.getElementById('draft')).toBeNull();
+        expect(state.data).toBeNull();
+    });
+
+    test('missing lock metadata never renders an editable form', async () => {
+        const { context, document } = settingsSetup(jest.fn().mockResolvedValue({
+            ok: true, json: async () => ({}),
+        }));
+        await context.loadServerSettings();
+        expect(context.renderServerSettingsForm).not.toHaveBeenCalled();
+        expect(document.getElementById('draft')).toBeNull();
+    });
+
     test('lock metadata failure does not enable the old form', async () => {
         const fetch = jest.fn().mockResolvedValueOnce({ ok: true, json: async () => ({ server: {} }) })
             .mockResolvedValueOnce({ ok: false, status: 503 });

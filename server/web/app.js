@@ -4610,10 +4610,18 @@ async function loadServerSettings(forceRefresh = false) {
         return response.json();
     };
     try {
-        const [settingsResp, sourcesResp] = await Promise.all([
+        const results = await Promise.allSettled([
             readSettings('/api/v1/server/settings'),
             readSettings('/api/v1/server/settings/sources')
         ]);
+        const failures = results.filter(result => result.status === 'rejected').map(result => result.reason);
+        if (failures.length) {
+            throw failures.find(error => error.status === 401 || error.status === 403) || failures[0];
+        }
+        const [settingsResp, sourcesResp] = results.map(result => result.value);
+        if (!sourcesResp || !Array.isArray(sourcesResp.locked_keys)) {
+            throw new Error('Server settings lock metadata unavailable');
+        }
         const normalized = normalizeServerSettings(settingsResp || {});
         serverSettingsVM.original = cloneServerSettingsData(normalized);
         serverSettingsVM.data = cloneServerSettingsData(normalized);
