@@ -556,7 +556,11 @@ function showPrinterDetails(identifier, source) {
                     sibling.setAttribute('inert', '');
                 }
             }
-            if (newest || !top.dialog.contains(document.activeElement)) focusDialog(top);
+            if (newest || !top.dialog.contains(document.activeElement)) {
+                const opener = removed[removed.length - 1]?.opener;
+                if (!newest && opener?.isConnected && top.dialog.contains(opener) && visible(opener) && !opener.disabled) opener.focus();
+                else focusDialog(top);
+            }
         } else if (removed.length) {
             const opener = removed[0].opener;
             if (opener?.isConnected && visible(opener)) opener.focus();
@@ -571,6 +575,14 @@ function showPrinterDetails(identifier, source) {
             const top = stack[stack.length - 1];
             if (!top) return;
             if (event.key === 'Escape') {
+                const picker = window.metricsDataRange?.flatpickr;
+                if (picker?.isOpen && top.dialog.contains(picker.calendarContainer)) {
+                    event.preventDefault();
+                    event.stopImmediatePropagation();
+                    picker.close();
+                    picker.input?.focus();
+                    return;
+                }
                 const dismiss = top.dialog.querySelector('[id$="_cancel"], .modal-close-x, .modal-close, [id$="_close_x"], [aria-label^="Close"]')
                     || controls(top.dialog).find(el => /^(close|cancel|ok)$/i.test(el.textContent.trim()));
                 if (dismiss && !dismiss.disabled) {
@@ -612,7 +624,7 @@ function createTemporaryConfirmModal(message, title = 'Confirm', isDangerous = f
                 <div class="modal-content" style="max-width:480px;">
                     <div class="modal-header">
                         <h3 class="modal-title"></h3>
-                        <button class="modal-close-x" title="Close">&times;</button>
+                        <button class="modal-close-x" title="Close" aria-label="Close">&times;</button>
                     </div>
                     <div class="modal-body">
                         <p style="white-space:pre-wrap;"></p>

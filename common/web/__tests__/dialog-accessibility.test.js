@@ -46,7 +46,7 @@ describe('shared dialog lifecycle', () => {
         expect(await second).toBe(false);
         await settle();
         expect(document.getElementById('prompt_modal').hasAttribute('inert')).toBe(false);
-        expect(document.getElementById('prompt_modal').contains(document.activeElement)).toBe(true);
+        expect(document.activeElement).toBe(input);
         document.getElementById('prompt_modal_cancel').click();
         expect(await first).toBe(null);
         await settle();
@@ -62,5 +62,22 @@ describe('shared dialog lifecycle', () => {
         expect(toast.querySelector('b')).toBeNull();
         toast.querySelector('[aria-label="Dismiss notification"]').click();
         expect(toast.classList.contains('toast-hiding')).toBe(true);
+    });
+
+    test('Escape closes an open metrics calendar before dismissing its dialog', async () => {
+        const promise = window.__pm_shared.showPrompt('Range');
+        await settle();
+        const dialog = document.querySelector('[role="dialog"]');
+        const calendar = document.createElement('div');
+        dialog.appendChild(calendar);
+        const close = jest.fn();
+        window.metricsDataRange = { flatpickr: { isOpen: true, calendarContainer: calendar,
+            close, input: document.getElementById('prompt_modal_input') } };
+        dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        expect(close).toHaveBeenCalledTimes(1);
+        expect(document.getElementById('prompt_modal').style.display).not.toBe('none');
+        window.metricsDataRange = null;
+        document.getElementById('prompt_modal_cancel').click();
+        expect(await promise).toBe(null);
     });
 });
