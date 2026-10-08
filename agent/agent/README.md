@@ -2,35 +2,32 @@
 
 **Location**: `agent/agent/`
 
-The agent module handles network discovery protocols, device detection, SNMP operations, and live discovery methods. It sits between the scanner (device querying) and storage (persistence) layers.
+This package provides protocol observation adapters, SNMP parsing, and identity
+helpers. It does not own production scan scheduling or persistence; those are
+wired through `scanner_runtime.go` and the shared scanner coordinator.
 
-## Architecture Overview
+> **Historical sections below:** the discovery API and flow descriptions were
+> written before the coordinator migration. The old `detect.go` and IP-only
+> browser wrappers have been removed. For current production wiring, see
+> [`agent/scanner/README.md`](../scanner/README.md).
+
+## Current Package Structure
 
 ```
 agent/
-├── detect.go           # Main Discover() function, IP enumeration, ARP/ICMP
-├── probe.go            # TCP port probing, connectivity checks
-├── parse.go            # SNMP PDU parsing, OID interpretation
-├── snmp.go             # Legacy SNMP operations (being phased out)
-├── snmp_iface.go       # SNMP interface definitions
-├── mdns.go             # mDNS/Bonjour discovery
-├── ssdp.go             # SSDP/UPnP discovery
-├── wsdiscovery.go      # WS-Discovery protocol
-├── snmptraps.go        # SNMP trap listener
-├── llmnr.go            # LLMNR name resolution
-├── arp.go              # ARP table reading
-├── merge.go            # Device data merging and deduplication
-├── helpers.go          # Utility functions
-├── metrics.go          # Performance metrics collection
-├── report.go           # Scan result reporting
-├── types.go            # Data structures (PrinterInfo, ScanMeta, etc.)
-├── config.go           # Configuration structures
-├── diagnostics.go      # Diagnostic logging and debugging
-├── update.go           # Device update and refresh logic
-└── vendor_roots.go     # Vendor OID root definitions
+├── mdns.go             # Typed mDNS observations
+├── ssdp.go             # Typed SSDP observations
+├── wsdiscovery.go      # Typed WS-Discovery observations
+├── snmptraps.go        # SNMP trap observations
+├── llmnr.go            # LLMNR observations
+├── identity.go         # Serial identity validation
+├── parse.go            # SNMP PDU parsing and OID interpretation
+├── rangeparser.go      # Range syntax parsing (used by scanner API)
+├── snmp_iface.go       # SNMP interfaces for diagnostics and tests
+└── types.go            # Printer and observation types
 ```
 
-## Discovery Methods
+## Historical Discovery Behavior (pre-coordinator)
 
 ### 1. Active Network Scanning (`detect.go`)
 

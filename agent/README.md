@@ -273,48 +273,22 @@ go test ./... -cover
 
 ```
 agent/
-├── main.go                      # 8000+ lines (HTTP server + embedded UI)
-├── discover.go                  # Legacy wrapper (deprecated)
-├── scanner_api.go               # Bridge to scanner package
-├── config.json                  # Configuration file
-├── agent/                       # Discovery package
-│   ├── detect.go                # Main Discover() function
-│   ├── probe.go                 # TCP/ICMP probing
-│   ├── parse.go                 # SNMP parsing
-│   ├── mdns.go                  # mDNS/Bonjour
-│   ├── ssdp.go                  # SSDP/UPnP
-│   ├── wsdiscovery.go           # WS-Discovery
-│   ├── snmptraps.go             # SNMP trap listener
-│   ├── llmnr.go                 # LLMNR
-│   ├── arp.go                   # ARP table
-│   ├── merge.go                 # Device merging
-│   ├── types.go                 # Data structures
-│   └── ...
-├── scanner/                     # SNMP querying
-│   ├── detector.go              # Printer detection
-│   ├── pipeline.go              # Multi-stage scanning
-│   ├── query.go                 # SNMP queries
-│   ├── snmp.go                  # SNMP wrapper
-│   └── vendor/                  # Vendor profiles
-│       ├── hp.go
-│       ├── canon.go
-│       └── ...
-├── logger/                      # Logging system
-│   ├── logger.go
-│   └── logger_test.go
-├── storage/                     # Persistence
-│   ├── sqlite.go
-│   ├── device.go
-│   ├── interface.go
-│   ├── agent_config.go
-│   └── ...
-├── util/                        # Utilities
-│   ├── helpers.go
-│   └── secret.go
-└── tools/                       # Dev tools
-    ├── aggregate_mib_walks.go
-    ├── scan_mib_walks.go
-    └── ...
+├── main.go                 # HTTP server, startup, and runtime settings
+├── scanner_runtime.go      # Sole production coordinator owner and backend
+├── scanner_api.go          # Range, manual, and metrics scanner entry points
+├── discover.go             # /discover HTTP adapter to quick coordinator discovery
+├── agent/                  # Protocol observations, identity extraction, and parsing
+├── scanner/                # Typed planner, bounded coordinator, and SNMP queries
+│   ├── work.go             # Observations, intents, provenance, and outcomes
+│   ├── coordinator.go      # Bounded per-IP work execution
+│   ├── query.go, snmp.go   # Shared query profiles and SNMP transport
+│   ├── capabilities/      # Device capability detection
+│   └── vendor/             # Vendor OID modules
+├── storage/                # SQLite inventory, staged scanner commits, metrics
+├── spooler/                # USB and local printer integration
+├── proxy/                  # Device web UI proxy
+├── autoupdate/             # Update orchestration
+└── tools/                  # Development utilities
 ```
 
 ## Deployment

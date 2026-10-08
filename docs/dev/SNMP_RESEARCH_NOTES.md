@@ -44,16 +44,16 @@ The configuration table shows consistent address blocks we can codify in `agent/
 - **Reset operations**: `raw_waste_reset` dictionaries show the exact EEPROM values Epson utilities write during a maintenance reset. We should **not** expose writes in the agent, but understanding the pattern helps us detect when a third-party reset happened (sudden drop to zero combined with unchanged counters).
 
 ## Discovery and Vendor Fallbacks from CUPS
-The CUPS backend reinforces a few best practices we should adopt inside `agent/scanner/pipeline.go`:
+The CUPS backend reinforces a few best practices for the current scanner in `agent/scanner/query.go` and `agent/scanner/snmp_targets.go`:
 
 - Always begin with `hrDeviceType (1.3.6.1.2.1.25.3.2.1.2)` probes to confirm the target reports itself as `Printer(3)` before issuing heavier walks.
 - After the initial response, immediately parallelize GETs for description, IEEE-1284 device ID, location, and URI (`ppmPortServiceNameOrURI`). This gives enough data to decide whether to keep probing or move on.
 - Maintain a table of vendor-specific device-ID OIDs for common manufacturers: e.g., `1.3.6.1.4.1.11.2.3.9.1.1.7.0` (HP), `1.3.6.1.4.1.641.2.1.2.1.3.1` (Lexmark), `1.3.6.1.4.1.367.3.2.1.1.1.11.0` (Ricoh), `1.3.6.1.4.1.128.2.1.3.1.2.0` (Xerox). CUPS hits those opportunistically whenever it sees a response from the matching enterprise OID.
-- If the device never returns a URI, CUPS still attempts TCP probes on 9100 (AppSocket) and 515 (LPD) before giving up. We can reuse that idea inside our liveness stage to classify “unknown but listening” devices.
+- If the device never returns a URI, CUPS still attempts TCP probes on 9100 (AppSocket) and 515 (LPD) before giving up. The scanner can retain these as reachability evidence; an open port alone must not establish printer identity.
 
 ## Action Items for PrintMaster
 1. **Add a vendor plug-in for Epson remote mode**: reuse the command table above behind a feature flag, deserialize ST2 payloads, and surface ink/waste metrics in the agent database.
-2. **Extend the discovery stage with vendor-specific ID OIDs**: add a `snmpTargets` slice similar to CUPS so we can learn make/model even when printers neuter the Printer-MIB tree.
+2. **Expand vendor-specific ID OIDs**: `agent/scanner/snmp_targets.go` already maintains the target catalog. Add future candidates there with query tests rather than recreating a target list in an old pipeline.
 3. **Batch EEPROM/SNMP reads**: adopt the `cluster_varbinds` idea so we cap PDUs at three OIDs but still parallelize multiple PDUs; this will keep slow printers from starving an entire worker pool.
 4. **Persist learned EEPROM ranges**: cache which address blocks responded per device so future scans do not brute-force every model-specific range.
 5. **Map Epson waste counters into our metrics**: once we trust the data we can store normalized percentages for `main_waste`, `borderless_waste`, and any third maintenance box inside the `metrics` table with the same downsampling policy as toner levels.

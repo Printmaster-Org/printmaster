@@ -25,10 +25,9 @@ Offline regression coverage is `TestSerialLabelBoundaries` in
 the parser's web-UI probes. The MIB-walk analysis tools have separate legacy
 matchers; they are not changed by this runtime fix.
 
-This section reviews only serial-label extraction. The architecture and examples
-below are historical and still require reconciliation during pipeline consolidation;
-no coordinator, stage-skip policy, persistence, or scheduling change is implemented
-by this fix.
+The serial-label matcher is one part of scanner identity validation. Production
+architecture and runtime wiring are described below; MIB-walk analysis tools
+remain separate diagnostic code.
 
 ## Architecture Overview
 
@@ -138,14 +137,19 @@ listeners; socket/setup errors reach `SourceErrorCallback`.
 One `scannerRuntime` owns the coordinator for the Agent process. Every network
 entry point submits through it: range discovery (`Discover`/`DiscoverNow`, quick
 and full presets), live sources (`RequestSource`, live preset), manual refresh,
-post-update identity refresh, known-device liveness and scheduled/manual metrics.
-USB/spooler printers stay on their own adapter and never fake reachability.
+read-only device preview, post-update identity refresh, known-device liveness and
+scheduled/manual metrics. USB/spooler printers stay on their own adapter and
+never fake reachability. Optional raw full MIB walks for issue reports remain
+direct diagnostic operations, but honor the IP-scanning setting.
 
-- The `ip_scanning_enabled` setting gates every network request.
+- The `ip_scanning_enabled` setting gates scanner-runtime requests and optional
+  full MIB walks for issue reports.
 - An in-memory IP index (refreshed every minute and after commits) supplies only
   query hints (learned serial OID, vendor). It never acts as identity: a stale
   learned OID that contradicts the device triggers one retry without hints, and a
   replaced printer on a reused address is recorded as its own serial.
+- Disabling IP scanning stops periodic discovery, live listeners, and metric
+  rescans; generation checks keep rapid stop/start transitions safe.
 - Explicit expected serials (manual refresh, metrics) must match the device.
 - Commits use `CommitScannerFacts` with the stored prior IP as compare-and-set
   guard, then refresh the index, broadcast SSE and wake the uploader.

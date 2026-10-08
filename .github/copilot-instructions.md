@@ -30,7 +30,7 @@ Agent (site) ──WebSocket/HTTP──▶ Server (central) ◀── Agent (sit
 | Flow | Key Files | Notes |
 |------|-----------|-------|
 | Agent Identity | `agent/config.go::LoadOrGenerateAgentID()` | UUID persists to `{datadir}/agent_id`, stays stable when name changes |
-| 3-Stage Discovery | `agent/scanner/pipeline.go`, `detector.go` | Liveness (TCP) → Detection (SNMP serial) → Deep Scan (full walk) |
+| Scanner Runtime | `agent/scanner_runtime.go`, `agent/scanner/coordinator.go`, `agent/scanner/work.go` | Bounded per-IP work: reachability → validated identity → optional detail/metrics; staged commit after identity |
 | Device vs Metrics | `agent/storage/sqlite.go`, `interface.go` | Separate tables; metrics use time-series tiering (raw→hourly→daily) |
 | Agent↔Server Comms | `agent/upload_worker.go`, `server/websocket.go` | WebSocket at `/api/v1/agents/ws`, HTTP fallback at `/heartbeat` |
 
