@@ -1422,7 +1422,8 @@ window.showMetricsModal = async function (opts = {}) {
             // Call loader to render the full metrics UI into the modal content
             // Use a short timeout so the modal becomes visible before heavy work
             setTimeout(() => {
-                try { loader(serial, 'metrics_modal_content'); } catch (e) { window.__pm_shared.warn('metrics loader failed', e); }
+                Promise.resolve(loader(serial, 'metrics_modal_content', { preset: opts.preset }))
+                    .catch(e => window.__pm_shared.error('Metrics modal loading failed', { serial, error: e }));
             }, 60);
         } catch (e) {
             window.__pm_shared.warn('Failed to invoke shared metrics loader', e);
@@ -1504,4 +1505,3 @@ window.showMetricsModal = async function (opts = {}) {
     modal.style.display = 'flex';
     setTimeout(doLoad, 50);
 };
-

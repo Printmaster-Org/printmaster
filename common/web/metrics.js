@@ -27,26 +27,16 @@ function canonicalizeTonerName(name) {
     const raw = (name || '').trim();
     const lower = raw.toLowerCase();
     if (!raw) return { label: 'Supply', colorKey: 'default' };
-    if (lower.includes('black') || lower === 'k') return { label: 'Black', colorKey: 'black' };
-    if (lower.includes('cyan') || lower === 'c') return { label: 'Cyan', colorKey: 'cyan' };
-    if (lower.includes('magenta') || lower === 'm') return { label: 'Magenta', colorKey: 'magenta' };
-    if (lower.includes('yellow') || lower === 'y') return { label: 'Yellow', colorKey: 'yellow' };
+    const aliases = { k: 'Black', c: 'Cyan', m: 'Magenta', y: 'Yellow' };
+    if (aliases[lower]) return { label: aliases[lower], colorKey: aliases[lower].toLowerCase() };
     if (lower.includes('waste')) return { label: raw, colorKey: 'waste' };
     if (lower.includes('maint') || lower.includes('service')) {
         return { label: raw, colorKey: 'maintenance' };
     }
-    const cleaned = raw.replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const cleaned = window.__pm_shared_cards?.getSupplyDisplayName
+        ? window.__pm_shared_cards.getSupplyDisplayName(raw) : raw.replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim();
     const titled = cleaned.replace(/\b\w/g, (c) => c.toUpperCase());
     return { label: titled || 'Supply', colorKey: 'default' };
-}
-
-function resolveSeriesLabel(baseLabel, series) {
-    if (!series[baseLabel]) return baseLabel;
-    let counter = 2;
-    while (series[`${baseLabel} #${counter}`]) {
-        counter++;
-    }
-    return `${baseLabel} #${counter}`;
 }
 
 function extractSnapshotTonerEntries(snapshot) {
@@ -77,18 +67,9 @@ function buildTonerSeries(history) {
     history.forEach(snapshot => {
         const timestamp = new Date(snapshot.timestamp).getTime();
         if (Number.isNaN(timestamp)) return;
-        // Track which labels we've seen in THIS snapshot to handle duplicates
-        // within a single snapshot (e.g., two black cartridges in one device)
-        const seenInSnapshot = {};
         extractSnapshotTonerEntries(snapshot).forEach(entry => {
-            // Use the canonical label as the base key
-            let key = entry.label;
-            // Only disambiguate if we see the SAME label multiple times in ONE snapshot
-            if (seenInSnapshot[entry.label]) {
-                // This snapshot has multiple supplies with same canonical name
-                key = resolveSeriesLabel(entry.label, series);
-            }
-            seenInSnapshot[entry.label] = true;
+            // Cartridge identity, not its base ink color, stays stable between snapshots.
+            const key = entry.label;
             if (!series[key]) {
                 series[key] = { colorKey: entry.colorKey, points: [] };
             }
@@ -113,6 +94,9 @@ function filterTonerSeriesForRange(series, startTime, endTime) {
 }
 
 function resolveTonerColor(label, colorKey) {
+    if (!/waste|maint|service/i.test(label) && window.__pm_shared_cards?.getTonerColor) {
+        return window.__pm_shared_cards.getTonerColor(label);
+    }
     const loweredKey = (colorKey || '').toLowerCase();
     if (TONER_COLOR_MAP[loweredKey]) return TONER_COLOR_MAP[loweredKey];
     const lower = (label || '').toLowerCase();
@@ -166,7 +150,7 @@ function renderTonerLegend(container, tonerSeries) {
 
 // Load device metrics history and display in UI with interactive timeframe selector
 // If targetId is provided, render UI into that element. Otherwise render into default '#metrics_content'.
-async function loadDeviceMetrics(serial, targetId) {
+async function loadDeviceMetrics(serial, targetId, options = {}) {
     try { window.__pm_shared && window.__pm_shared.debug && window.__pm_shared.debug('[Metrics] (shared) loadDeviceMetrics called for serial:', serial); } catch (e) {}
     let contentEl = null;
     if (targetId) contentEl = document.getElementById(targetId);
@@ -175,6 +159,11 @@ async function loadDeviceMetrics(serial, targetId) {
         window.__pm_shared.error('[Metrics] metrics_content element not found and no target available');
         return;
     }
+    window.metricsDataRange?.flatpickr?.destroy();
+    contentEl.dataset.metricsSerial = serial;
+    const generation = (contentEl._metricsGeneration || 0) + 1;
+    contentEl._metricsGeneration = generation;
+    contentEl._metricsOptions = options;
     try { window.__pm_shared && window.__pm_shared.debug && window.__pm_shared.debug('[Metrics] Rendering metrics into element:', contentEl.id || contentEl.tagName); } catch (e) {}
 
     // Create interactive metrics UI
@@ -206,7 +195,7 @@ async function loadDeviceMetrics(serial, targetId) {
     // Custom datetime range picker with flatpickr
     html += '<div style="margin-bottom:12px">';
     html += '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">Custom Range:</div>';
-    html += '<input type="text" id="metrics_datetime_range" placeholder="Select date range..." style="width:100%;background:#073642;border:1px solid #004b56;color:var(--text);padding:10px;border-radius:4px;font-size:14px;min-height:38px;cursor:pointer" readonly />';
+    html += '<input type="text" id="metrics_datetime_range" aria-label="Metrics date range" placeholder="Select date range..." style="width:100%;background:var(--panel);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:4px;font-size:14px;min-height:38px;cursor:pointer" readonly />';
     html += '</div>';
 
     // Data range info
@@ -228,7 +217,7 @@ async function loadDeviceMetrics(serial, targetId) {
     html += '<div id="metrics_stats" style="margin-bottom:12px;font-size:12px"></div>';
 
     // Chart canvas
-    html += '<canvas id="metrics_chart" width="500" height="200" style="width:100%;max-height:200px;background:#001f22;border:1px solid rgba(255,255,255,0.06);border-radius:4px"></canvas>';
+    html += '<canvas id="metrics_chart" role="img" aria-label="Page counts and supply levels over the selected date range. Values are available in the metrics tables and supply legend." width="500" height="200" style="width:100%;max-height:200px;background:var(--bg);border:1px solid var(--border);border-radius:4px"></canvas>';
     html += '<div id="toner_legend" style="margin-top:8px;display:none;gap:8px;flex-wrap:wrap"></div>';
 
     contentEl.innerHTML = html;
@@ -237,35 +226,59 @@ async function loadDeviceMetrics(serial, targetId) {
     window.metricsDataRange = { min: null, max: null, serial: serial, flatpickr: null };
 
     // Initialize flatpickr and load data
-    await initializeCustomDatetimePicker(serial, contentEl);
+    await initializeCustomDatetimePicker(serial, contentEl, options.preset, generation);
     // Ensure chart/table refresh runs after picker init so UI shows data without requiring the user to click
     try {
-        // Small defer to allow DOM/layout to settle
-        setTimeout(() => {
-            try { refreshMetricsChart(serial); } catch (e) { try { window.__pm_shared.warn && window.__pm_shared.warn('[Metrics] auto refresh failed:', e); } catch(_) {} }
-        }, 50);
+        if (contentEl._metricsGeneration === generation && window.metricsDataRange?.flatpickr) await refreshMetricsChart(serial);
     } catch (e) {
         try { window.__pm_shared.warn && window.__pm_shared.warn('[Metrics] Failed to auto-refresh after init:', e); } catch(_) {}
     }
 }
 
-// Initialize custom datetime picker with actual data bounds
-async function initializeCustomDatetimePicker(serial, contentElOverride) {
+function showMetricsLoadError(contentEl, serial, error) {
+    window.__pm_shared.error('[Metrics] Loading failed', { serial, error });
+    if (!contentEl) return;
+    const canvas = contentEl.querySelector('#metrics_chart');
+    if (canvas) canvas.hidden = true;
+    renderTonerLegend(contentEl, {});
+    const rows = document.getElementById('metrics_rows_panel');
+    if (rows) rows.hidden = true;
+    let status = contentEl.querySelector('#metrics_stats');
+    if (!status) {
+        status = document.createElement('div');
+        contentEl.appendChild(status);
+    }
+    status.setAttribute('role', 'status');
+    status.replaceChildren(document.createTextNode('Metrics unavailable. Previous results are not current. '));
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.textContent = 'Retry';
+    retry.onclick = () => loadDeviceMetrics(serial, contentEl.id, contentEl._metricsOptions || {});
+    status.appendChild(retry);
+}
+
+function getMetricsInitialRange(minTime, maxTime, preset) {
+    const days = { day: 1, week: 7, '7day': 7, month: 30, year: 365 }[preset];
+    return [days ? new Date(Math.max(minTime.getTime(), maxTime.getTime() - days * 86400000)) : minTime, maxTime];
+}
+
+// Initialize custom datetime picker with actual data bounds.
+async function initializeCustomDatetimePicker(serial, contentElOverride, preset, generation) {
+    const contentEl = contentElOverride || document.getElementById('metrics_content');
+    const current = () => !contentElOverride || (contentEl._metricsGeneration === generation && contentEl.dataset.metricsSerial === serial);
     try { window.__pm_shared && window.__pm_shared.debug && window.__pm_shared.debug('[Metrics] (shared) initializeCustomDatetimePicker called'); } catch (e) {}
     try {
         // Fetch only bounds to determine available data range (fast, small payload)
         const url = '/api/devices/metrics/bounds?serial=' + encodeURIComponent(serial);
         try { window.__pm_shared && window.__pm_shared.debug && window.__pm_shared.debug('[Metrics] Fetching bounds:', url); } catch (e) {}
         const res = await fetch(url);
-        if (!res.ok) {
-            try { window.__pm_shared && window.__pm_shared.error && window.__pm_shared.error('[Metrics] API returned status:', res.status); } catch (e) {}
-            return;
-        }
+        if (!current()) return;
+        if (!res.ok) throw new Error('Metrics bounds request failed (HTTP ' + res.status + ')');
 
         const bounds = await res.json();
+        if (!current()) return;
         try { window.__pm_shared && window.__pm_shared.debug && window.__pm_shared.debug('[Metrics] Bounds:', bounds); } catch (e) {}
         // Use provided content element or fall back to global
-        const contentEl = contentElOverride || document.getElementById('metrics_content');
 
         const minTime = bounds && bounds.min_timestamp ? new Date(bounds.min_timestamp) : null;
         const maxTime = bounds && bounds.max_timestamp ? new Date(bounds.max_timestamp) : null;
@@ -305,17 +318,11 @@ async function initializeCustomDatetimePicker(serial, contentElOverride) {
             if (globalEnd) globalEnd.textContent = maxTime.toLocaleString();
         }
 
-        // Default to full available range (All Time)
-        const now = maxTime;
-
         // Await the shared flatpickr loader so we avoid race conditions where
         // metrics initialize before the library script has executed.
         const fpLib = await (window.__pm_shared && window.__pm_shared.flatpickrReady ? window.__pm_shared.flatpickrReady : Promise.resolve(window.flatpickr || null));
-        if (!fpLib) {
-            try { window.__pm_shared && window.__pm_shared.error && window.__pm_shared.error('[Metrics] flatpickr library not loaded after loader'); } catch (e) {}
-            if (contentEl) contentEl.innerHTML = '<div style="color:#d33;padding:12px">Error: Date picker library not loaded. Please refresh the page.</div>';
-            return;
-        }
+        if (!current()) return;
+        if (!fpLib) throw new Error('Metrics date picker is unavailable');
         try { window.__pm_shared && window.__pm_shared.debug && window.__pm_shared.debug('[Metrics] Initializing flatpickr with full range:', minTime, 'to', maxTime); } catch (e) {}
         // Initialize flatpickr with range mode
         const targetSelector = contentElOverride ? (contentElOverride.querySelector('#metrics_datetime_range')) : document.querySelector('#metrics_datetime_range');
@@ -326,19 +333,17 @@ async function initializeCustomDatetimePicker(serial, contentElOverride) {
             minDate: minTime,
             maxDate: maxTime,
             // Default to all available data on initial load
-            defaultDate: [minTime, maxTime],
+            defaultDate: getMetricsInitialRange(minTime, maxTime, preset),
             time_24hr: true,
             onChange: function (selectedDates, dateStr, instance) {
                 try { window.__pm_shared && window.__pm_shared.trace && window.__pm_shared.trace('[Metrics] Range changed:', selectedDates); } catch (e) {}
                 // Auto-refresh chart when range changes
                 if (selectedDates.length === 2) {
-                    refreshMetricsChart(serial);
+                    if (current()) refreshMetricsChart(serial);
                 }
             },
             onReady: function (selectedDates, dateStr, instance) {
                 try { window.__pm_shared && window.__pm_shared.trace && window.__pm_shared.trace('[Metrics] flatpickr ready, refreshing chart'); } catch (e) {}
-                // Refresh chart with initial range
-                refreshMetricsChart(serial);
             }
         });
 
@@ -349,11 +354,7 @@ async function initializeCustomDatetimePicker(serial, contentElOverride) {
         updatePresetButtonStates(minTime, maxTime);
 
     } catch (e) {
-        try { window.__pm_shared && window.__pm_shared.error && window.__pm_shared.error('[Metrics] Failed to initialize datetime picker:', e); } catch (err) {}
-        const contentEl = document.getElementById('metrics_content');
-        if (contentEl) {
-            contentEl.innerHTML = '<div style="color:#d33;padding:12px">Error loading metrics: ' + e.message + '</div>';
-        }
+        if (current()) showMetricsLoadError(contentEl, serial, e);
     }
 }
 
@@ -454,6 +455,11 @@ async function refreshMetricsChart(serial) {
         window.__pm_shared.error('[Metrics] Missing chart elements within container - canvas:', !!canvas, 'stats:', !!statsEl);
         return;
     }
+    const contentEl = canvas.closest('[data-metrics-serial]');
+    if (contentEl && contentEl.dataset.metricsSerial !== serial) return;
+    const request = contentEl ? (contentEl._metricsRequest || 0) + 1 : 0;
+    if (contentEl) contentEl._metricsRequest = request;
+    const current = () => !contentEl || (contentEl.isConnected && contentEl.dataset.metricsSerial === serial && contentEl._metricsRequest === request);
 
     try {
         // Get selected dates from flatpickr
@@ -491,20 +497,24 @@ async function refreshMetricsChart(serial) {
             url += '&maxPoints=200';
         }
         window.__pm_shared.log('[Metrics] Fetching chart data:', url, rawMode ? '(raw mode)' : '(downsampled)');
+        canvas.hidden = true;
+        statsEl.textContent = 'Loading metrics...';
+        const previousRows = document.getElementById('metrics_rows_panel');
+        if (previousRows) previousRows.hidden = true;
         const res = await fetch(url);
+        if (!current()) return;
 
         if (!res.ok) {
-            window.__pm_shared.error('[Metrics] Chart data API returned status:', res.status);
-            statsEl.textContent = 'No metrics data available yet.';
-            renderTonerLegend(container, {});
-            return;
+            throw new Error('Metrics history request failed (HTTP ' + res.status + ')');
         }
 
         const history = await res.json();
+        if (!current()) return;
         window.__pm_shared.log('[Metrics] Received', history?.length || 0, 'chart data points' + (rawMode ? ' (raw)' : ' (downsampled)'));
         if (!history || history.length === 0) {
             window.__pm_shared.warn('[Metrics] No data in selected timeframe');
             statsEl.textContent = 'No metrics data in selected timeframe.';
+            canvas.hidden = false;
             drawEmptyChart(canvas);
             renderTonerLegend(container, {});
             return;
@@ -529,13 +539,14 @@ async function refreshMetricsChart(serial) {
         statsHtml += '</tr></thead><tbody>';
 
         // Total Pages
-        const lifetimePages = latest.page_count || 0;
-        const periodPages = lifetimePages - (oldest.page_count || 0);
-        const avgPagesPerDay = (periodPages / durationDays).toFixed(1);
+        const lifetimePages = window.__pm_shared_cards.getPageCount(latest);
+        const oldestPages = window.__pm_shared_cards.getPageCount(oldest);
+        const periodPages = lifetimePages === null || oldestPages === null ? null : lifetimePages - oldestPages;
+        const avgPagesPerDay = periodPages === null ? 'Not collected' : (periodPages / durationDays).toFixed(1);
         statsHtml += '<tr style="border-bottom:1px solid rgba(255,255,255,0.05)">';
         statsHtml += '<td style="padding:6px 8px;color:var(--text)">Total Pages</td>';
-        statsHtml += '<td style="padding:6px 8px;text-align:right;color:var(--text);font-weight:600">' + lifetimePages.toLocaleString() + '</td>';
-        statsHtml += '<td style="padding:6px 8px;text-align:right;color:#268bd2;font-weight:600">' + periodPages.toLocaleString() + '</td>';
+        statsHtml += '<td style="padding:6px 8px;text-align:right;color:var(--text);font-weight:600">' + (lifetimePages === null ? 'Not collected' : lifetimePages.toLocaleString()) + '</td>';
+        statsHtml += '<td style="padding:6px 8px;text-align:right;color:#268bd2;font-weight:600">' + (periodPages === null ? 'Not collected' : periodPages.toLocaleString()) + '</td>';
         statsHtml += '<td style="padding:6px 8px;text-align:right;color:var(--muted)">' + avgPagesPerDay + '</td>';
         statsHtml += '</tr>';
 
@@ -584,6 +595,7 @@ async function refreshMetricsChart(serial) {
 
         statsHtml += '</tbody></table>';
         statsEl.innerHTML = statsHtml;
+        canvas.hidden = false;
         window.__pm_shared.log('[Metrics] Stats updated, drawing chart');
 
         // Draw chart
@@ -746,8 +758,7 @@ async function refreshMetricsChart(serial) {
         }
 
     } catch (e) {
-        window.__pm_shared.error('[Metrics] Error refreshing chart:', e);
-        statsEl.textContent = 'Failed to load metrics: ' + e.message;
+        if (current()) showMetricsLoadError(contentEl || container, serial, e);
     }
 }
 
@@ -1062,6 +1073,9 @@ window.__pm_shared_metrics.setMetricsQuickRange = setMetricsQuickRange;
 window.__pm_shared_metrics.refreshMetricsChart = refreshMetricsChart;
 window.__pm_shared_metrics.drawMetricsChart = drawMetricsChart;
 window.__pm_shared_metrics.drawEmptyChart = drawEmptyChart;
+window.__pm_shared_metrics.buildTonerSeries = buildTonerSeries;
+window.__pm_shared_metrics.resolveTonerColor = resolveTonerColor;
+window.__pm_shared_metrics.getMetricsInitialRange = getMetricsInitialRange;
 
 // Lightweight usage-sparkline loader used in saved-device cards
 async function loadUsageGraph(serial) {
@@ -1175,4 +1189,3 @@ window.initializeCustomDatetimePicker = window.initializeCustomDatetimePicker ||
 window.setMetricsQuickRange = window.setMetricsQuickRange || setMetricsQuickRange;
 window.refreshMetricsChart = window.refreshMetricsChart || refreshMetricsChart;
 window.loadUsageGraph = window.loadUsageGraph || loadUsageGraph;
-
