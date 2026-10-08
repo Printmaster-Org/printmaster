@@ -17,7 +17,7 @@ type serverManagedSettings struct {
 	Version         string              `json:"version"`
 	SchemaVersion   string              `json:"schema_version"`
 	UpdatedAt       time.Time           `json:"updated_at"`
-	ManagedSections []string            `json:"managed_sections,omitempty"`
+	ManagedSections []string            `json:"managed_sections"`
 	Settings        pmsettings.Settings `json:"settings"`
 }
 
@@ -46,6 +46,9 @@ func (m *SettingsManager) reload() {
 		return
 	}
 	pmsettings.Sanitize(&payload.Settings)
+	if payload.ManagedSections == nil {
+		payload.ManagedSections = []string{"discovery", "snmp", "features", "spooler"}
+	}
 	m.mu.Lock()
 	m.managed = &payload
 	m.mu.Unlock()
@@ -81,7 +84,7 @@ func (m *SettingsManager) ManagedSections() []string {
 	if m.managed == nil {
 		return nil
 	}
-	return append([]string(nil), m.managed.ManagedSections...)
+	return append([]string{}, m.managed.ManagedSections...)
 }
 
 func (m *SettingsManager) baseSettings() (pmsettings.Settings, bool) {
@@ -96,6 +99,17 @@ func (m *SettingsManager) baseSettings() (pmsettings.Settings, bool) {
 	return m.managed.Settings, true
 }
 
+func (m *SettingsManager) snapshot() *serverManagedSettings {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.managed == nil {
+		return nil
+	}
+	snapshot := *m.managed
+	snapshot.ManagedSections = append([]string{}, m.managed.ManagedSections...)
+	return &snapshot
+}
+
 func (m *SettingsManager) ApplyServerSnapshot(snapshot *agent.SettingsSnapshot) (pmsettings.Settings, error) {
 	if m == nil || m.store == nil {
 		return pmsettings.Settings{}, fmt.Errorf("settings manager unavailable")
@@ -107,7 +121,7 @@ func (m *SettingsManager) ApplyServerSnapshot(snapshot *agent.SettingsSnapshot) 
 		Version:         snapshot.Version,
 		SchemaVersion:   snapshot.SchemaVersion,
 		UpdatedAt:       snapshot.UpdatedAt,
-		ManagedSections: append([]string(nil), snapshot.ManagedSections...),
+		ManagedSections: append([]string{}, snapshot.ManagedSections...),
 		Settings:        snapshot.Settings,
 	}
 	pmsettings.Sanitize(&payload.Settings)

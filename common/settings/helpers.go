@@ -19,6 +19,9 @@ func StripAgentLocalFields(cfg *Settings) {
 	cfg.Logging = agentLocalDefaults.Logging
 	// Web section is agent-local
 	cfg.Web = agentLocalDefaults.Web
+	cfg.Discovery.ShowDiscoverButtonAnyway = agentLocalDefaults.Discovery.ShowDiscoverButtonAnyway
+	cfg.Discovery.ShowDiscoveredDevicesAnyway = agentLocalDefaults.Discovery.ShowDiscoveredDevicesAnyway
+	cfg.Discovery.DetectedSubnet = agentLocalDefaults.Discovery.DetectedSubnet
 }
 
 // CopyAgentLocalFields copies agent-local fields from src into dst.
@@ -30,6 +33,9 @@ func CopyAgentLocalFields(src Settings, dst *Settings) {
 	dst.Logging = src.Logging
 	// Web section is agent-local
 	dst.Web = src.Web
+	dst.Discovery.ShowDiscoverButtonAnyway = src.Discovery.ShowDiscoverButtonAnyway
+	dst.Discovery.ShowDiscoveredDevicesAnyway = src.Discovery.ShowDiscoveredDevicesAnyway
+	dst.Discovery.DetectedSubnet = src.Discovery.DetectedSubnet
 }
 
 // ComputeSettingsVersion hashes the schema version, update timestamp, and settings payload

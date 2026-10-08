@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gosnmp/gosnmp"
+	pmsettings "printmaster/common/settings"
 )
 
 // SNMPConfig holds SNMP connection parameters.
@@ -16,6 +18,7 @@ type SNMPConfig struct {
 	Community string
 	// Version is the SNMP protocol version (gosnmp.Version1, Version2c, Version3)
 	Version gosnmp.SnmpVersion
+	Timeout time.Duration
 
 	// SNMPv3 security parameters
 	// SecurityLevel: noAuthNoPriv, authNoPriv, or authPriv
@@ -67,15 +70,38 @@ func (c *gosnmpClient) Close() error {
 	return c.conn.Conn.Close()
 }
 
-// GetSNMPConfig loads SNMP configuration from environment variables.
-// Defaults to community="public" and version=v2c if not specified.
+var runtimeSNMPSettings struct {
+	sync.RWMutex
+	settings *pmsettings.SNMPSettings
+}
+
+// SetSNMPSettings atomically replaces the effective settings used by new queries.
+func SetSNMPSettings(settings pmsettings.SNMPSettings) {
+	runtimeSNMPSettings.Lock()
+	runtimeSNMPSettings.settings = &settings
+	runtimeSNMPSettings.Unlock()
+}
+
+// GetSNMPConfig uses runtime settings when configured, otherwise environment defaults.
 func GetSNMPConfig() (*SNMPConfig, error) {
-	community := os.Getenv("SNMP_COMMUNITY")
+	raw := pmsettings.SNMPSettings{
+		Community: os.Getenv("SNMP_COMMUNITY"), Version: os.Getenv("SNMP_VERSION"),
+		Username: os.Getenv("SNMP_USERNAME"), ContextName: os.Getenv("SNMP_CONTEXT_NAME"),
+		SecurityLevel: os.Getenv("SNMP_SECURITY_LEVEL"), AuthProtocol: os.Getenv("SNMP_AUTH_PROTOCOL"),
+		AuthPassword: os.Getenv("SNMP_AUTH_PASSWORD"), PrivProtocol: os.Getenv("SNMP_PRIV_PROTOCOL"),
+		PrivPassword: os.Getenv("SNMP_PRIV_PASSWORD"),
+	}
+	runtimeSNMPSettings.RLock()
+	if runtimeSNMPSettings.settings != nil {
+		raw = *runtimeSNMPSettings.settings
+	}
+	runtimeSNMPSettings.RUnlock()
+	community := raw.Community
 	if community == "" {
 		community = "public"
 	}
 
-	versionStr := strings.ToLower(os.Getenv("SNMP_VERSION"))
+	versionStr := strings.ToLower(raw.Version)
 	version := gosnmp.Version2c // default to v2c for better compatibility
 
 	switch versionStr {
@@ -92,15 +118,16 @@ func GetSNMPConfig() (*SNMPConfig, error) {
 	cfg := &SNMPConfig{
 		Community: community,
 		Version:   version,
+		Timeout:   time.Duration(raw.TimeoutMS) * time.Millisecond,
 	}
 
 	// SNMPv3 configuration from environment
 	if version == gosnmp.Version3 {
-		cfg.Username = os.Getenv("SNMP_USERNAME")
-		cfg.ContextName = os.Getenv("SNMP_CONTEXT_NAME")
+		cfg.Username = raw.Username
+		cfg.ContextName = raw.ContextName
 
 		// Security level
-		secLevel := strings.ToLower(os.Getenv("SNMP_SECURITY_LEVEL"))
+		secLevel := strings.ToLower(raw.SecurityLevel)
 		switch secLevel {
 		case "authpriv":
 			cfg.SecurityLevel = gosnmp.AuthPriv
@@ -111,7 +138,7 @@ func GetSNMPConfig() (*SNMPConfig, error) {
 		}
 
 		// Auth protocol
-		authProto := strings.ToUpper(os.Getenv("SNMP_AUTH_PROTOCOL"))
+		authProto := strings.ToUpper(raw.AuthProtocol)
 		switch authProto {
 		case "MD5":
 			cfg.AuthProtocol = gosnmp.MD5
@@ -128,10 +155,10 @@ func GetSNMPConfig() (*SNMPConfig, error) {
 		default:
 			cfg.AuthProtocol = gosnmp.NoAuth
 		}
-		cfg.AuthPassword = os.Getenv("SNMP_AUTH_PASSWORD")
+		cfg.AuthPassword = raw.AuthPassword
 
 		// Privacy protocol
-		privProto := strings.ToUpper(os.Getenv("SNMP_PRIV_PROTOCOL"))
+		privProto := strings.ToUpper(raw.PrivProtocol)
 		switch privProto {
 		case "DES":
 			cfg.PrivProtocol = gosnmp.DES
@@ -148,7 +175,7 @@ func GetSNMPConfig() (*SNMPConfig, error) {
 		default:
 			cfg.PrivProtocol = gosnmp.NoPriv
 		}
-		cfg.PrivPassword = os.Getenv("SNMP_PRIV_PASSWORD")
+		cfg.PrivPassword = raw.PrivPassword
 	}
 
 	return cfg, nil
@@ -183,6 +210,9 @@ func NewSNMPClientWithContext(ctx context.Context, cfg *SNMPConfig, target strin
 		Version: cfg.Version,
 		Timeout: time.Duration(timeout) * time.Second,
 		Retries: retries,
+	}
+	if cfg.Timeout > 0 {
+		conn.Timeout = cfg.Timeout
 	}
 
 	// Configure based on SNMP version

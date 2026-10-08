@@ -1,6 +1,10 @@
 package settings
 
-import "fmt"
+import (
+	"fmt"
+	"regexp"
+	"strings"
+)
 
 // ValidationError captures a specific constraint violation.
 type ValidationError struct {
@@ -23,6 +27,9 @@ func Sanitize(s *Settings) {
 	}
 	// Seconds-based interval: minimum 15 seconds, max 300 (5 min)
 	// If seconds is set to 0, minutes-based interval is used
+	if s.Discovery.MetricsRescanIntervalSeconds < 0 {
+		s.Discovery.MetricsRescanIntervalSeconds = 0
+	}
 	if s.Discovery.MetricsRescanIntervalSeconds > 0 {
 		if s.Discovery.MetricsRescanIntervalSeconds < 15 {
 			s.Discovery.MetricsRescanIntervalSeconds = 15
@@ -38,6 +45,30 @@ func Sanitize(s *Settings) {
 		s.Discovery.Concurrency = 200
 	}
 	// SNMP
+	switch strings.ToLower(s.SNMP.Version) {
+	case "", "2", "2c", "v2c":
+		s.SNMP.Version = "2c"
+	case "1", "v1":
+		s.SNMP.Version = "1"
+	case "3", "v3":
+		s.SNMP.Version = "3"
+	}
+	switch strings.ToLower(s.SNMP.SecurityLevel) {
+	case "noauthnopriv":
+		s.SNMP.SecurityLevel = "noAuthNoPriv"
+	case "authnopriv":
+		s.SNMP.SecurityLevel = "authNoPriv"
+	case "authpriv":
+		s.SNMP.SecurityLevel = "authPriv"
+	}
+	s.SNMP.AuthProtocol = strings.ToUpper(s.SNMP.AuthProtocol)
+	if s.SNMP.AuthProtocol == "SHA1" {
+		s.SNMP.AuthProtocol = "SHA"
+	}
+	s.SNMP.PrivProtocol = strings.ToUpper(s.SNMP.PrivProtocol)
+	if s.SNMP.PrivProtocol == "AES128" {
+		s.SNMP.PrivProtocol = "AES"
+	}
 	if s.SNMP.TimeoutMS < 500 {
 		s.SNMP.TimeoutMS = 500
 	}
@@ -49,6 +80,12 @@ func Sanitize(s *Settings) {
 	}
 	if s.SNMP.Retries > 5 {
 		s.SNMP.Retries = 5
+	}
+	if s.Spooler.PollIntervalSeconds < 5 {
+		s.Spooler.PollIntervalSeconds = 5
+	}
+	if s.Spooler.PollIntervalSeconds > 300 {
+		s.Spooler.PollIntervalSeconds = 300
 	}
 	// Web
 	if s.Web.HTTPPort == "" {
@@ -65,6 +102,31 @@ func Validate(s Settings) []ValidationError {
 	var issues []ValidationError
 	if channel := s.Features.AgentUpdateChannel; channel != "" && channel != "stable" && channel != "beta" && channel != "dev" {
 		issues = append(issues, ValidationError{Field: "features.agent_update_channel", Message: "channel must be empty, stable, beta, or dev"})
+	}
+	if s.Features.AssetIDRegex != "" {
+		if _, err := regexp.Compile(s.Features.AssetIDRegex); err != nil {
+			issues = append(issues, ValidationError{Field: "features.asset_id_regex", Message: "invalid regular expression: " + err.Error()})
+		}
+	}
+	for _, field := range []struct {
+		path, value string
+		allowed     []string
+	}{
+		{"snmp.version", s.SNMP.Version, []string{"", "1", "v1", "2", "2c", "v2c", "3", "v3"}},
+		{"snmp.security_level", s.SNMP.SecurityLevel, []string{"", "noAuthNoPriv", "authNoPriv", "authPriv"}},
+		{"snmp.auth_protocol", s.SNMP.AuthProtocol, []string{"", "MD5", "SHA", "SHA1", "SHA224", "SHA256", "SHA384", "SHA512"}},
+		{"snmp.priv_protocol", s.SNMP.PrivProtocol, []string{"", "DES", "AES", "AES128", "AES192", "AES256", "AES192C", "AES256C"}},
+	} {
+		valid := false
+		for _, allowed := range field.allowed {
+			if strings.EqualFold(field.value, allowed) {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			issues = append(issues, ValidationError{Field: field.path, Message: "unsupported SNMP value"})
+		}
 	}
 	if s.Discovery.ManualRanges && s.Discovery.RangesText == "" {
 		issues = append(issues, ValidationError{Field: "discovery.ranges_text", Message: "manual ranges enabled but no ranges text provided"})
@@ -121,6 +183,7 @@ func Merge(base Settings, override Settings) Settings {
 	merged.Discovery = MergeDiscovery(base.Discovery, override.Discovery)
 	merged.SNMP = override.SNMP
 	merged.Features = override.Features
+	merged.Spooler = override.Spooler
 	merged.Logging = override.Logging
 	merged.Web = override.Web
 	Sanitize(&merged)

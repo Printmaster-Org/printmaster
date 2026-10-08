@@ -1750,6 +1750,17 @@ func applySpoolerSettings(spooler *pmsettings.SpoolerSettings) {
 }
 
 func applyEffectiveSettingsSnapshot(cfg pmsettings.Settings) {
+	pattern := cfg.Features.AssetIDRegex
+	if pattern == "" {
+		pattern = `\b\d{5}\b`
+	}
+	agent.SetAssetIDRegex(pattern)
+	agent.SetSNMPSettings(cfg.SNMP)
+	scannerConfig.Lock()
+	scannerConfig.SNMPTimeoutMs = cfg.SNMP.TimeoutMS
+	scannerConfig.SNMPRetries = cfg.SNMP.Retries
+	scannerConfig.DiscoverConcurrency = cfg.Discovery.Concurrency
+	scannerConfig.Unlock()
 	if applyDiscoveryEffectsFunc != nil {
 		discMap := structToMap(cfg.Discovery)
 		delete(discMap, "ranges_text")
@@ -1757,26 +1768,70 @@ func applyEffectiveSettingsSnapshot(cfg pmsettings.Settings) {
 		applyDiscoveryEffectsFunc(discMap)
 	}
 	applyFeaturesSettingsEffects(&cfg.Features)
+	if globalLocalPrinterStore != nil {
+		applySpoolerSettings(&cfg.Spooler)
+	}
+}
+
+var agentSettingsDefaults = pmsettings.DefaultSettings()
+
+func settingsDefaultsFromConfig(agentConfig *AgentConfig) pmsettings.Settings {
+	base := pmsettings.DefaultSettings()
+	if agentConfig != nil {
+		cfg := agentConfig.SNMP
+		base.SNMP = pmsettings.SNMPSettings{
+			Version: cfg.Version, Community: cfg.Community, TimeoutMS: cfg.TimeoutMs, Retries: cfg.Retries,
+			SecurityLevel: cfg.SecurityLevel, Username: cfg.Username, AuthProtocol: cfg.AuthProtocol,
+			AuthPassword: cfg.AuthPassword, PrivProtocol: cfg.PrivProtocol, PrivPassword: cfg.PrivPassword,
+			ContextName: cfg.ContextName,
+		}
+		base.Discovery.Concurrency = agentConfig.Concurrency
+		base.Features.AssetIDRegex = agentConfig.AssetIDRegex
+	}
+	return base
 }
 
 func loadUnifiedSettings(store storage.AgentConfigStore) pmsettings.Settings {
-	base := pmsettings.DefaultSettings()
-	managed := false
+	base := agentSettingsDefaults
+	managedSections := map[string]bool{}
 	if settingsManager != nil {
-		base, managed = settingsManager.baseSettings()
+		if snapshot := settingsManager.snapshot(); snapshot != nil {
+			for _, section := range snapshot.ManagedSections {
+				managedSections[section] = true
+			}
+			if managedSections["discovery"] {
+				base.Discovery = snapshot.Settings.Discovery
+			}
+			if managedSections["snmp"] {
+				base.SNMP = snapshot.Settings.SNMP
+			}
+			if managedSections["features"] {
+				base.Features = snapshot.Settings.Features
+			}
+			if managedSections["spooler"] {
+				base.Spooler = snapshot.Settings.Spooler
+			}
+		}
 	}
 	if store == nil {
 		pmsettings.Sanitize(&base)
 		return base
 	}
-	if !managed {
-		var disc map[string]interface{}
-		if err := store.GetConfigValue("discovery_settings", &disc); err == nil && disc != nil {
+
+	var disc map[string]interface{}
+	if err := store.GetConfigValue("discovery_settings", &disc); err == nil && disc != nil {
+		if !managedSections["discovery"] {
 			mapIntoStruct(disc, &base.Discovery)
+		} else {
+			local := pmsettings.DefaultSettings()
+			mapIntoStruct(disc, &local.Discovery)
+			pmsettings.CopyAgentLocalFields(local, &base)
 		}
 	}
-	if txt, err := store.GetRanges(); err == nil {
-		base.Discovery.RangesText = txt
+	if !managedSections["discovery"] {
+		if txt, err := store.GetRanges(); err == nil {
+			base.Discovery.RangesText = txt
+		}
 	}
 	if ipnets, err := agent.GetLocalSubnets(); err == nil && len(ipnets) > 0 {
 		base.Discovery.DetectedSubnet = ipnets[0].String()
@@ -1785,12 +1840,15 @@ func loadUnifiedSettings(store storage.AgentConfigStore) pmsettings.Settings {
 	var unified map[string]interface{}
 	if err := store.GetConfigValue("settings", &unified); err == nil && unified != nil {
 		// SNMP settings (fleet-managed, don't allow local override when managed)
-		if snmpRaw, ok := unified["snmp"].(map[string]interface{}); ok && !managed {
+		if snmpRaw, ok := unified["snmp"].(map[string]interface{}); ok && !managedSections["snmp"] {
 			mapIntoStruct(snmpRaw, &base.SNMP)
 		}
 		// Features settings (fleet-managed, don't allow local override when managed)
-		if featRaw, ok := unified["features"].(map[string]interface{}); ok && !managed {
+		if featRaw, ok := unified["features"].(map[string]interface{}); ok && !managedSections["features"] {
 			mapIntoStruct(featRaw, &base.Features)
+		}
+		if spoolerRaw, ok := unified["spooler"].(map[string]interface{}); ok && !managedSections["spooler"] {
+			mapIntoStruct(spoolerRaw, &base.Spooler)
 		}
 		// Logging settings (agent-local, always allow local override)
 		if logRaw, ok := unified["logging"].(map[string]interface{}); ok {
@@ -1804,6 +1862,39 @@ func loadUnifiedSettings(store storage.AgentConfigStore) pmsettings.Settings {
 	pmsettings.Sanitize(&base)
 	applyFeaturesSettingsEffects(&base.Features)
 	return base
+}
+
+func hasManagedSection(section string) bool {
+	if settingsManager == nil {
+		return false
+	}
+	for _, managed := range settingsManager.ManagedSections() {
+		if managed == section {
+			return true
+		}
+	}
+	return false
+}
+
+func hasFleetDiscoveryChanges(patch map[string]interface{}) bool {
+	for key := range patch {
+		if key != "show_discover_button_anyway" && key != "show_discovered_devices_anyway" {
+			return true
+		}
+	}
+	return false
+}
+
+func discoveryRanges(cfg pmsettings.DiscoverySettings) []string {
+	var ranges []string
+	if cfg.ManualRanges {
+		for _, line := range strings.Split(cfg.RangesText, "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				ranges = append(ranges, line)
+			}
+		}
+	}
+	return ranges
 }
 
 // applyServerConfigFromStore merges persisted server connection settings from the
@@ -3031,6 +3122,7 @@ func runInteractive(ctx context.Context, configFlag string) {
 		ApplyEnvironmentOverrides(agentConfig) // Apply env overrides even when no config file
 	}
 	configEpsonRemoteModeEnabled = agentConfig != nil && agentConfig.EpsonRemoteModeEnabled
+	agentSettingsDefaults = settingsDefaultsFromConfig(agentConfig)
 	featureflags.SetEpsonRemoteMode(configEpsonRemoteModeEnabled)
 	agentAuth = newAgentAuthManager(agentConfig, agentSessions)
 
@@ -3455,29 +3547,14 @@ func runInteractive(ctx context.Context, configFlag string) {
 				appLogger.Debug("Auto Discover: running periodic scan")
 
 				// Load discovery settings
-				var discoverySettings = map[string]interface{}{
-					"subnet_scan":   true,
-					"manual_ranges": true,
-					"arp_enabled":   true,
-					"icmp_enabled":  true,
-					"tcp_enabled":   true,
-					"snmp_enabled":  true,
-					"mdns_enabled":  false,
+				effectiveDiscovery := loadUnifiedSettings(agentConfigStore).Discovery
+				if !effectiveDiscovery.IPScanningEnabled {
+					return
 				}
-				if agentConfigStore != nil {
-					var stored map[string]interface{}
-					if err := agentConfigStore.GetConfigValue("discovery_settings", &stored); err == nil && stored != nil {
-						for k, v := range stored {
-							discoverySettings[k] = v
-						}
-					}
-				}
-
-				// Get saved ranges
-				var ranges []string
-				if agentConfigStore != nil {
-					savedRanges, _ := agentConfigStore.GetRangesList()
-					ranges = savedRanges
+				discoverySettings := structToMap(effectiveDiscovery)
+				ranges := discoveryRanges(effectiveDiscovery)
+				if len(ranges) == 0 && !effectiveDiscovery.SubnetScan {
+					return
 				}
 
 				// Build DiscoveryConfig from settings
@@ -3490,7 +3567,7 @@ func runInteractive(ctx context.Context, configFlag string) {
 				}
 
 				// Use new scanner for periodic discovery (full mode)
-				_, err := Discover(workerCtx, ranges, "full", discoveryCfg, deviceStore, 50, 10)
+				_, err := Discover(workerCtx, ranges, "full", discoveryCfg, deviceStore, effectiveDiscovery.Concurrency, 10)
 				if err != nil && workerCtx.Err() == nil {
 					appLogger.Error("Auto Discover scan error", "error", err, "ranges", len(ranges))
 				}
@@ -3892,10 +3969,6 @@ func runInteractive(ctx context.Context, configFlag string) {
 		}
 	}
 	applyDiscoveryEffectsFunc = applyDiscoveryEffects
-	if settingsManager != nil && settingsManager.HasManagedSnapshot() {
-		cfg := loadUnifiedSettings(agentConfigStore)
-		applyEffectiveSettingsSnapshot(cfg)
-	}
 
 	// Load saved ranges from database
 	rangesText, err := agentConfigStore.GetRanges()
@@ -3983,6 +4056,8 @@ func runInteractive(ctx context.Context, configFlag string) {
 		scannerConfig.Unlock()
 	}
 
+	applyEffectiveSettingsSnapshot(loadUnifiedSettings(agentConfigStore))
+
 	// Load server configuration from TOML and start upload worker
 	if agentConfig != nil && agentConfig.Server.Enabled {
 		dataDir, err := config.GetDataDirectory("agent", isService)
@@ -4012,33 +4087,11 @@ func runInteractive(ctx context.Context, configFlag string) {
 		}()
 	}
 
-	// Load discovery settings from database (user-configurable via web UI)
-	{
-		var discoverySettings map[string]interface{}
-		if agentConfigStore != nil {
-			_ = agentConfigStore.GetConfigValue("discovery_settings", &discoverySettings)
-		}
-		if discoverySettings != nil {
-			applyDiscoveryEffects(discoverySettings)
-		}
-	}
-
 	// Start only after SNMP/environment settings are initialized. Reachability
 	// is independent of optional heavy metrics collection and auto-discovery.
 	startIdentityRefreshForVersionChange(mainScanner.ctx, agentConfigStore, deviceStore, appLogger)
 	stopLiveness := startDeviceLivenessMonitor(ctx, deviceStore.(deviceLivenessStore), func() bool {
-		base := pmsettings.DefaultSettings()
-		managed := false
-		if settingsManager != nil {
-			base, managed = settingsManager.baseSettings()
-		}
-		if !managed {
-			var discovery map[string]interface{}
-			if err := agentConfigStore.GetConfigValue("discovery_settings", &discovery); err != nil {
-				return false
-			}
-			mapIntoStruct(discovery, &base.Discovery)
-		}
+		base := loadUnifiedSettings(agentConfigStore)
 		return base.Discovery.IPScanningEnabled && base.Discovery.SNMPEnabled
 	})
 	defer stopLiveness()
@@ -4229,23 +4282,9 @@ func runInteractive(ctx context.Context, configFlag string) {
 		}
 
 		// Load discovery settings
-		var discoverySettings = map[string]interface{}{
-			"subnet_scan":   true,
-			"manual_ranges": true,
-			"arp_enabled":   true,
-			"icmp_enabled":  true,
-			"tcp_enabled":   true,
-			"snmp_enabled":  true,
-			"mdns_enabled":  false,
-		}
-		if agentConfigStore != nil {
-			var stored map[string]interface{}
-			if err := agentConfigStore.GetConfigValue("discovery_settings", &stored); err == nil && stored != nil {
-				for k, v := range stored {
-					discoverySettings[k] = v
-				}
-			}
-		}
+		effectiveDiscovery := loadUnifiedSettings(agentConfigStore).Discovery
+		discoverySettings := structToMap(effectiveDiscovery)
+		conc = effectiveDiscovery.Concurrency
 
 		// If IP scanning master toggle is explicitly disabled, skip discovery
 		if discoverySettings["ip_scanning_enabled"] == false {
@@ -4256,14 +4295,7 @@ func runInteractive(ctx context.Context, configFlag string) {
 		}
 
 		// Get saved ranges from database (if manual ranges enabled)
-		var ranges []string
-		manualRangesEnabled := discoverySettings["manual_ranges"] == true
-		if manualRangesEnabled && agentConfigStore != nil {
-			savedRanges, err := agentConfigStore.GetRangesList()
-			if err == nil {
-				ranges = savedRanges
-			}
-		}
+		ranges := discoveryRanges(effectiveDiscovery)
 
 		// Check if local subnet scanning is enabled
 		scanLocalSubnet := discoverySettings["subnet_scan"] == true
@@ -7558,7 +7590,7 @@ window.top.location.href = '/proxy/%s/';
 					managedSections[section] = true
 				}
 				var lockedSections []string
-				if req.Discovery != nil && managedSections["discovery"] {
+				if hasFleetDiscoveryChanges(req.Discovery) && managedSections["discovery"] {
 					lockedSections = append(lockedSections, "discovery")
 				}
 				if req.SNMP != nil && managedSections["snmp"] {
@@ -7583,8 +7615,14 @@ window.top.location.href = '/proxy/%s/';
 			}
 
 			if req.Reset {
-				_ = agentConfigStore.SetConfigValue("discovery_settings", map[string]interface{}{})
-				_ = agentConfigStore.SetConfigValue("settings", map[string]interface{}{})
+				if err := agentConfigStore.SetConfigValue("discovery_settings", map[string]interface{}{}); err != nil {
+					http.Error(w, "failed to reset discovery settings: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
+				if err := agentConfigStore.SetConfigValue("settings", map[string]interface{}{}); err != nil {
+					http.Error(w, "failed to reset settings: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
 				stopAutoDiscover()
 				stopLiveMDNS()
 				stopLiveWSDiscovery()
@@ -7594,24 +7632,43 @@ window.top.location.href = '/proxy/%s/';
 				stopMetricsRescan()
 				agent.SetDebugEnabled(false)
 				agent.SetDumpParseDebug(false)
-				defaults := pmsettings.DefaultSettings()
-				if txt, err := agentConfigStore.GetRanges(); err == nil {
-					defaults.Discovery.RangesText = txt
-				}
-				if ipnets, err := agent.GetLocalSubnets(); err == nil && len(ipnets) > 0 {
-					defaults.Discovery.DetectedSubnet = ipnets[0].String()
-				}
-				applyFeaturesSettingsEffects(&defaults.Features)
+				defaults := loadUnifiedSettings(agentConfigStore)
+				applyEffectiveSettingsSnapshot(defaults)
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(defaults)
 				return
 			}
 
 			current := loadUnifiedSettings(agentConfigStore)
+			candidate := current
+			patch := map[string]interface{}{}
+			for section, values := range map[string]map[string]interface{}{
+				"discovery": req.Discovery, "snmp": req.SNMP, "features": req.Features,
+				"spooler": req.Spooler, "logging": req.Logging, "web": req.Web,
+			} {
+				if values != nil {
+					patch[section] = values
+				}
+			}
+			data, err := json.Marshal(patch)
+			if err != nil {
+				http.Error(w, "invalid settings: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := json.Unmarshal(data, &candidate); err != nil {
+				http.Error(w, "invalid settings: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if issues := pmsettings.Validate(candidate); len(issues) > 0 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]interface{}{"error": "invalid settings", "issues": issues})
+				return
+			}
+			pmsettings.Sanitize(&candidate)
 
 			if req.Discovery != nil {
-				updated := current.Discovery
-				mapIntoStruct(req.Discovery, &updated)
+				updated := candidate.Discovery
 				if _, ok := req.Discovery["ranges_text"]; ok {
 					maxAddrs := 4096
 					res, err := agent.ParseRangeText(updated.RangesText, maxAddrs)
@@ -7631,13 +7688,25 @@ window.top.location.href = '/proxy/%s/';
 					}
 				}
 				discMap := structToMap(updated)
+				if settingsManager != nil && settingsManager.HasManagedSnapshot() && hasManagedSection("discovery") {
+					// Local display preferences must not overwrite the saved standalone configuration.
+					discMap = map[string]interface{}{}
+					if err := agentConfigStore.GetConfigValue("discovery_settings", &discMap); err != nil {
+						http.Error(w, "failed to load local discovery settings: "+err.Error(), http.StatusInternalServerError)
+						return
+					}
+					if discMap == nil {
+						discMap = map[string]interface{}{}
+					}
+					discMap["show_discover_button_anyway"] = updated.ShowDiscoverButtonAnyway
+					discMap["show_discovered_devices_anyway"] = updated.ShowDiscoveredDevicesAnyway
+				}
 				delete(discMap, "ranges_text")
 				delete(discMap, "detected_subnet")
 				if err := agentConfigStore.SetConfigValue("discovery_settings", discMap); err != nil {
 					http.Error(w, "failed to save discovery settings: "+err.Error(), http.StatusInternalServerError)
 					return
 				}
-				applyDiscoveryEffects(discMap)
 				current.Discovery = updated
 			}
 
@@ -7649,48 +7718,31 @@ window.top.location.href = '/proxy/%s/';
 			}
 
 			if req.SNMP != nil {
-				updated := current.SNMP
-				mapIntoStruct(req.SNMP, &updated)
+				updated := candidate.SNMP
 				envelope["snmp"] = structToMap(updated)
 				current.SNMP = updated
 			}
 
 			if req.Features != nil {
-				updated := current.Features
-				mapIntoStruct(req.Features, &updated)
+				updated := candidate.Features
 				envelope["features"] = structToMap(updated)
 				current.Features = updated
 			}
 
 			if req.Spooler != nil {
-				updated := current.Spooler
-				mapIntoStruct(req.Spooler, &updated)
+				updated := candidate.Spooler
 				envelope["spooler"] = structToMap(updated)
 				current.Spooler = updated
-				// Apply spooler settings immediately (restart worker if needed)
-				applySpoolerSettings(&current.Spooler)
 			}
 
 			if req.Logging != nil {
-				updated := current.Logging
-				mapIntoStruct(req.Logging, &updated)
+				updated := candidate.Logging
 				envelope["logging"] = structToMap(updated)
 				current.Logging = updated
-				// Apply log level immediately
-				if appLogger != nil && updated.Level != "" {
-					if lvl := logger.LevelFromString(updated.Level); lvl >= 0 {
-						appLogger.SetLevel(lvl)
-						appLogger.Info("Log level changed", "level", updated.Level)
-					}
-				}
-				// Apply debug flags
-				agent.SetDebugEnabled(updated.Level == "debug")
-				agent.SetDumpParseDebug(updated.DumpParseDebug)
 			}
 
 			if req.Web != nil {
-				updated := current.Web
-				mapIntoStruct(req.Web, &updated)
+				updated := candidate.Web
 				envelope["web"] = structToMap(updated)
 				current.Web = updated
 			}
@@ -7700,8 +7752,18 @@ window.top.location.href = '/proxy/%s/';
 				return
 			}
 
+			if req.Logging != nil {
+				if appLogger != nil && current.Logging.Level != "" {
+					if lvl := logger.LevelFromString(current.Logging.Level); lvl >= 0 {
+						appLogger.SetLevel(lvl)
+						appLogger.Info("Log level changed", "level", current.Logging.Level)
+					}
+				}
+				agent.SetDebugEnabled(current.Logging.Level == "debug")
+				agent.SetDumpParseDebug(current.Logging.DumpParseDebug)
+			}
 			pmsettings.Sanitize(&current)
-			applyFeaturesSettingsEffects(&current.Features)
+			applyEffectiveSettingsSnapshot(current)
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(current)
 			return

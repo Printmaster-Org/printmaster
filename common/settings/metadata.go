@@ -9,6 +9,7 @@ const (
 	FieldTypeTextarea FieldType = "textarea"
 	FieldTypeNumber   FieldType = "number"
 	FieldTypeSelect   FieldType = "select"
+	FieldTypePassword FieldType = "password"
 )
 
 // FieldMeta captures descriptive information about a configuration field for UIs and RBAC.
@@ -252,7 +253,7 @@ func DefaultSchema() Schema {
 			Path:        "snmp.community",
 			Type:        FieldTypeText,
 			Title:       "SNMP Community",
-			Description: "Community string used for SNMP v2 queries.",
+			Description: "Community string used for SNMP v1/v2c queries.",
 			Scope:       ScopeTenant,
 			EditableBy:  []EditableRole{RoleServerAdmin, RoleTenantAdmin},
 			Default:     defaults.SNMP.Community,
@@ -436,5 +437,29 @@ func DefaultSchema() Schema {
 		},
 	}
 
+	fields = append(fields,
+		FieldMeta{Path: "snmp.version", Type: FieldTypeSelect, Title: "SNMP Version", Description: "Protocol used for printer queries.", Scope: ScopeTenant, EditableBy: []EditableRole{RoleServerAdmin, RoleTenantAdmin}, Default: defaults.SNMP.Version, Enum: []string{"1", "2c", "3"}},
+		FieldMeta{Path: "snmp.security_level", Type: FieldTypeSelect, Title: "SNMPv3 Security Level", Description: "Authentication and privacy required for SNMPv3.", Scope: ScopeTenant, EditableBy: []EditableRole{RoleServerAdmin, RoleTenantAdmin}, Default: defaults.SNMP.SecurityLevel, Enum: []string{"", "noAuthNoPriv", "authNoPriv", "authPriv"}},
+		FieldMeta{Path: "snmp.username", Type: FieldTypeText, Title: "SNMPv3 Username", Scope: ScopeTenant, EditableBy: []EditableRole{RoleServerAdmin, RoleTenantAdmin}, Default: defaults.SNMP.Username},
+		FieldMeta{Path: "snmp.auth_protocol", Type: FieldTypeSelect, Title: "SNMPv3 Auth Protocol", Scope: ScopeTenant, EditableBy: []EditableRole{RoleServerAdmin, RoleTenantAdmin}, Default: defaults.SNMP.AuthProtocol, Enum: []string{"", "MD5", "SHA", "SHA224", "SHA256", "SHA384", "SHA512"}},
+		FieldMeta{Path: "snmp.auth_password", Type: FieldTypePassword, Title: "SNMPv3 Auth Password", Scope: ScopeTenant, EditableBy: []EditableRole{RoleServerAdmin, RoleTenantAdmin}, Default: defaults.SNMP.AuthPassword},
+		FieldMeta{Path: "snmp.priv_protocol", Type: FieldTypeSelect, Title: "SNMPv3 Privacy Protocol", Scope: ScopeTenant, EditableBy: []EditableRole{RoleServerAdmin, RoleTenantAdmin}, Default: defaults.SNMP.PrivProtocol, Enum: []string{"", "DES", "AES", "AES192", "AES256", "AES192C", "AES256C"}},
+		FieldMeta{Path: "snmp.priv_password", Type: FieldTypePassword, Title: "SNMPv3 Privacy Password", Scope: ScopeTenant, EditableBy: []EditableRole{RoleServerAdmin, RoleTenantAdmin}, Default: defaults.SNMP.PrivPassword},
+		FieldMeta{Path: "snmp.context_name", Type: FieldTypeText, Title: "SNMPv3 Context Name", Scope: ScopeTenant, EditableBy: []EditableRole{RoleServerAdmin, RoleTenantAdmin}, Default: defaults.SNMP.ContextName},
+	)
+	bounds := map[string][2]float64{
+		"discovery.concurrency":                     {1, 200},
+		"discovery.metrics_rescan_interval_minutes": {1, 1440},
+		"discovery.metrics_rescan_interval_seconds": {0, 300},
+		"snmp.timeout_ms":                           {500, 60000},
+		"snmp.retries":                              {0, 5},
+		"spooler.poll_interval_seconds":             {5, 300},
+	}
+	for i := range fields {
+		if limits, ok := bounds[fields[i].Path]; ok {
+			fields[i].Min = &limits[0]
+			fields[i].Max = &limits[1]
+		}
+	}
 	return Schema{Version: SchemaVersion, Fields: fields}
 }

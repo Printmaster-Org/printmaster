@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"printmaster/agent/scanner"
@@ -25,6 +26,7 @@ import (
 // regex for extracting asset tags from adminContact or similar fields. If empty,
 // ParsePDUs falls back to a generic heuristic regex.
 var AssetIDRegex string
+var assetIDRegexMu sync.RWMutex
 
 // A label must be separate from its value: protocol names such as SNMPv2
 // are not serial labels. Match the full Serial Number label before its value.
@@ -32,6 +34,8 @@ var serialLabelRE = regexp.MustCompile(`(?i)\b(?:sn|s/n|serial(?:\s*number)?)\b[
 
 // SetAssetIDRegex updates the package-level regex used during parsing.
 func SetAssetIDRegex(r string) {
+	assetIDRegexMu.Lock()
+	defer assetIDRegexMu.Unlock()
 	AssetIDRegex = r
 }
 
@@ -627,8 +631,11 @@ func parsePDUs(scanIP string, vars []gosnmp.SnmpPDU, meta *ScanMeta, logFn func(
 			debug.Steps = append(debug.Steps, fmt.Sprintf("adminContact: %q", adminContact))
 			if assetID == "" && adminContact != "" {
 				var assetRe *regexp.Regexp
-				if AssetIDRegex != "" {
-					if ar, err := regexp.Compile(AssetIDRegex); err == nil {
+				assetIDRegexMu.RLock()
+				pattern := AssetIDRegex
+				assetIDRegexMu.RUnlock()
+				if pattern != "" {
+					if ar, err := regexp.Compile(pattern); err == nil {
 						assetRe = ar
 					}
 				}

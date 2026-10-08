@@ -204,7 +204,7 @@ func scannerIPScanningAllowed() error {
 	if err := agentConfigStore.GetConfigValue("discovery_settings", &settings); err != nil {
 		return fmt.Errorf("read discovery settings before scanner request: %w", err)
 	}
-	if settings["ip_scanning_enabled"] == false {
+	if !loadUnifiedSettings(agentConfigStore).Discovery.IPScanningEnabled {
 		return errIPScanningDisabled
 	}
 	return nil
