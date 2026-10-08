@@ -180,7 +180,7 @@ var (
 	Version         = "dev"     // Semantic version (e.g., "0.1.0")
 	BuildTime       = "unknown" // Build timestamp
 	GitCommit       = "unknown" // Git commit hash
-	BuildType       = "dev"     // "dev" or "release"
+	BuildType       = "dev"     // "dev", "beta" or "release"
 	ProtocolVersion = "1"       // Agent-Server protocol version
 )
 
@@ -224,12 +224,15 @@ func selfUpdateChannel(configured string) string {
 	if BuildType == "dev" {
 		return "dev"
 	}
+	if BuildType == "beta" {
+		return "beta"
+	}
 	return "stable"
 }
 
 // shouldIncludePrerelease determines if prerelease/dev builds should be included in release intake.
 // If configured explicitly ("true"/"false"), use that; otherwise auto-detect from BuildType.
-// Dev builds automatically include prereleases, release builds don't.
+// Dev and Beta builds automatically include prereleases, Stable builds don't.
 func shouldIncludePrerelease(configured string) bool {
 	switch strings.ToLower(configured) {
 	case "true", "1", "yes":
@@ -237,8 +240,7 @@ func shouldIncludePrerelease(configured string) bool {
 	case "false", "0", "no":
 		return false
 	default:
-		// Auto-detect: dev builds include prereleases
-		return BuildType == "dev"
+		return BuildType == "dev" || BuildType == "beta"
 	}
 }
 

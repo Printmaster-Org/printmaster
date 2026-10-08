@@ -6,6 +6,7 @@ on:
     branches: [main]
     tags:
       - 'server-v[0-9]+.[0-9]+.[0-9]+'
+      - 'server-v[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+'
   workflow_dispatch: {}
 
 env:
@@ -82,21 +83,7 @@ jobs:
       id: version
       shell: bash
       run: |
-        BASE_VERSION=$(cat server/VERSION)
-        GIT_COMMIT=$(git rev-parse --short HEAD)
-        BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-        
-        # Determine if this is a release (tag push) or dev build (main branch push)
-        if [[ "${{ github.ref }}" == refs/tags/server-v* ]]; then
-          echo "server_version=$BASE_VERSION" >> $GITHUB_OUTPUT
-          echo "build_type=release" >> $GITHUB_OUTPUT
-        else
-          echo "server_version=${BASE_VERSION}-dev.${GIT_COMMIT}" >> $GITHUB_OUTPUT
-          echo "build_type=dev" >> $GITHUB_OUTPUT
-        fi
-        
-        echo "git_commit=$GIT_COMMIT" >> $GITHUB_OUTPUT
-        echo "build_time=$BUILD_TIME" >> $GITHUB_OUTPUT
+        bash scripts/release-version.sh server "$GITHUB_REF" >> "$GITHUB_OUTPUT"
     
     - name: Build Server
       working-directory: ./server
@@ -148,18 +135,7 @@ jobs:
     - name: Get version
       id: version
       run: |
-        BASE_VERSION=$(cat server/VERSION)
-        GIT_COMMIT=$(git rev-parse --short HEAD)
-        echo "git_commit=$GIT_COMMIT" >> $GITHUB_OUTPUT
-        echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-        # Dev builds from main branch, release builds from tags
-        if [[ "${{ github.ref }}" == refs/tags/server-v* ]]; then
-          echo "version=$BASE_VERSION" >> $GITHUB_OUTPUT
-          echo "build_type=release" >> $GITHUB_OUTPUT
-        else
-          echo "version=${BASE_VERSION}-dev.${GIT_COMMIT}" >> $GITHUB_OUTPUT
-          echo "build_type=dev" >> $GITHUB_OUTPUT
-        fi
+        bash scripts/release-version.sh server "$GITHUB_REF" >> "$GITHUB_OUTPUT"
     
     - name: Build and push by digest
       id: build
@@ -225,25 +201,20 @@ jobs:
     - name: Get version
       id: version
       run: |
-        echo "version=$(cat server/VERSION)" >> $GITHUB_OUTPUT
-        echo "git_commit=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-        # Determine if this is a release (tag push) or dev build (main branch push)
-        if [[ "${{ github.ref }}" == refs/tags/server-v* ]]; then
-          echo "is_release=true" >> $GITHUB_OUTPUT
-        else
-          echo "is_release=false" >> $GITHUB_OUTPUT
-        fi
+        bash scripts/release-version.sh server "$GITHUB_REF" >> "$GITHUB_OUTPUT"
     
     - name: Extract metadata
       id: meta
       uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
       with:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-server
+        flavor: latest=false
         tags: |
           type=semver,pattern={{version}},value=${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.is_release }}
           type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.is_release }}
           type=raw,value=latest,enable=${{ steps.version.outputs.is_release }}
-          type=raw,value=${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.is_release }}
+          type=raw,value=${{ steps.version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/server-v') }}
+          type=raw,value=beta,enable=${{ steps.version.outputs.is_beta }}
           type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
           type=raw,value=dev-${{ steps.version.outputs.git_commit }},enable=${{ github.ref == 'refs/heads/main' }}
         labels: |
@@ -289,12 +260,11 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        SERVER_VERSION=$(cat server/VERSION)
-        echo "version=$SERVER_VERSION" >> $GITHUB_OUTPUT
-        echo "tag=server-v$SERVER_VERSION" >> $GITHUB_OUTPUT
+        bash scripts/release-version.sh server "$GITHUB_REF" >> "$GITHUB_OUTPUT"
+        SERVER_VERSION="${GITHUB_REF#refs/tags/server-v}"
         
         # Extract major.minor for compatible agent matching
-        MAJOR_MINOR=$(echo "$SERVER_VERSION" | sed 's/\.[^.]*$//')
+        MAJOR_MINOR=$(echo "${SERVER_VERSION%%-*}" | cut -d. -f1,2)
         
         # Find latest stable agent with matching minor version (e.g., server 0.9.5 -> agent 0.9.*).
         # Dev tags (agent-vX.Y.Z-dev.sha) sort above their stable release, so exclude them.
@@ -332,6 +302,7 @@ jobs:
       run: |
         TAG_NAME="server-v${{ steps.version.outputs.version }}"
         VERSION="${{ steps.version.outputs.version }}"
+        VERSION="${VERSION%%-*}"
         
         # Parse version components
         MAJOR=$(echo "$VERSION" | cut -d. -f1)
@@ -343,16 +314,16 @@ jobs:
           # Major release (x.0.0) - compare against last major
           RELEASE_TYPE="major"
           PREV_MAJOR=$((MAJOR - 1))
-          LAST_TAG=$(git tag -l "server-v${PREV_MAJOR}.*" --sort=-version:refname | head -n 1)
+          LAST_TAG=$(git tag -l "server-v${PREV_MAJOR}.*" --sort=-version:refname | grep -E '^server-v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)
         elif [ "$PATCH" = "0" ]; then
           # Minor release (x.y.0) - compare against last minor's first tag
           RELEASE_TYPE="minor"
           PREV_MINOR=$((MINOR - 1))
-          LAST_TAG=$(git tag -l "server-v${MAJOR}.${PREV_MINOR}.*" --sort=-version:refname | head -n 1)
+          LAST_TAG=$(git tag -l "server-v${MAJOR}.${PREV_MINOR}.*" --sort=-version:refname | grep -E '^server-v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)
         else
           # Patch release - compare against previous patch
           RELEASE_TYPE="patch"
-          LAST_TAG=$(git tag -l "server-v*" --sort=-version:refname | grep -v "^${TAG_NAME}$" | head -n 1)
+          LAST_TAG=$(git tag -l "server-v*" --sort=-version:refname | grep -E '^server-v[0-9]+\.[0-9]+\.[0-9]+$' | grep -v "^${TAG_NAME}$" | head -n 1 || true)
         fi
         
         echo "Release type: $RELEASE_TYPE, comparing against: ${LAST_TAG:-none}"
@@ -509,7 +480,8 @@ jobs:
         files: artifacts/printmaster-*
         fail_on_unmatched_files: false
         draft: false
-        prerelease: false
+        prerelease: ${{ steps.version.outputs.is_beta == 'true' }}
+        make_latest: ${{ steps.version.outputs.is_beta != 'true' }}
 
     - name: Notify website about published Server release
       env:
@@ -554,6 +526,7 @@ jobs:
       id: version
       run: |
         BASE_VERSION=$(cat server/VERSION)
+        BASE_VERSION="${BASE_VERSION%%-*}"
         GIT_COMMIT=$(git rev-parse --short HEAD)
         DEV_VERSION="${BASE_VERSION}-dev.${GIT_COMMIT}"
         echo "version=$DEV_VERSION" >> $GITHUB_OUTPUT
@@ -636,7 +609,7 @@ jobs:
         draft: false
         prerelease: true
 
-    - name: Notify website about published Server beta release
+    - name: Notify website about published Server Dev release
       env:
         WEBHOOK_SECRET: ${{ secrets.PRINTMASTER_WEBSITE_RELEASE_SECRET }}
         RELEASE_TAG: ${{ steps.version.outputs.tag }}

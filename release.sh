@@ -14,12 +14,15 @@ SKIP_PUSH=0
 CREATE_GITHUB_RELEASE=0
 FAIL_ON_EMPTY_CHANGELOG=1
 DRY_RUN=0
+BETA=0
 RELEASE_COMMITTED=0
+VERSIONS_CHANGED=0
 
 usage() {
   cat <<EOF
-Usage: ./release.sh <agent|server|both> <patch|minor|major> [message]
-Options: --skip-tests, --skip-push, --create-github-release, --fail-on-empty-changelog=false, --dry-run
+Usage: ./release.sh <agent|server|both> <patch|minor|major|beta|stable> [message]
+Use --beta with patch/minor/major to start a Beta cycle, beta to advance it, stable to promote it.
+Options: --beta, --skip-tests, --skip-push, --create-github-release, --fail-on-empty-changelog=false, --dry-run
 EOF
 }
 
@@ -33,7 +36,7 @@ BUMP_TYPE="$2"
 shift 2
 
 case "$COMPONENT" in agent|server|both) ;; *) usage; exit 1 ;; esac
-case "$BUMP_TYPE" in patch|minor|major) ;; *) usage; exit 1 ;; esac
+case "$BUMP_TYPE" in patch|minor|major|beta|stable) ;; *) usage; exit 1 ;; esac
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -42,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     --create-github-release) CREATE_GITHUB_RELEASE=1 ;;
     --fail-on-empty-changelog=false) FAIL_ON_EMPTY_CHANGELOG=0 ;;
     --dry-run) DRY_RUN=1 ;;
+    --beta) BETA=1 ;;
     -m|--message)
       shift
       MESSAGE="${1:-}"
@@ -77,12 +81,12 @@ status() {
 on_error() {
   local exit_code=$? line="${BASH_LINENO[0]}" command="$BASH_COMMAND"
   status "Release failed at line $line: $command (exit $exit_code)" ERROR
-  if [[ "$DRY_RUN" == "0" && "$RELEASE_COMMITTED" == "0" ]]; then
+  if [[ "$DRY_RUN" == "0" && "$RELEASE_COMMITTED" == "0" && "$VERSIONS_CHANGED" == "1" ]]; then
     status "Reverting VERSION file changes..." WARN
     case "$COMPONENT" in
-      both) git -C "$PROJECT_ROOT" restore agent/VERSION server/VERSION >/dev/null 2>&1 || true ;;
-      server) git -C "$PROJECT_ROOT" restore server/VERSION >/dev/null 2>&1 || true ;;
-      agent) git -C "$PROJECT_ROOT" restore agent/VERSION >/dev/null 2>&1 || true ;;
+      both) git -C "$PROJECT_ROOT" restore --source=HEAD --staged --worktree agent/VERSION server/VERSION || status "VERSION rollback failed; inspect git status" ERROR ;;
+      server) git -C "$PROJECT_ROOT" restore --source=HEAD --staged --worktree server/VERSION || status "VERSION rollback failed; inspect git status" ERROR ;;
+      agent) git -C "$PROJECT_ROOT" restore --source=HEAD --staged --worktree agent/VERSION || status "VERSION rollback failed; inspect git status" ERROR ;;
     esac
   elif [[ "$RELEASE_COMMITTED" == "1" ]]; then
     status "Release commit already exists; VERSION files were not reverted" WARN
@@ -95,16 +99,29 @@ git_status() { git -C "$PROJECT_ROOT" status --porcelain; }
 git_clean() { [[ -z "$(git_status)" ]]; }
 
 update_version() {
-  local version_file="$1" bump_type="$2" current major minor patch new_version
+  local version_file="$1" bump_type="$2" current major minor patch new_version beta_number
   current="$(tr -d '\r\n' < "$version_file")"
-  [[ "$current" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || { echo "Invalid version format in $version_file: $current" >&2; exit 1; }
+  [[ "$current" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-beta\.([1-9][0-9]*))?$ ]] || { echo "Invalid version format in $version_file: $current" >&2; return 1; }
   major="${BASH_REMATCH[1]}"; minor="${BASH_REMATCH[2]}"; patch="${BASH_REMATCH[3]}"
+  beta_number="${BASH_REMATCH[5]:-}"
+  if [[ "$bump_type" == "beta" || "$bump_type" == "stable" ]]; then
+    [[ -n "$beta_number" && "$BETA" == "0" ]] || { echo "$bump_type requires an existing Beta version and no --beta flag" >&2; return 1; }
+  else
+    [[ -z "$beta_number" ]] || { echo "Use beta to advance or stable to promote the current Beta cycle" >&2; return 1; }
+  fi
   case "$bump_type" in
     major) major=$((major + 1)); minor=0; patch=0 ;;
     minor) minor=$((minor + 1)); patch=0 ;;
     patch) patch=$((patch + 1)) ;;
   esac
   new_version="$major.$minor.$patch"
+  if [[ "$bump_type" == "beta" ]]; then
+    new_version+="-beta.$((beta_number + 1))"
+  elif [[ "$BETA" == "1" ]]; then
+    new_version+="-beta.1"
+  fi
+  git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/tags/$(basename "$(dirname "$version_file")")-v$new_version" &&
+    { echo "Release tag already exists for $new_version" >&2; return 1; }
   if [[ "$DRY_RUN" == "0" ]]; then
     printf '%s' "$new_version" > "$version_file"
   fi
@@ -134,6 +151,10 @@ build_release_binary() {
 
 invoke_tests() {
   local component="$1"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    status "[DRY RUN] Would test $component" WARN
+    return 0
+  fi
   if [[ "$SKIP_TESTS" == "1" ]]; then
     status "Skipping tests (--skip-tests flag)" WARN
     return 0
@@ -145,7 +166,7 @@ invoke_tests() {
 get_changelog_since_last_tag() {
   local component="$1" tag_pattern last_tag commit_range line message hash
   tag_pattern="${component}-v*"
-  last_tag="$(git -C "$PROJECT_ROOT" tag -l "$tag_pattern" --sort=-version:refname | head -n 1 || true)"
+  last_tag="$(git -C "$PROJECT_ROOT" tag -l "$tag_pattern" --sort=-version:refname | grep -E "^${component}-v[0-9]+\.[0-9]+\.[0-9]+$" | head -n 1 || true)"
   if [[ -z "$last_tag" ]]; then
     commit_range="HEAD"
   else
@@ -199,7 +220,30 @@ save_commit_and_tag() {
   status "Committing version bump..." STEP
   if [[ "$DRY_RUN" == "1" ]]; then
     status "[DRY RUN] Would commit VERSION files" WARN
-    status "[DRY RUN] Would tag as v$version" WARN
+    if [[ "$component" == "both" ]]; then
+      status "[DRY RUN] Would tag as agent-v${agent_versions[1]} and server-v${server_versions[1]}" WARN
+    else
+      status "[DRY RUN] Would tag as $component-v$version" WARN
+    fi
+    return 0
+  fi
+  if [[ "$version" == *-beta.* ]]; then
+    local components=("$component") item item_version
+    [[ "$component" != "both" ]] || components=(agent server)
+    local files=()
+    for item in "${components[@]}"; do files+=("$item/VERSION"); done
+    git -C "$PROJECT_ROOT" add "${files[@]}"
+    commit_msg="${MESSAGE:-chore: Release Beta}"
+    for item in "${components[@]}"; do
+      item_version="$(tr -d '\r\n' < "$PROJECT_ROOT/$item/VERSION")"
+      commit_msg+=" - $item v$item_version"
+    done
+    git -C "$PROJECT_ROOT" commit -m "$commit_msg" -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+    RELEASE_COMMITTED=1
+    for item in "${components[@]}"; do
+      item_version="$(tr -d '\r\n' < "$PROJECT_ROOT/$item/VERSION")"
+      git -C "$PROJECT_ROOT" tag -a "$item-v$item_version" -m "$item Beta v$item_version"
+    done
     return 0
   fi
 
@@ -213,7 +257,7 @@ save_commit_and_tag() {
       else
         commit_msg="chore: Release agent v$agent_ver, server v$server_ver"
       fi
-      git -C "$PROJECT_ROOT" commit -m "$commit_msg"
+      git -C "$PROJECT_ROOT" commit -m "$commit_msg" -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
       RELEASE_COMMITTED=1
       commit_sha="$(git -C "$PROJECT_ROOT" rev-parse --verify HEAD)"
       git -C "$PROJECT_ROOT" tag -a "agent-v$agent_ver" "$commit_sha" -m "Agent Release v$agent_ver"
@@ -236,7 +280,7 @@ save_commit_and_tag() {
       else
         commit_msg="chore: Release server v$version"
       fi
-      git -C "$PROJECT_ROOT" commit -m "$commit_msg"
+      git -C "$PROJECT_ROOT" commit -m "$commit_msg" -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
       RELEASE_COMMITTED=1
       commit_sha="$(git -C "$PROJECT_ROOT" rev-parse --verify HEAD)"
       git -C "$PROJECT_ROOT" tag -a "server-v$version" -m "Server Release v$version"
@@ -253,7 +297,7 @@ save_commit_and_tag() {
       else
         commit_msg="chore: Release agent v$version"
       fi
-      git -C "$PROJECT_ROOT" commit -m "$commit_msg"
+      git -C "$PROJECT_ROOT" commit -m "$commit_msg" -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
       RELEASE_COMMITTED=1
       commit_sha="$(git -C "$PROJECT_ROOT" rev-parse --verify HEAD)"
       git -C "$PROJECT_ROOT" tag -a "agent-v$version" -m "Agent Release v$version"
@@ -278,6 +322,15 @@ push_release() {
     return 0
   fi
   git -C "$PROJECT_ROOT" push
+  if [[ "$final_version" == *-beta.* ]]; then
+    local components=("$COMPONENT") item item_version
+    [[ "$COMPONENT" != "both" ]] || components=(agent server)
+    for item in "${components[@]}"; do
+      item_version="$(tr -d '\r\n' < "$PROJECT_ROOT/$item/VERSION")"
+      git -C "$PROJECT_ROOT" push origin "$item-v$item_version"
+    done
+    return 0
+  fi
   case "$COMPONENT" in
     both)
       agent_ver="$(tr -d '\r\n' < "$PROJECT_ROOT/agent/VERSION")"
@@ -344,7 +397,11 @@ create_github_release_component() {
   local component="$1" version="$2" tag title changelog release_notes
   tag="${component}-v$version"
   title="${component^} v$version"
-  changelog="$(get_changelog_since_last_tag "$component")"
+  if [[ "$COMPONENT" == "both" ]]; then
+    if [[ "$component" == "agent" ]]; then changelog="$agent_changelog"; else changelog="$server_changelog"; fi
+  else
+    changelog="$changelog_content"
+  fi
   release_notes=$(cat <<EOF
 ## PrintMaster ${component^} v$version
 
@@ -356,10 +413,13 @@ $changelog
 
 Docker:
 docker pull ghcr.io/printmaster-org/printmaster-${component}:$version
-docker pull ghcr.io/printmaster-org/printmaster-${component}:latest
 EOF
 )
-  gh release create "$tag" --title "$title" --notes "$release_notes" --latest
+  if [[ "$version" == *-beta.* ]]; then
+    gh release create "$tag" --title "$title" --notes "$release_notes" --prerelease --latest=false
+  else
+    gh release create "$tag" --title "$title" --notes "$release_notes" --latest
+  fi
 }
 
 main() {
@@ -375,12 +435,12 @@ main() {
   trap on_error ERR
 
   status "Running pre-flight checks..." STEP
-  [[ -d "$PROJECT_ROOT/.git" ]] || { echo "Not in a git repository" >&2; exit 1; }
+  git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null
   if ! git_clean; then
     status "Uncommitted changes detected:" WARN
     git_status | sed 's/^/  /'
-    read -r -p $'Continue anyway? (y/N) ' continue_answer
-    [[ "$continue_answer" == "y" ]] || exit 1
+    status "Commit or stash changes before releasing" ERROR
+    exit 1
   else
     status "Working directory is clean" INFO
   fi
@@ -394,19 +454,26 @@ main() {
   status "Bumping version ($BUMP_TYPE)..." STEP
   case "$COMPONENT" in
     both)
-      readarray -t agent_versions < <(update_version "$PROJECT_ROOT/agent/VERSION" "$BUMP_TYPE")
-      readarray -t server_versions < <(update_version "$PROJECT_ROOT/server/VERSION" "$BUMP_TYPE")
+      agent_result="$(update_version "$PROJECT_ROOT/agent/VERSION" "$BUMP_TYPE")"
+      VERSIONS_CHANGED=1
+      server_result="$(update_version "$PROJECT_ROOT/server/VERSION" "$BUMP_TYPE")"
+      readarray -t agent_versions <<< "$agent_result"
+      readarray -t server_versions <<< "$server_result"
       status "Agent: ${agent_versions[0]} → ${agent_versions[1]}" INFO
       status "Server: ${server_versions[0]} → ${server_versions[1]}" INFO
       final_version="${agent_versions[1]}"
       ;;
     server)
-      readarray -t version_info < <(update_version "$PROJECT_ROOT/server/VERSION" "$BUMP_TYPE")
+      version_result="$(update_version "$PROJECT_ROOT/server/VERSION" "$BUMP_TYPE")"
+      readarray -t version_info <<< "$version_result"
+      VERSIONS_CHANGED=1
       status "Server: ${version_info[0]} → ${version_info[1]}" INFO
       final_version="${version_info[1]}"
       ;;
     agent)
-      readarray -t version_info < <(update_version "$PROJECT_ROOT/agent/VERSION" "$BUMP_TYPE")
+      version_result="$(update_version "$PROJECT_ROOT/agent/VERSION" "$BUMP_TYPE")"
+      readarray -t version_info <<< "$version_result"
+      VERSIONS_CHANGED=1
       status "Agent: ${version_info[0]} → ${version_info[1]}" INFO
       final_version="${version_info[1]}"
       ;;
@@ -436,10 +503,10 @@ main() {
 
   if [[ "$FAIL_ON_EMPTY_CHANGELOG" == "1" ]]; then
     if [[ "$COMPONENT" == "both" ]]; then
-      is_changelog_meaningful "$agent_changelog" || { [[ "$DRY_RUN" == "1" ]] && status "[DRY RUN] Agent changelog would be empty" WARN || exit 1; }
-      is_changelog_meaningful "$server_changelog" || { [[ "$DRY_RUN" == "1" ]] && status "[DRY RUN] Server changelog would be empty" WARN || exit 1; }
+      is_changelog_meaningful "$agent_changelog" || { [[ "$DRY_RUN" == "1" ]] && status "[DRY RUN] Agent changelog would be empty" WARN || { status "Agent changelog is empty" ERROR; return 1; }; }
+      is_changelog_meaningful "$server_changelog" || { [[ "$DRY_RUN" == "1" ]] && status "[DRY RUN] Server changelog would be empty" WARN || { status "Server changelog is empty" ERROR; return 1; }; }
     else
-      is_changelog_meaningful "$changelog" || { [[ "$DRY_RUN" == "1" ]] && status "[DRY RUN] Changelog would be empty" WARN || exit 1; }
+      is_changelog_meaningful "$changelog" || { [[ "$DRY_RUN" == "1" ]] && status "[DRY RUN] Changelog would be empty" WARN || { status "Changelog is empty" ERROR; return 1; }; }
     fi
   else
     status "FailOnEmptyChangelog disabled - continuing even if changelog is empty" WARN
@@ -447,6 +514,7 @@ main() {
 
   save_commit_and_tag "$COMPONENT" "$final_version"
   push_release
+  changelog_content="${changelog:-}"
   create_github_release
 
   printf '\n╔══════════════════════════════════════════════════════╗\n'
@@ -454,8 +522,8 @@ main() {
   printf '╚══════════════════════════════════════════════════════╝\n\n'
 
   if [[ "$COMPONENT" == "both" ]]; then
-    status "Agent Version: $(tr -d '\r\n' < "$PROJECT_ROOT/agent/VERSION")" INFO
-    status "Server Version: $(tr -d '\r\n' < "$PROJECT_ROOT/server/VERSION")" INFO
+    status "Agent Version: ${agent_versions[1]}" INFO
+    status "Server Version: ${server_versions[1]}" INFO
   else
     status "Version: $final_version" INFO
   fi

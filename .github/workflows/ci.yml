@@ -6,7 +6,9 @@ on:
     branches: [main]
     tags:
       - 'agent-v[0-9]+.[0-9]+.[0-9]+'
+      - 'agent-v[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+'
       - 'server-v[0-9]+.[0-9]+.[0-9]+'
+      - 'server-v[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+'
   pull_request:
     branches: [main]
   workflow_dispatch: {}

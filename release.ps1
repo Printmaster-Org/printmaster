@@ -1,7 +1,7 @@
 # PrintMaster Release Script
 # Usage: .\release.ps1 [component] [bump-type]
 # Components: agent, server, both
-# Bump Types: patch, minor, major
+# Bump Types: patch, minor, major, beta (advance), stable (promote)
 # Example: .\release.ps1 agent patch
 
 param(
@@ -10,7 +10,7 @@ param(
     [string]$Component,
     
     [Parameter(Position=1, Mandatory=$true)]
-    [ValidateSet('patch', 'minor', 'major')]
+    [ValidateSet('patch', 'minor', 'major', 'beta', 'stable')]
     [string]$BumpType,
     
     [Parameter(Position=2)]
@@ -29,11 +29,17 @@ param(
     [bool]$FailOnEmptyChangelog = $true,
 
     [Parameter()]
+    [switch]$Beta,
+
+    [Parameter()]
     [switch]$DryRun
 )
 
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = $PSScriptRoot
+Set-Location $ProjectRoot
+$ReleaseCommitted = $false
+$VersionsChanged = $false
 
 # Reset test-pass environment variables at the start of a release
 # These are used by build.ps1 to skip redundant tests when building multiple components
@@ -95,13 +101,19 @@ function Update-Version {
     
     $currentVersion = (Get-Content $VersionFile -Raw).Trim()
     
-    if ($currentVersion -notmatch '^(\d+)\.(\d+)\.(\d+)$') {
-        throw "Invalid version format in $VersionFile : $currentVersion (expected x.y.z)"
+    if ($currentVersion -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-beta\.([1-9][0-9]*))?$') {
+        throw "Invalid version format in $VersionFile : $currentVersion (expected x.y.z or x.y.z-beta.N)"
     }
     
     $major = [int]$Matches[1]
     $minor = [int]$Matches[2]
     $patch = [int]$Matches[3]
+    $betaNumber = $Matches[5]
+    if ($BumpType -in @('beta', 'stable')) {
+        if (-not $betaNumber -or $Beta) { throw "$BumpType requires an existing Beta version and no -Beta flag" }
+    } elseif ($betaNumber) {
+        throw "Use beta to advance or stable to promote the current Beta cycle"
+    }
     
     switch ($BumpType) {
         'major' {
@@ -119,9 +131,18 @@ function Update-Version {
     }
     
     $newVersion = "$major.$minor.$patch"
+    if ($BumpType -eq 'beta') {
+        $newVersion += "-beta.$([int]$betaNumber + 1)"
+    } elseif ($Beta) {
+        $newVersion += "-beta.1"
+    }
+    $componentName = Split-Path (Split-Path $VersionFile -Parent) -Leaf
+    git show-ref --verify --quiet "refs/tags/$componentName-v$newVersion"
+    if ($LASTEXITCODE -eq 0) { throw "Release tag already exists for $newVersion" }
     
     if (-not $DryRun) {
         Set-Content -Path $VersionFile -Value $newVersion -NoNewline
+        $script:VersionsChanged = $true
     }
     
     return @{
@@ -134,6 +155,10 @@ function Build-Component {
     param([string]$Component, [string]$Version)
     
     Write-Status "Building $Component..." "STEP"
+    if ($DryRun) {
+        Write-Status "[DRY RUN] Would build $Component v$Version" "WARN"
+        return
+    }
     
     # Build with -Release flag for optimized, stripped binaries
     if ($VerbosePreference -eq 'Continue') {
@@ -162,6 +187,10 @@ function Build-Component {
 
 function Invoke-Tests {
     param([string]$Component)
+    if ($DryRun) {
+        Write-Status "[DRY RUN] Would test $Component" "WARN"
+        return
+    }
     
     if ($SkipTests) {
         Write-Status "Skipping tests (--SkipTests flag)" "WARN"
@@ -198,7 +227,11 @@ function Save-CommitAndTag {
     
     if ($DryRun) {
         Write-Status "[DRY RUN] Would commit VERSION files" "WARN"
-        Write-Status "[DRY RUN] Would tag as v$Version" "WARN"
+        if ($Component -eq 'both') {
+            Write-Status "[DRY RUN] Would tag as agent-v$($agentVersion.New) and server-v$($serverVersion.New)" "WARN"
+        } else {
+            Write-Status "[DRY RUN] Would tag as $Component-v$Version" "WARN"
+        }
         return
     }
     
@@ -217,7 +250,7 @@ function Save-CommitAndTag {
         } else {
             $commitMsg = "chore: Release agent v$agentVer, server v$serverVer"
         }
-        git commit -m $commitMsg 2>&1
+        git commit -m $commitMsg -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>" 2>&1
         if ($LASTEXITCODE -ne 0) { throw "Git commit failed" }
         
         # Capture the commit SHA - both tags will point here
@@ -231,7 +264,7 @@ function Save-CommitAndTag {
         } else {
             $commitMsg = "chore: Release server v$Version"
         }
-        git commit -m $commitMsg 2>&1
+        git commit -m $commitMsg -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>" 2>&1
         if ($LASTEXITCODE -ne 0) { throw "Git commit failed" }
         Write-Status "Committed: $commitMsg" "INFO"
     } else {
@@ -241,11 +274,22 @@ function Save-CommitAndTag {
         } else {
             $commitMsg = "chore: Release agent v$Version"
         }
-        git commit -m $commitMsg 2>&1
+        git commit -m $commitMsg -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>" 2>&1
         if ($LASTEXITCODE -ne 0) { throw "Git commit failed" }
         Write-Status "Committed: $commitMsg" "INFO"
     }
     
+    $script:ReleaseCommitted = $true
+    if ($Version -like '*-beta.*') {
+        $components = if ($Component -eq 'both') { @('agent', 'server') } else { @($Component) }
+        foreach ($item in $components) {
+            $itemVersion = (Get-Content (Join-Path $ProjectRoot "$item\VERSION") -Raw).Trim()
+            git tag -a "$item-v$itemVersion" -m "$item Beta v$itemVersion"
+            if ($LASTEXITCODE -ne 0) { throw "Git tag failed for $item" }
+        }
+        return
+    }
+
     # Tag - create separate tags for each component
     if ($Component -eq 'both') {
         # Get both versions from files
@@ -401,6 +445,8 @@ function Push-Release {
         }
     }
     
+    if ($finalVersion -like '*-beta.*') { return }
+
     # Now force-push floating/moving tags (these don't trigger CD, just for convenience)
     Write-Status "Updating floating tags..." "INFO"
     if ($Component -eq 'both' -or $Component -eq 'agent') {
@@ -474,7 +520,7 @@ function Get-ChangelogSinceLastTag {
     
     # Get the last tag for this component
     $tagPattern = if ($Component -eq 'server') { 'server-v*' } else { 'agent-v*' }
-    $lastTag = git tag -l $tagPattern --sort=-version:refname | Select-Object -First 1
+    $lastTag = git tag -l $tagPattern --sort=-version:refname | Where-Object { $_ -match "^$Component-v[0-9]+\.[0-9]+\.[0-9]+$" } | Select-Object -First 1
     
     if (-not $lastTag) {
         Write-Status "No previous tag found - this appears to be the first release" "INFO"
@@ -635,6 +681,7 @@ function New-GitHubRelease {
     }
     
     # Generate release notes
+    $dockerChannel = if ($Version -like '*-beta.*') { 'beta' } else { 'latest' }
     $releaseNotes = @"
 ## PrintMaster $Component v$Version
 
@@ -649,14 +696,14 @@ $compatibilityNote
 ``````bash
 # Pull the latest image (supports amd64, arm64, arm/v7)
 docker pull ghcr.io/printmaster-org/printmaster-${Component}:${Version}
-docker pull ghcr.io/printmaster-org/printmaster-${Component}:latest
+docker pull ghcr.io/printmaster-org/printmaster-${Component}:$dockerChannel
 
 # Run the container
 docker run -d \
   --name printmaster-${Component} \
   -p 9090:9090 \
   -v printmaster-data:/var/lib/printmaster/${Component} \
-  ghcr.io/printmaster-org/printmaster-${Component}:latest
+  ghcr.io/printmaster-org/printmaster-${Component}:$dockerChannel
 ``````
 
 #### Binary Installation
@@ -677,10 +724,11 @@ docker run -d \
     
     # Create release with gh CLI
         try {
+        $releaseFlags = if ($Version -like '*-beta.*') { @('--prerelease', '--latest=false') } else { @('--latest') }
         $null = gh release create $Tag `
             --title $Title `
             --notes $releaseNotes `
-            --latest 2>&1
+            @releaseFlags 2>&1
         
         if ($LASTEXITCODE -ne 0) {
             throw "GitHub release creation failed"
@@ -716,8 +764,8 @@ try {
     Write-Status "Running pre-flight checks..." "STEP"
     
     # Check if we're in a git repository
-    $isGitRepo = Test-Path (Join-Path $ProjectRoot ".git")
-    if (-not $isGitRepo) {
+    git rev-parse --is-inside-work-tree | Out-Null
+    if ($LASTEXITCODE -ne 0) {
         throw "Not in a git repository"
     }
     
@@ -726,10 +774,7 @@ try {
         Write-Status "Uncommitted changes detected:" "WARN"
         Get-GitStatus | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
         
-        $continue = Read-Host "`nContinue anyway? (y/N)"
-        if ($continue -ne 'y') {
-            throw "Release cancelled - commit or stash changes first"
-        }
+        throw "Release cancelled - commit or stash changes first"
     } else {
         Write-Status "Working directory is clean" "INFO"
     }
@@ -777,10 +822,8 @@ try {
     
     # Build release binaries
     if ($Component -eq 'both') {
-        $agentVersionString = Get-Content (Join-Path $ProjectRoot 'agent\VERSION') -Raw
-        $serverVersionString = Get-Content (Join-Path $ProjectRoot 'server\VERSION') -Raw
-        Build-Component -Component 'agent' -Version $agentVersionString.Trim()
-        Build-Component -Component 'server' -Version $serverVersionString.Trim()
+        Build-Component -Component 'agent' -Version $agentVersion.New
+        Build-Component -Component 'server' -Version $serverVersion.New
     } else {
         Build-Component -Component $Component -Version $finalVersion
     }
@@ -889,15 +932,15 @@ catch {
     # Automatically revert VERSION file changes
     Write-Status "Reverting VERSION file changes..." "WARN"
     
-    if (-not $DryRun) {
+    if (-not $DryRun -and $VersionsChanged -and -not $ReleaseCommitted) {
         if ($Component -eq 'both') {
-            git restore agent/VERSION server/VERSION 2>$null
+            git restore --source=HEAD --staged --worktree agent/VERSION server/VERSION 2>$null
             Write-Status "Reverted VERSION files for agent and server" "INFO"
         } elseif ($Component -eq 'server') {
-            git restore server/VERSION 2>$null
+            git restore --source=HEAD --staged --worktree server/VERSION 2>$null
             Write-Status "Reverted VERSION file for server" "INFO"
         } else {
-            git restore agent/VERSION 2>$null
+            git restore --source=HEAD --staged --worktree agent/VERSION 2>$null
             Write-Status "Reverted VERSION file for agent" "INFO"
         }
     }

@@ -510,7 +510,7 @@ function Build-Component {
         if ($IsRelease) {
             $versionString = "$version"
         } else {
-            $versionString = "$version.$buildNumber-dev"
+            $versionString = "$(($version -split '-')[0]).$buildNumber-dev"
             if ($script:BranchSuffix) { $versionString = "$versionString$script:BranchSuffix" }
         }
         
@@ -533,7 +533,7 @@ function Build-Component {
         if (-not $gitCommit) { $gitCommit = "unknown" }
         
         # Build ldflags for version injection
-        $buildTypeString = if ($IsRelease) { "release" } else { "dev" }
+        $buildTypeString = if (-not $IsRelease) { "dev" } elseif ($version -like '*-beta.*') { "beta" } else { "release" }
         $ldflags = "-X 'main.Version=$versionString' -X 'main.BuildTime=$buildTime' -X 'main.GitCommit=$gitCommit' -X 'main.BuildType=$buildTypeString' -X 'main.GitBranch=$script:GitBranch'"
         
         # Generate Windows version resource (only on Windows)

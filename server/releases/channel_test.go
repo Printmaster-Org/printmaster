@@ -25,6 +25,22 @@ func TestReleaseChannelClassification(t *testing.T) {
 	}
 }
 
+func TestBetaReleaseAssetNames(t *testing.T) {
+	t.Parallel()
+	for _, asset := range []string{
+		"printmaster-agent-v0.32.0-beta.1-linux-amd64",
+		"printmaster-agent_0.32.0-beta.1_amd64.deb",
+		"printmaster-agent-0.32.0-beta.1-1.fc44.x86_64.rpm",
+	} {
+		t.Run(asset, func(t *testing.T) {
+			desc, ok := buildDescriptor("agent", "0.32.0-beta.1", asset)
+			if !ok || desc.version != "0.32.0-beta.1" || desc.platform != "linux" || desc.arch != "amd64" {
+				t.Fatalf("unexpected Beta descriptor: %+v, matched=%v", desc, ok)
+			}
+		})
+	}
+}
+
 func TestSyncRepairsCachedBetaManifestAndExcludesItFromStable(t *testing.T) {
 	t.Parallel()
 	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "releases.db"))

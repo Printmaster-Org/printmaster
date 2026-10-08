@@ -235,7 +235,7 @@ build_component() {
   if [[ "$RELEASE" == "1" ]]; then
     version_string="$version"
   else
-    version_string="$version.${build_number}-dev"
+    version_string="${version%%-*}.${build_number}-dev"
     local branch_suffix
     branch_suffix="${BRANCH_SUFFIX:-}"
     version_string+="$branch_suffix"
@@ -257,6 +257,7 @@ build_component() {
   git_commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
   build_type="${RELEASE:+release}"
   [[ "$RELEASE" == "1" ]] || build_type="dev"
+  if [[ "$RELEASE" == "1" && "$version" == *-beta.* ]]; then build_type="beta"; fi
 
   ldflags=(
     -X "main.Version=$version_string"

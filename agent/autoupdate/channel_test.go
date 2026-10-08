@@ -75,6 +75,7 @@ func TestManagedChannelUpdatesChecksAndStatusWithoutRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	for _, channel := range []string{"dev", "beta", "stable"} {
 		managedChannel = channel
 		if manager.Status().Channel != channel {
@@ -93,5 +94,31 @@ func TestManagedChannelUpdatesChecksAndStatusWithoutRestart(t *testing.T) {
 	managedChannel = ""
 	if manager.Status().Channel != "stable" {
 		t.Fatal("empty managed selection did not use Agent config")
+	}
+}
+
+func TestBetaReleaseVersionOrdering(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		current string
+		target  string
+		newer   bool
+	}{
+		{"0.31.1", "0.32.0-beta.1", true},
+		{"0.32.0-beta.1", "0.32.0-beta.2", true},
+		{"0.32.0-beta.9", "0.32.0-beta.10", true},
+		{"0.32.0-beta.2", "0.32.0", true},
+		{"0.32.0", "0.32.0-beta.2", false},
+	} {
+		t.Run(tc.current+"->"+tc.target, func(t *testing.T) {
+			client := &channelTestClient{}
+			manager, err := NewManager(Options{Enabled: true, CurrentVersion: tc.current, Channel: "beta", DataDir: t.TempDir(), ServerClient: client})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := manager.isUpdateNeeded(&UpdateManifest{Version: tc.target}); got != tc.newer {
+				t.Fatalf("update needed = %v, want %v", got, tc.newer)
+			}
+		})
 	}
 }

@@ -13,6 +13,7 @@ AGENT_DIR="$SCRIPT_DIR"
 # Get version from VERSION file or argument
 VERSION="${1:-$(cat "$AGENT_DIR/VERSION")}"
 ARCH="${2:-amd64}"
+PACKAGE_VERSION="${VERSION/-beta./~beta.}"
 
 # Map Go arch to Debian arch
 case "$ARCH" in
@@ -103,7 +104,7 @@ INSTALLED_SIZE=$(du -sk "$PKG_DIR" | cut -f1)
 # Create control file
 cat > "$PKG_DIR/DEBIAN/control" << EOF
 Package: $PACKAGE_NAME
-Version: $VERSION
+Version: $PACKAGE_VERSION
 Architecture: $DEB_ARCH
 Maintainer: PrintMaster Team <printmaster@example.com>
 Installed-Size: $INSTALLED_SIZE

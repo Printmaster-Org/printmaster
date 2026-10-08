@@ -60,7 +60,7 @@ mkdir -p "$BUILD_ROOT"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
 cp "$AGENT_DIR/fedora/printmaster-agent.spec" "$BUILD_ROOT/SPECS/"
 
 # Export environment variables for spec file
-export PRINTMASTER_VERSION="$VERSION"
+export PRINTMASTER_VERSION="${VERSION/-beta./~beta.}"
 PRINTMASTER_BINARY="$(realpath "$BINARY")"
 export PRINTMASTER_BINARY
 
@@ -72,7 +72,11 @@ rpmbuild --define "_topdir $BUILD_ROOT" \
 
 # Move RPM to dist directory
 mkdir -p "$AGENT_DIR/dist"
-find "$BUILD_ROOT/RPMS" -name "*.rpm" -exec cp {} "$AGENT_DIR/dist/" \;
+while IFS= read -r package; do
+    filename="$(basename "$package")"
+    filename="${filename/printmaster-agent-$PRINTMASTER_VERSION-/printmaster-agent-$VERSION-}"
+    cp "$package" "$AGENT_DIR/dist/$filename"
+done < <(find "$BUILD_ROOT/RPMS" -name "*.rpm")
 
 # List what we built
 echo ""

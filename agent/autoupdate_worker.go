@@ -136,11 +136,13 @@ func startAutoUpdateManager(
 
 	// Determine update channel:
 	// 1. If explicitly configured, use that
-	// 2. Otherwise, derive from build type (dev builds use "dev" channel, releases use "stable")
+	// 2. Otherwise, derive from build type.
 	channel := configuredChannel
 	if channel == "" {
 		if buildType == "dev" {
 			channel = "dev"
+		} else if buildType == "beta" {
+			channel = "beta"
 		} else {
 			channel = "stable"
 		}

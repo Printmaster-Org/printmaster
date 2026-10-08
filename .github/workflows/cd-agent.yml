@@ -6,6 +6,7 @@ on:
     branches: [main]
     tags:
       - 'agent-v[0-9]+.[0-9]+.[0-9]+'
+      - 'agent-v[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+'
   workflow_dispatch: {}
 
 env:
@@ -82,21 +83,7 @@ jobs:
       id: version
       shell: bash
       run: |
-        BASE_VERSION=$(cat agent/VERSION)
-        GIT_COMMIT=$(git rev-parse --short HEAD)
-        BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-        
-        # Determine if this is a release (tag push) or dev build (main branch push)
-        if [[ "${{ github.ref }}" == refs/tags/agent-v* ]]; then
-          echo "agent_version=$BASE_VERSION" >> $GITHUB_OUTPUT
-          echo "build_type=release" >> $GITHUB_OUTPUT
-        else
-          echo "agent_version=${BASE_VERSION}-dev.${GIT_COMMIT}" >> $GITHUB_OUTPUT
-          echo "build_type=dev" >> $GITHUB_OUTPUT
-        fi
-        
-        echo "git_commit=$GIT_COMMIT" >> $GITHUB_OUTPUT
-        echo "build_time=$BUILD_TIME" >> $GITHUB_OUTPUT
+        bash scripts/release-version.sh agent "$GITHUB_REF" >> "$GITHUB_OUTPUT"
     
     - name: Build Agent
       working-directory: ./agent
@@ -230,18 +217,7 @@ jobs:
     - name: Get version
       id: version
       run: |
-        BASE_VERSION=$(cat agent/VERSION)
-        GIT_COMMIT=$(git rev-parse --short HEAD)
-        echo "git_commit=$GIT_COMMIT" >> $GITHUB_OUTPUT
-        echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-        # Dev builds from main branch, release builds from tags
-        if [[ "${{ github.ref }}" == refs/tags/agent-v* ]]; then
-          echo "version=$BASE_VERSION" >> $GITHUB_OUTPUT
-          echo "build_type=release" >> $GITHUB_OUTPUT
-        else
-          echo "version=${BASE_VERSION}-dev.${GIT_COMMIT}" >> $GITHUB_OUTPUT
-          echo "build_type=dev" >> $GITHUB_OUTPUT
-        fi
+        bash scripts/release-version.sh agent "$GITHUB_REF" >> "$GITHUB_OUTPUT"
     
     - name: Build and push by digest
       id: build
@@ -307,25 +283,20 @@ jobs:
     - name: Get version
       id: version
       run: |
-        echo "version=$(cat agent/VERSION)" >> $GITHUB_OUTPUT
-        echo "git_commit=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-        # Determine if this is a release (tag push) or dev build (main branch push)
-        if [[ "${{ github.ref }}" == refs/tags/agent-v* ]]; then
-          echo "is_release=true" >> $GITHUB_OUTPUT
-        else
-          echo "is_release=false" >> $GITHUB_OUTPUT
-        fi
+        bash scripts/release-version.sh agent "$GITHUB_REF" >> "$GITHUB_OUTPUT"
     
     - name: Extract metadata
       id: meta
       uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
       with:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-agent
+        flavor: latest=false
         tags: |
           type=semver,pattern={{version}},value=${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.is_release }}
           type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.is_release }}
           type=raw,value=latest,enable=${{ steps.version.outputs.is_release }}
-          type=raw,value=${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.is_release }}
+          type=raw,value=${{ steps.version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/agent-v') }}
+          type=raw,value=beta,enable=${{ steps.version.outputs.is_beta }}
           type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
           type=raw,value=dev-${{ steps.version.outputs.git_commit }},enable=${{ github.ref == 'refs/heads/main' }}
         labels: |
@@ -375,7 +346,7 @@ jobs:
     - name: Get version
       id: version
       run: |
-        echo "version=$(cat agent/VERSION)" >> $GITHUB_OUTPUT
+        bash scripts/release-version.sh agent "$GITHUB_REF" >> "$GITHUB_OUTPUT"
 
     - name: Build RPM Package
       working-directory: ./agent
@@ -421,12 +392,11 @@ jobs:
     - name: Get version info
       id: version
       run: |
-        AGENT_VERSION=$(cat agent/VERSION)
-        echo "version=$AGENT_VERSION" >> $GITHUB_OUTPUT
-        echo "tag=agent-v$AGENT_VERSION" >> $GITHUB_OUTPUT
+        bash scripts/release-version.sh agent "$GITHUB_REF" >> "$GITHUB_OUTPUT"
+        AGENT_VERSION="${GITHUB_REF#refs/tags/agent-v}"
         
         # Extract major.minor for compatible server matching
-        MAJOR_MINOR=$(echo "$AGENT_VERSION" | sed 's/\.[^.]*$//')
+        MAJOR_MINOR=$(echo "${AGENT_VERSION%%-*}" | cut -d. -f1,2)
         
         # Find latest stable server with matching minor version (e.g., agent 0.9.5 -> server 0.9.*).
         # Dev tags (server-vX.Y.Z-dev.sha) sort above their stable release, so exclude them.
@@ -461,6 +431,7 @@ jobs:
       run: |
         TAG_NAME="agent-v${{ steps.version.outputs.version }}"
         VERSION="${{ steps.version.outputs.version }}"
+        VERSION="${VERSION%%-*}"
         
         # Parse version components
         MAJOR=$(echo "$VERSION" | cut -d. -f1)
@@ -472,16 +443,16 @@ jobs:
           # Major release (x.0.0) - compare against last major
           RELEASE_TYPE="major"
           PREV_MAJOR=$((MAJOR - 1))
-          LAST_TAG=$(git tag -l "agent-v${PREV_MAJOR}.*" --sort=-version:refname | head -n 1)
+          LAST_TAG=$(git tag -l "agent-v${PREV_MAJOR}.*" --sort=-version:refname | grep -E '^agent-v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)
         elif [ "$PATCH" = "0" ]; then
           # Minor release (x.y.0) - compare against last minor's first tag
           RELEASE_TYPE="minor"
           PREV_MINOR=$((MINOR - 1))
-          LAST_TAG=$(git tag -l "agent-v${MAJOR}.${PREV_MINOR}.*" --sort=-version:refname | head -n 1)
+          LAST_TAG=$(git tag -l "agent-v${MAJOR}.${PREV_MINOR}.*" --sort=-version:refname | grep -E '^agent-v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)
         else
           # Patch release - compare against previous patch
           RELEASE_TYPE="patch"
-          LAST_TAG=$(git tag -l "agent-v*" --sort=-version:refname | grep -v "^${TAG_NAME}$" | head -n 1)
+          LAST_TAG=$(git tag -l "agent-v*" --sort=-version:refname | grep -E '^agent-v[0-9]+\.[0-9]+\.[0-9]+$' | grep -v "^${TAG_NAME}$" | head -n 1 || true)
         fi
         
         echo "Release type: $RELEASE_TYPE, comparing against: ${LAST_TAG:-none}"
@@ -571,6 +542,8 @@ jobs:
           ---
           
           ### 📦 Quick Install
+
+          ${{ steps.version.outputs.is_beta == 'true' && '**Beta release:** Install the versioned binaries, DEB/RPM assets, or Docker image below. The package-repository commands install Stable, not this Beta. MSI installers are Stable-only.' || '' }}
           
           **Debian/Ubuntu:**
           ```bash
@@ -619,7 +592,8 @@ jobs:
         files: artifacts/printmaster-*
         fail_on_unmatched_files: false
         draft: false
-        prerelease: false
+        prerelease: ${{ steps.version.outputs.is_beta == 'true' }}
+        make_latest: ${{ steps.version.outputs.is_beta != 'true' }}
 
     - name: Notify website about published Agent release
       env:
@@ -666,6 +640,7 @@ jobs:
       id: version
       run: |
         BASE_VERSION=$(cat agent/VERSION)
+        BASE_VERSION="${BASE_VERSION%%-*}"
         GIT_COMMIT=$(git rev-parse --short HEAD)
         DEV_VERSION="${BASE_VERSION}-dev.${GIT_COMMIT}"
         echo "version=$DEV_VERSION" >> $GITHUB_OUTPUT
@@ -723,7 +698,7 @@ jobs:
         draft: false
         prerelease: true
 
-    - name: Notify website about published Agent beta release
+    - name: Notify website about published Agent Dev release
       env:
         WEBHOOK_SECRET: ${{ secrets.PRINTMASTER_WEBSITE_RELEASE_SECRET }}
         RELEASE_TAG: ${{ steps.version.outputs.tag }}
@@ -743,6 +718,7 @@ jobs:
 
   update-package-repos:
     name: Update Package Repositories (APT + DNF)
+    if: startsWith(github.ref, 'refs/tags/agent-v') && !contains(github.ref, '-beta.')
     needs: [build-agent, build-rpm]
     runs-on: ubuntu-26.04
     concurrency:

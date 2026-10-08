@@ -84,7 +84,7 @@ epson_remote_mode_enabled = false
   # - "stable" : Only receive stable release updates
   # - "beta"   : Receive beta/rc/other prerelease updates (requires server intake enabled)
   # - "dev"    : Receive development builds (main branch builds)
-  # - ""       : Auto-detect based on build type (dev builds -> dev channel)
+  # - ""       : Auto-detect (Stable -> stable, Beta -> beta, Dev -> dev)
   channel = ""
 
   [auto_update.local_policy]

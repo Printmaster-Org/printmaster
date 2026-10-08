@@ -108,14 +108,15 @@
   # Include prerelease/dev builds in release sync: "true", "false", or "" (auto-detect)
   # - "true"  : Always sync prerelease builds
   # - "false" : Only sync stable releases
-  # - ""      : Auto-detect based on build type (dev server -> include prereleases)
+  # - ""      : Auto-detect (Beta and Dev servers include prereleases)
   include_prerelease = ""
 
 [self_update]
-  # Update channel: "stable", "dev", or "" (auto-detect from build type)
+  # Update channel: "stable", "beta", "dev", or "" (auto-detect from build type)
   # - "stable" : Only receive stable release updates  
+  # - "beta"   : Receive Beta prerelease updates (requires prerelease intake)
   # - "dev"    : Receive development builds (main branch builds)
-  # - ""       : Auto-detect based on build type (dev builds -> dev channel)
+  # - ""       : Auto-detect (Stable -> stable, Beta -> beta, Dev -> dev)
   channel = "stable"
 
   # Limit of cached artifacts considered for update selection

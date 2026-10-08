@@ -58,7 +58,7 @@ var (
 	Version   = "dev"     // Semantic version (e.g., "1.0.0")
 	BuildTime = "unknown" // Build timestamp
 	GitCommit = "unknown" // Git commit hash
-	BuildType = "dev"     // "dev" or "release"
+	BuildType = "dev"     // "dev", "beta" or "release"
 )
 
 //go:embed web

@@ -185,7 +185,7 @@ func DefaultConfig() *Config {
 			MaxReleases:         6,
 			PollIntervalMinutes: 240,
 			RetentionVersions:   6,  // Keep 6 versions per component; 0 = keep all (no pruning)
-			IncludePrerelease:   "", // Auto-detect: dev builds include prereleases, release builds don't
+			IncludePrerelease:   "", // Auto-detect: Beta and Dev include prereleases, Stable doesn't
 		},
 		SelfUpdate: SelfUpdateConfig{
 			Channel:              "stable",
