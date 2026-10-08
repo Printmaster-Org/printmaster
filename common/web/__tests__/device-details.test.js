@@ -25,6 +25,7 @@ describe('device details', () => {
             </div>`;
         window.__pm_shared = {
             showPrompt: jest.fn().mockResolvedValue('Finance'),
+            showConfirm: jest.fn().mockResolvedValue(false),
             showToast: jest.fn(),
             warn: jest.fn(),
             error: jest.fn()
@@ -91,6 +92,55 @@ describe('device details', () => {
         expect(document.querySelector('#printer_metrics_summary')).toBeNull();
         expect(document.querySelector('#printer_details_actions').textContent).toContain('Save Device');
         expect(document.querySelector('#printer_details_title').textContent).toContain('(Discovered)');
+    });
+
+    test('device deletion requires confirmation and cancelled deletion sends no request', async () => {
+        render();
+        await flush();
+        fetch.mockClear();
+        const button = [...document.querySelectorAll('#printer_details_actions button')].find(el => el.textContent === 'Delete Device');
+        button.click();
+        await flush();
+        expect(window.__pm_shared.showConfirm).toHaveBeenCalledWith(expect.stringContaining(device.serial), 'Delete Device', true);
+        expect(fetch).not.toHaveBeenCalled();
+        expect(button.disabled).toBe(false);
+        window.__pm_shared.showConfirm.mockResolvedValue(true);
+        fetch.mockResolvedValue({ ok: false, status: 500 });
+        button.click();
+        await flush();
+        expect(fetch).toHaveBeenCalledWith('/devices/delete', expect.objectContaining({ method: 'POST' }));
+        expect(button.disabled).toBe(false);
+        expect(button.textContent).toBe('Delete Device');
+        expect(window.__pm_shared.error).toHaveBeenCalled();
+    });
+
+    test('late metrics and credentials from the previous device cannot overwrite the current device', async () => {
+        const pending = [];
+        fetch.mockImplementation(url => new Promise(resolve => pending.push({ url, resolve })));
+        render({ ...device, serial: 'A' });
+        render({ ...device, serial: 'B' });
+        const respond = (serial, pageCount) => pending.filter(request => request.url.includes('serial=' + serial)).forEach(request =>
+            request.resolve({ ok: true, json: async () => request.url.includes('credentials')
+                ? { exists: true, username: serial }
+                : [{ timestamp: '2026-10-01', page_count: 0 }, { timestamp: '2026-10-08', page_count: pageCount }] }));
+        respond('B', 222);
+        await flush();
+        respond('A', 111);
+        await flush();
+        expect(document.querySelector('.device-metric-value').textContent).toBe('222');
+        expect(document.getElementById('cred_username').value).toBe('B');
+    });
+
+    test('failed metrics summary is logged and offers retry rather than claiming no data', async () => {
+        fetch.mockResolvedValue({ ok: false, status: 503 });
+        render();
+        await flush();
+        expect(document.getElementById('printer_metrics_summary').textContent).toContain('Metrics unavailable');
+        expect(window.__pm_shared.error).toHaveBeenCalled();
+        fetch.mockResolvedValue({ ok: true, json: async () => [] });
+        document.querySelector('#printer_metrics_summary button').click();
+        await flush();
+        expect(document.getElementById('printer_metrics_summary').textContent).toContain('No metrics data available');
     });
 
     test.each([

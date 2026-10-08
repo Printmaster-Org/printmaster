@@ -749,6 +749,7 @@
     // This builds the saved/discovered device modal and also provides a
     // small metrics-summary loader used by the modal. Consumers should
     // call `window.__pm_shared_cards.showPrinterDetailsData(p, source, parseDebug)`.
+    let detailsGeneration = 0;
     function showPrinterDetailsData(p, source, parseDebug) {
         if (!p) return;
         source = source || 'discovered';
@@ -756,6 +757,9 @@
         const overlay = document.getElementById('printer_details_overlay');
         const titleEl = document.getElementById('printer_details_title');
         const actionsEl = document.getElementById('printer_details_actions');
+        const generation = ++detailsGeneration;
+        // Each opening owns its asynchronous rendering, including reopening the same serial.
+        const isCurrent = () => generation === detailsGeneration && overlay.style.display !== 'none';
 
         // Build a descriptive title with device name
         try {
@@ -1035,8 +1039,10 @@
 
                 const url = '/api/devices/metrics/history?serial=' + encodeURIComponent(p.serial) + '&period=7day';
                 const res = await fetch(url);
-                if (!res.ok) { summaryEl.innerHTML = '<div class="device-metrics-placeholder">No metrics data available</div>'; return; }
+                if (!isCurrent()) return;
+                if (!res.ok) throw new Error('Metrics request failed (HTTP ' + res.status + ')');
                 const history = await res.json();
+                if (!isCurrent()) return;
                 if (!history || history.length === 0) { summaryEl.innerHTML = '<div class="device-metrics-placeholder">No metrics data available</div>'; return; }
 
                 const latest = history[history.length - 1];
@@ -1101,9 +1107,15 @@
                                 }
                             }
                         }
-                    } catch (e) { /* non-critical UI enhancement */ }
+                    } catch (e) { window.__pm_shared.warn('Consumables summary rendering failed', e); }
             } catch (err) {
-                try { const summaryEl = document.getElementById('printer_metrics_summary'); if (summaryEl) summaryEl.innerHTML = '<div class="device-metrics-placeholder">Metrics unavailable</div>'; } catch(_){ }
+                window.__pm_shared.error('Device metrics summary failed', { serial: p.serial, error: err });
+                if (!isCurrent()) return;
+                const summaryEl = document.getElementById('printer_metrics_summary');
+                if (summaryEl) {
+                    summaryEl.innerHTML = '<div class="device-metrics-placeholder" role="status">Metrics unavailable. <button type="button">Retry</button></div>';
+                    summaryEl.querySelector('button').onclick = populatePrinterMetricsSummaryLocal;
+                }
             }
         })();
 
@@ -1130,6 +1142,7 @@
                 try {
                     const newValue = await window.__pm_shared.showPrompt('Edit ' + label + ':', current, 'Edit Field');
                     if (newValue === null) return; // User cancelled
+                    if (!isCurrent()) return;
 
                     const r = await fetch('/devices/update', {
                         method: 'POST',
@@ -1142,6 +1155,7 @@
                         return;
                     }
                     window.__pm_shared.showToast('Field updated', 'success');
+                    if (!isCurrent()) return;
 
                     // Update the display value in the UI
                     const displayEl = document.getElementById('field_' + field + '_display');
@@ -1374,12 +1388,19 @@
             if (source === 'saved') {
                 const deleteBtn = document.createElement('button');
                 deleteBtn.textContent = 'Delete Device';
+                deleteBtn.className = 'delete';
                 deleteBtn.onclick = async function () {
+                    if (deleteBtn.disabled) return;
                     deleteBtn.disabled = true;
-                    deleteBtn.textContent = 'Deleting...';
                     try {
+                        const confirmed = await window.__pm_shared.showConfirm(
+                            'Delete ' + (p.serial || p.Serial || 'this device') + '? This will remove it from the database.',
+                            'Delete Device', true);
+                        if (!confirmed || !isCurrent()) return;
+                        deleteBtn.textContent = 'Deleting...';
                         const r = await fetch('/devices/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ serial: p.serial || p.Serial }) });
-                        if (!r.ok) { deleteBtn.disabled = false; deleteBtn.textContent = 'Delete Device'; window.__pm_shared.showToast('Delete failed', 'error'); return; }
+                        if (!r.ok) throw new Error('Delete failed (HTTP ' + r.status + ')');
+                        if (!isCurrent()) return;
                         deleteBtn.textContent = 'Deleted ✓';
                         window.__pm_shared.showToast('Device deleted successfully', 'success');
                         const cardToRemove = document.querySelector('.saved-device-card[data-serial="' + (p.serial || p.Serial) + '"]');
@@ -1405,7 +1426,13 @@
                                 } else {
                                     overlay.style.display = 'none'; document.body.style.overflow = ''; delete overlay.dataset.currentPrinterIp; updatePrinters();
                                 }
-                    } catch (e) { window.__pm_shared.error('Delete failed:', e); window.__pm_shared.showToast('Delete failed: ' + e.message, 'error'); }
+                    } catch (e) {
+                        window.__pm_shared.error('Delete failed:', e);
+                        window.__pm_shared.showToast('Delete failed: ' + e.message, 'error');
+                    } finally {
+                        deleteBtn.disabled = false;
+                        if (deleteBtn.textContent === 'Deleting...' || deleteBtn.textContent === 'Delete Device') deleteBtn.textContent = 'Delete Device';
+                    }
                 };
                 actionsEl.appendChild(deleteBtn);
             } else {
@@ -1444,8 +1471,10 @@
                 (async function () {
                     try {
                         const r = await fetch('/device/webui-credentials?serial=' + encodeURIComponent(p.serial));
+                        if (!isCurrent()) return;
                         if (r.ok) {
                             const creds = await r.json();
+                            if (!isCurrent()) return;
                             if (creds.exists) {
                                 document.getElementById('cred_username').value = creds.username || '';
                                 document.getElementById('cred_auth_type').value = creds.auth_type || 'basic';
@@ -1454,7 +1483,10 @@
                                 document.getElementById('creds_status').style.color = '#859900';
                             }
                         }
-                    } catch (_) {}
+                    } catch (error) {
+                        window.__pm_shared.warn('Device credential loading failed', { serial: p.serial, error });
+                        if (isCurrent()) document.getElementById('creds_status').textContent = 'Credentials unavailable';
+                    }
                 })();
 
                 document.getElementById('save_creds_btn')?.addEventListener('click', async function () {
@@ -1473,11 +1505,14 @@
                         };
                         const r = await fetch('/device/webui-credentials', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                         if (!r.ok) throw new Error('Save failed');
+                        if (!isCurrent()) return;
                         if (statusEl) { statusEl.textContent = '✓ Saved'; statusEl.style.color = '#859900'; }
                         const pwdEl = document.getElementById('cred_password'); if (pwdEl) pwdEl.value = '';
                     } catch (e) {
+                        window.__pm_shared.error('Device credential saving failed', { serial: p.serial, error: e });
+                        if (!isCurrent()) return;
                         const statusEl2 = document.getElementById('creds_status'); if (statusEl2) { statusEl2.textContent = 'Error: ' + e; statusEl2.style.color = '#dc322f'; }
-                    } finally { const btn2 = document.getElementById('save_creds_btn'); if (btn2) btn2.disabled = false; }
+                    } finally { if (isCurrent()) { const btn2 = document.getElementById('save_creds_btn'); if (btn2) btn2.disabled = false; } }
                 });
             }
         } catch (e) { window.__pm_shared.warn('cred wiring failed', e); }
