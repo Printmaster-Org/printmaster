@@ -637,16 +637,30 @@ func (s *SQLiteStore) GetTieredMetricsBounds(ctx context.Context, serial string)
 		return time.Time{}, time.Time{}, 0, ErrNotFound
 	}
 
-	minTS, err := time.Parse(time.RFC3339Nano, minStr.String)
+	minTS, err := parseMetricsTimestamp(minStr.String)
 	if err != nil {
 		return time.Time{}, time.Time{}, 0, fmt.Errorf("failed to parse metrics min timestamp %q: %w", minStr.String, err)
 	}
-	maxTS, err := time.Parse(time.RFC3339Nano, maxStr.String)
+	maxTS, err := parseMetricsTimestamp(maxStr.String)
 	if err != nil {
 		return time.Time{}, time.Time{}, 0, fmt.Errorf("failed to parse metrics max timestamp %q: %w", maxStr.String, err)
 	}
 
 	return minTS, maxTS, int(total.Int64), nil
+}
+
+func parseMetricsTimestamp(value string) (time.Time, error) {
+	// SQLite aggregate expressions return strings, including CURRENT_TIMESTAMP
+	// and driver-written timestamps rather than only our RFC3339 snapshots.
+	var parseErr error
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05.999999999-07:00", "2006-01-02 15:04:05"} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed, nil
+		} else {
+			parseErr = err
+		}
+	}
+	return time.Time{}, parseErr
 }
 
 // GetTieredMetricsHistory retrieves metrics from appropriate tiers based on time range

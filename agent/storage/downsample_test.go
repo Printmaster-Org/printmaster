@@ -6,6 +6,44 @@ import (
 	"time"
 )
 
+func TestSQLiteStore_GetTieredMetricsBounds_SQLiteTimestamps(t *testing.T) {
+	store, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	serial := "SQLITE_TIMESTAMP_BOUNDS"
+	if err := store.Create(ctx, newFullTestDevice(serial, "192.168.1.201", "HP", "LaserJet", true, true)); err != nil {
+		t.Fatal(err)
+	}
+	for _, timestamp := range []string{"2026-10-01 12:30:00", "2026-10-08T12:30:00.123456789Z"} {
+		if _, err := store.db.ExecContext(ctx, "INSERT INTO metrics_raw (serial, timestamp) VALUES (?, ?)", serial, timestamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	minTS, maxTS, count, err := store.GetTieredMetricsBounds(ctx, serial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 || minTS.Format(time.RFC3339) != "2026-10-01T12:30:00Z" || maxTS.Format(time.RFC3339Nano) != "2026-10-08T12:30:00.123456789Z" {
+		t.Fatalf("unexpected bounds: min=%s max=%s count=%d", minTS, maxTS, count)
+	}
+}
+
+func TestParseMetricsTimestamp(t *testing.T) {
+	for _, value := range []string{"2026-10-01T12:30:00Z", "2026-10-01 12:30:00",
+		"2026-10-01 12:30:00.123456789+00:00", "2026-10-01 14:30:00+02:00"} {
+		parsed, err := parseMetricsTimestamp(value)
+		if err != nil || parsed.UTC().Format(time.RFC3339) != "2026-10-01T12:30:00Z" {
+			t.Fatalf("parseMetricsTimestamp(%q) = %s, %v", value, parsed, err)
+		}
+	}
+	if _, err := parseMetricsTimestamp("not a timestamp"); err == nil {
+		t.Fatal("invalid timestamps must surface an error")
+	}
+}
+
 func TestSQLiteStore_GetTieredMetricsHistory_RangeBounded(t *testing.T) {
 	store, err := NewSQLiteStore(":memory:")
 	if err != nil {
