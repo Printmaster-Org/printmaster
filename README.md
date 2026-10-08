@@ -35,6 +35,9 @@ Contributions, feedback, and vendor-specific SNMP knowledge are welcome—printe
 
 ## Screenshots
 
+Captured from the current development UI on October 8, 2026, using a synthetic
+eight-printer fleet. Device names, counters, supplies, and alerts are demo data.
+
 <details>
 <summary><b>Dashboard</b> — Hierarchical view of tenants, sites, agents, and devices</summary>
 
@@ -63,6 +66,24 @@ Contributions, feedback, and vendor-specific SNMP knowledge are welcome—printe
 <summary><b>System Logs</b> — Real-time log streaming with search and filtering</summary>
 
 ![Logs](docs/screenshots/Logs%20-%20PrintMaster%20Server.png)
+</details>
+
+<details>
+<summary><b>Fleet Alerts</b> — Fleet health, alert categories, and recent events</summary>
+
+![Fleet health and recent alerts](docs/screenshots/Alerts%20-%20PrintMaster%20Server.png)
+</details>
+
+<details>
+<summary><b>Agent Devices</b> — Local printer cards with counters and consumables</summary>
+
+![Agent device cards and consumable levels](docs/screenshots/Devices%20-%20PrintMaster%20Agent.png)
+</details>
+
+<details>
+<summary><b>Device Details</b> — Identity, location, asset tags, and usage metrics</summary>
+
+![Agent device details and metrics overview](docs/screenshots/Device%20Details%20-%20PrintMaster%20Agent.png)
 </details>
 
 ## Quick Start

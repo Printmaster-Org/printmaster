@@ -3406,7 +3406,7 @@ span.flatpickr-weekday {
   }
 
   /* Web UI buttons in modal */
-  #printer_details_body button {
+  #printer_details_body button:not(.edit-field-btn) {
     font-size: 13px !important;
     padding: 8px 12px !important;
     white-space: nowrap;

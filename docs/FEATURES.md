@@ -76,6 +76,14 @@ Fine-tune discovery behavior in **Settings** → **Discovery**:
 
 ## Device Monitoring
 
+Open **Details** on an agent device card to inspect identity, asset information,
+and the metrics overview. Capabilities appear beneath the device name; editable
+values have a labeled edit button beside them. Device information uses two columns
+on desktop and stacks on narrow screens. All screenshots in this guide use
+synthetic demo data.
+
+![Device identity, asset tag, location, and metrics overview](screenshots/Device%20Details%20-%20PrintMaster%20Agent.png)
+
 ### Collected Data
 
 For each discovered device, PrintMaster collects:
@@ -118,6 +126,11 @@ PrintMaster stores historical metrics using a tiered retention system:
 | Monthly | 1 month average | Forever |
 
 This allows you to track usage trends while keeping database size manageable.
+
+The server's **Metrics** tab brings fleet throughput and consumables history
+together with selectable time ranges.
+
+![Fleet throughput and consumables history charts](screenshots/Metrics%20-%20PrintMaster%20Server.png)
 
 ### Device Groups
 
@@ -166,6 +179,8 @@ The server provides:
 - **Combined Device List**: All devices from all sites in one view
 - **Cross-Site Reports**: Compare usage across locations
 - **Centralized Alerts**: Single pane for all site alerts
+
+![Expanded tenant, site, agent, and device hierarchy](screenshots/Dashboard%20-%20PrintMaster%20Server.png)
 
 ### Agent Naming
 
@@ -222,6 +237,10 @@ For device access:
 ---
 
 ## Alerts & Notifications
+
+The **Alerts** tab summarizes fleet health, alert categories, and recent events.
+
+![Fleet alert summary and recent events](screenshots/Alerts%20-%20PrintMaster%20Server.png)
 
 Get notified about important events and issues.
 

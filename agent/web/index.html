@@ -1107,9 +1107,12 @@
 
     <!-- Printer Details modal with overlay - positioned outside content-container for proper viewport centering -->
     <div id="printer_details_overlay" class="modal-overlay" style="display:none;">
-        <div id="printer_details_modal" class="printer-details-dialog">
-            <button class="modal-close-x" id="printer_details_close_x" title="Close">&times;</button>
-            <h3 id="printer_details_title" style="margin-top:0;color:var(--highlight)">Printer Details</h3>
+        <div id="printer_details_modal" class="printer-details-dialog" role="dialog" aria-modal="true" aria-labelledby="printer_details_title">
+            <button class="modal-close-x" id="printer_details_close_x" title="Close" aria-label="Close device details">&times;</button>
+            <header class="device-details-header">
+                <h3 id="printer_details_title">Printer Details</h3>
+                <div id="printer_details_capabilities" aria-label="Device capabilities"></div>
+            </header>
             <div id="printer_details_body"
                 style="overflow-x:hidden;overflow-y:auto;font-family:system-ui;color:var(--text);word-wrap:break-word;flex:1">
             </div>

@@ -813,27 +813,25 @@
 
         function renderRow(label, value) {
             if (!value && value !== 0) return '';
-            return '<div style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:13px;padding:4px 0">' +
-                '<div style="color:var(--muted);white-space:nowrap">' + label + ':</div>' +
-                '<div style="word-break:break-word">' + value + '</div>' +
+            return '<div class="device-detail-field">' +
+                '<div class="device-detail-label">' + label + '</div>' +
+                '<div class="device-detail-value">' + value + '</div>' +
                 '</div>';
         }
 
         // Editable row helper - shows value as text with an edit button
         function renderEditableRow(label, field, value, opts = { type: 'text', readonly: false, placeholder: '' }) {
             const safeVal = (value === undefined || value === null) ? '' : String(value);
-            const displayVal = safeVal || '<span style="color:var(--muted);font-style:italic">Not set</span>';
+            const displayVal = safeVal ? escapeHtmlCards(safeVal) : '<span class="device-detail-empty">Not set</span>';
             const serial = p.serial || p.Serial || '';
 
-            let row = '<div style="display:grid;grid-template-columns:auto 1fr auto;gap:4px 8px;align-items:center;padding:4px 0" data-field-row="' + field + '">';
-            row += '<div style="color:var(--muted)">' + label + ':</div>';
-            row += '<div id="field_' + field + '_display" style="word-break:break-word">' + displayVal + '</div>';
+            let row = '<div class="device-detail-field" data-field-row="' + field + '">';
+            row += '<div class="device-detail-label">' + label + '</div>';
+            row += '<div class="device-detail-value-group"><div class="device-detail-value" id="field_' + field + '_display">' + displayVal + '</div>';
             if (!opts.readonly) {
-                row += '<button class="edit-field-btn" data-field="' + field + '" data-serial="' + serial + '" data-current="' + safeVal.replace(/"/g, '&quot;') + '" data-label="' + label + '" title="Edit ' + label + '">✏️</button>';
-            } else {
-                row += '<div style="width:28px"></div>'; // Spacer for alignment
+                row += '<button class="edit-field-btn" data-field="' + field + '" data-serial="' + escapeHtmlCards(serial) + '" data-current="' + escapeHtmlCards(safeVal) + '" data-label="' + label + '" title="Edit ' + label + '" aria-label="Edit ' + label + '"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M16 3l5 5L8 21H3v-5L16 3zM14 5l5 5"/></svg></button>';
             }
-            row += '</div>';
+            row += '</div>' + (opts.actions || '') + '</div>';
             return row;
         }
 
@@ -847,13 +845,13 @@
         }
 
         // Capabilities (use shared renderer)
-        try {
-            const capabilitiesHTML = window.__pm_shared_cards.renderCapabilities(p);
-            if (capabilitiesHTML) html += renderInfoCard('Capabilities', capabilitiesHTML);
-        } catch (e) {}
+        const capabilitiesHTML = window.__pm_shared_cards.renderCapabilities(p);
+        const capabilitiesEl = document.getElementById('printer_details_capabilities');
+        if (capabilitiesEl) capabilitiesEl.innerHTML = capabilitiesHTML;
+        else if (capabilitiesHTML) html += renderInfoCard('Capabilities', capabilitiesHTML);
 
         // Device Info (editable rows with lock buttons)
-        let deviceInfo = '<div style="display:flex;flex-direction:column;gap:6px">';
+        let deviceInfo = '<div class="device-info-fields">';
         deviceInfo += renderEditableRow('Manufacturer', 'manufacturer', p.manufacturer);
         deviceInfo += renderEditableRow('Model', 'model', p.model);
         deviceInfo += renderEditableRow('Serial', 'serial', p.serial, { type: 'text', readonly: true });
@@ -864,22 +862,15 @@
         // Web UI with proxy buttons and edit
         const webUIVal = p.web_ui_url || p.webui || '';
         const serial = p.serial || p.Serial || '';
-        let webUiRow = '<div style="display:grid;grid-template-columns:auto 1fr auto;gap:4px 8px;align-items:center" data-field-row="web_ui_url">';
-        webUiRow += '<div style="color:var(--muted)">Web UI:</div>';
-        webUiRow += '<div style="display:flex;gap:4px;align-items:center">';
-        webUiRow += '<span id="field_web_ui_url_display" style="flex:1;word-break:break-all">' + (webUIVal || '<span style="color:var(--muted);font-style:italic">Not set</span>') + '</span>';
-        if (webUIVal) {
-            webUiRow += '<button style="font-size:11px;padding:2px 6px" data-action="open-direct" data-webui-url="' + webUIVal + '">Direct</button>';
-            webUiRow += '<button style="font-size:11px;padding:2px 6px;background:#268bd2;color:#fff" data-action="open-proxy" data-serial="' + serial + '">Proxy</button>';
-        }
-        webUiRow += '</div>';
-        webUiRow += '<button class="edit-field-btn" data-field="web_ui_url" data-serial="' + serial + '" data-current="' + webUIVal.replace(/"/g, '&quot;') + '" data-label="Web UI URL" title="Edit Web UI URL">✏️</button>';
-        webUiRow += '</div>';
-        deviceInfo += webUiRow;
-        if (p.last_seen) deviceInfo += '<div style="color:var(--muted);font-size:12px;margin-top:6px">Last Seen: ' + new Date(p.last_seen).toLocaleString() + '</div>';
-        if (p.first_seen) deviceInfo += '<div style="color:var(--muted);font-size:12px">First Seen: ' + new Date(p.first_seen).toLocaleString() + '</div>';
+        const webUiActions = webUIVal ? '<div class="device-webui-actions">' +
+                '<button data-action="open-direct" data-webui-url="' + escapeHtmlCards(webUIVal) + '">Direct</button>' +
+                '<button class="primary" data-action="open-proxy" data-serial="' + escapeHtmlCards(serial) + '">Proxy</button>' +
+                '</div>' : '';
+        deviceInfo += renderEditableRow('Web UI', 'web_ui_url', webUIVal, { actions: webUiActions });
+        if (p.last_seen) deviceInfo += renderRow('Last Seen', new Date(p.last_seen).toLocaleString());
+        if (p.first_seen) deviceInfo += renderRow('First Seen', new Date(p.first_seen).toLocaleString());
         deviceInfo += '</div>';
-        html += renderInfoCard('Device Info', deviceInfo);
+        html += renderInfoCard('Device Info', deviceInfo, { className: 'device-identity-card' });
 
         // Metrics card for saved devices (compact summary + quick-open buttons)
         if (source === 'saved' && p.serial) {
@@ -895,13 +886,13 @@
         }
 
     // Network Info (editable)
-    let networkInfo = '<div style="display:flex;flex-direction:column;gap:6px">';
+    let networkInfo = '<div class="device-info-fields">';
     networkInfo += renderEditableRow('IP Address', 'ip', p.ip || p.IP || '');
     networkInfo += renderEditableRow('MAC Address', 'mac_address', p.mac || p.mac_address || '');
     networkInfo += renderEditableRow('Hostname', 'hostname', p.hostname);
     networkInfo += renderEditableRow('Subnet Mask', 'subnet_mask', p.subnet_mask);
     networkInfo += '</div>';
-    html += renderInfoCard('Network', networkInfo);
+    html += renderInfoCard('Network', networkInfo, { className: 'device-network-card' });
 
         // Web UI Credentials Card (for proxy auto-login)
         // Determine default username based on manufacturer
@@ -941,7 +932,6 @@
         credsInfo += '<span id="creds_status" style="color:var(--muted);align-self:center;font-size:12px"></span>';
         credsInfo += '</div>';
         credsInfo += '</div>';
-        html += renderInfoCard('Web UI Credentials (optional)', credsInfo);
 
         // Consumables (render as its own card). If we don't have explicit
         // consumable information yet, include a placeholder `printer_consumables_card`
@@ -954,6 +944,7 @@
         } else {
             html += '<div id="printer_consumables_card"></div>';
         }
+        html += renderInfoCard('Web UI Credentials (optional)', credsInfo);
 
         // Interfaces: attempt to extract from parseDebug.raw_pdus (IF-MIB columns)
         let interfacesSection = '';
@@ -1145,7 +1136,7 @@
 
         // Wire up edit field buttons
         try {
-            bodyEl.addEventListener('click', async (e) => {
+            bodyEl.onclick = async (e) => {
                 const btn = e.target.closest && e.target.closest('.edit-field-btn');
                 if (!btn) return;
                 const field = btn.getAttribute('data-field');
@@ -1174,7 +1165,7 @@
                     // Update the display value in the UI
                     const displayEl = document.getElementById('field_' + field + '_display');
                     if (displayEl) {
-                        displayEl.innerHTML = newValue || '<span style="color:var(--muted);font-style:italic">Not set</span>';
+                        displayEl.innerHTML = newValue ? escapeHtmlCards(newValue) : '<span class="device-detail-empty">Not set</span>';
                     }
                     // Update the data-current attribute for future edits
                     btn.setAttribute('data-current', newValue);
@@ -1184,7 +1175,7 @@
                     window.__pm_shared.showToast('Failed to update field', 'error');
                     window.__pm_shared.error('Edit field error', err);
                 }
-            });
+            };
         } catch (e) { window.__pm_shared.warn('edit field wiring failed', e); }
 
         // Wire up scan for updates button
@@ -1617,4 +1608,3 @@
     // renderCapabilities).
 
 })();
-

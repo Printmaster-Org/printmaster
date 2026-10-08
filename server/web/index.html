@@ -1969,9 +1969,12 @@
 
     <!-- Printer Details modal with overlay (shared) -->
     <div id="printer_details_overlay" class="modal" style="display:none;">
-        <div id="printer_details_modal" class="printer-details-dialog">
-            <button class="modal-close-x" id="printer_details_close_x" title="Close">&times;</button>
-            <h3 id="printer_details_title">Device Details</h3>
+        <div id="printer_details_modal" class="printer-details-dialog" role="dialog" aria-modal="true" aria-labelledby="printer_details_title">
+            <button class="modal-close-x" id="printer_details_close_x" title="Close" aria-label="Close device details">&times;</button>
+            <header class="device-details-header">
+                <h3 id="printer_details_title">Device Details</h3>
+                <div id="printer_details_capabilities" aria-label="Device capabilities"></div>
+            </header>
             <div id="printer_details_body"></div>
             <div id="printer_details_actions">
                 <button class="modal-button modal-button-secondary" id="printer_details_close">Close</button>
