@@ -10727,6 +10727,25 @@ select:hover {
 }
 
 /* Tree controls */
+#devices_table {
+  --device-controls-width: 176px;
+}
+
+/* Fixed-layout tables otherwise give an unsized action column no usable width. */
+#devices_table .device-controls-cell {
+  width: var(--device-controls-width);
+  min-width: var(--device-controls-width);
+  box-sizing: border-box;
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: var(--panel);
+}
+
+#devices_table .pinned-left {
+  left: var(--device-controls-width);
+}
+
 .device-selection-controls {
   display: flex;
   align-items: center;

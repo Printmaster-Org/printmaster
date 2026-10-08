@@ -13158,7 +13158,7 @@ function renderDevicesTableHeader() {
     if (!headerRow) return;
 
     if (devicesVM.tableCustomizer) {
-        headerRow.innerHTML = '<th scope="col">Selection / Details</th>' + devicesVM.tableCustomizer.renderHeader();
+        headerRow.innerHTML = '<th scope="col" class="device-controls-cell">Selection / Details</th>' + devicesVM.tableCustomizer.renderHeader();
         // Re-bind header events for sorting/resizing
         const thead = headerRow.closest('thead');
         if (thead) {
@@ -13167,7 +13167,7 @@ function renderDevicesTableHeader() {
     } else {
         // Fallback to static header
         headerRow.innerHTML = `
-            <th scope="col">Selection / Details</th>
+            <th scope="col" class="device-controls-cell">Selection / Details</th>
             <th data-sort-key="manufacturer">Device</th>
             <th data-sort-key="status">Status</th>
             <th data-sort-key="consumables">Consumables</th>
@@ -13256,7 +13256,7 @@ function renderDeviceTable(devices, append = false) {
             `;
         }
 
-        return `<tr tabindex="0" data-hydrated="${meta.rowState === 'ready'}" data-serial="${serial}" data-ip="${ip}" data-agent-id="${escapeHtml(device.agent_id || '')}" class="device-row-clickable" title="Click to select, double-click for details, right-click for actions"><td>${renderDeviceControls(device)}</td>${rowContent}</tr>`;
+        return `<tr tabindex="0" data-hydrated="${meta.rowState === 'ready'}" data-serial="${serial}" data-ip="${ip}" data-agent-id="${escapeHtml(device.agent_id || '')}" class="device-row-clickable" title="Click to select, double-click for details, right-click for actions"><td class="device-controls-cell">${renderDeviceControls(device)}</td>${rowContent}</tr>`;
     }).join('');
 
     tbody.insertAdjacentHTML('beforeend', rows);

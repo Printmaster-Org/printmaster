@@ -160,9 +160,11 @@ describe('server settings recovery', () => {
                 };
                 context.renderDevicesTableHeader();
                 expect(document.getElementById('devices_table_header').children).toHaveLength(2);
+                expect(document.querySelector('#devices_table_header > th').classList.contains('device-controls-cell')).toBe(true);
                 context.renderDeviceTable([{ serial: 'A', ip: '10.0.0.1' }, { serial: 'B', ip: '10.0.0.2' }]);
                 expect(document.querySelectorAll('.device-row-clickable')).toHaveLength(1);
                 expect(document.querySelector('.device-row-clickable [data-device-details]')).not.toBeNull();
+                expect(document.querySelector('.device-row-clickable > td').classList.contains('device-controls-cell')).toBe(true);
                 expect(document.querySelector('#devices_load_more_sentinel td').colSpan).toBe(2);
                 expect(context.devicesVM.render.displayed).toBe(1);
             });
