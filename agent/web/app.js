@@ -6014,3 +6014,4 @@ function initServerConnectionControls() {
 }
 
 try { document.addEventListener('DOMContentLoaded', initServerConnectionControls); } catch (e) {}
+        Array.from(container.children).filter(el => el.textContent.trim() === 'Loading...').forEach(el => el.remove());

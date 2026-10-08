@@ -10725,6 +10725,17 @@ select:hover {
 }
 
 /* Tree controls */
+.device-selection-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.device-card > .device-selection-controls {
+  padding: 8px 12px;
+}
+
 .dashboard-tree-controls {
   display: flex;
   align-items: center;

@@ -82,6 +82,91 @@ describe('server settings recovery', () => {
         return { ...result, state };
     }
 
+    describe('device selection and details', () => {
+            function deviceSetup(extraNames = [], globals = {}) {
+                return setup([
+                    'updateDeviceSelectionUI', 'handleDeviceSelection', 'reconcileDeviceSelection',
+                    'renderDeviceControls', 'bindDeviceControls', ...extraNames,
+                ], {
+                    devicesVM: {
+                        selection: { selectedIds: new Set(), lastSelected: null },
+                        filtered: [{ serial: 'A' }, { serial: 'B' }],
+                        render: { displayed: 0, pageSize: 1 },
+                    },
+                    escapeHtml: value => String(value).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;'),
+                    ...globals,
+                });
+            }
+
+            test('explicit checkbox toggles multi-selection without modifiers; Details is a native button', () => {
+                const { context, document } = deviceSetup();
+                context.window.__pm_shared.showPrinterDetails = jest.fn();
+                const container = document.getElementById('devices_cards');
+                container.innerHTML = ['A', 'B'].map(serial =>
+                    `<div class="device-card-clickable" data-serial="${serial}">${context.renderDeviceControls({ serial })}</div>`
+                ).join('');
+                context.bindDeviceControls(container);
+                context.bindDeviceControls(container);
+                const checkboxes = container.querySelectorAll('input');
+                checkboxes[0].click();
+                checkboxes[1].click();
+                expect([...context.devicesVM.selection.selectedIds]).toEqual(['A', 'B']);
+                expect(checkboxes[0].checked).toBe(true);
+                checkboxes[0].click();
+                expect([...context.devicesVM.selection.selectedIds]).toEqual(['B']);
+                container.querySelector('button').click();
+                expect(context.window.__pm_shared.showPrinterDetails).toHaveBeenCalledTimes(1);
+                expect(context.window.__pm_shared.showPrinterDetails).toHaveBeenCalledWith('A', 'saved');
+                expect(checkboxes[1].getAttribute('aria-label')).toBe('Select device B');
+            });
+
+            test('refresh reset/failure preserves selection; ready authorized index prunes only absent IDs', () => {
+                let onChange;
+                const loader = {
+                    getIndexState: () => ({ status: 'ready' }),
+                    getIndex: () => [{ serial: 'A' }, { serial: 'C' }],
+                };
+                const { context } = deviceSetup(['initDevicesLoader'], {
+                    devicesLoader: null, deviceSupplyBands: new Map(), devicesDemand: [], devicesPaintFrame: null,
+                    window: { PrintMasterProgressive: { createLoader: options => { onChange = options.onChange; return loader; } } },
+                    cleanupDevicesInfiniteScroll: jest.fn(), renderDevicesOverview: jest.fn(),
+                    renderDeviceLoadingStatus: jest.fn(), refreshDeviceFilters: jest.fn(),
+                    syncDevicesAgentFilterOptions: jest.fn(), applyDeviceFilters: jest.fn(),
+                    enrichDevices: items => items, renderDevicesError: jest.fn(),
+                });
+                context.devicesVM.selection.selectedIds = new Set(['A', 'B']);
+                context.devicesVM.selection.lastSelected = 'B';
+                context.initDevicesLoader();
+                onChange({ type: 'reset' });
+                expect([...context.devicesVM.selection.selectedIds]).toEqual(['A', 'B']);
+                loader.getIndexState = () => ({ status: 'error', error: 'offline' });
+                onChange({ type: 'index' });
+                expect([...context.devicesVM.selection.selectedIds]).toEqual(['A', 'B']);
+                loader.getIndexState = () => ({ status: 'ready' });
+                onChange({ type: 'index' });
+                expect([...context.devicesVM.selection.selectedIds]).toEqual(['A']);
+                expect(context.devicesVM.selection.lastSelected).toBeNull();
+            });
+
+            test('table controls remain available with customized columns and progressive pages', () => {
+                const { context, document } = deviceSetup(['renderDevicesTableHeader', 'renderDeviceTable'], {
+                    initTableScrollIndicators: jest.fn(), setupDevicesInfiniteScroll: jest.fn(),
+                    getProgressiveDevice: device => device, loadMoreDevices: jest.fn(),
+                });
+                context.devicesVM.tableCustomizer = {
+                    renderHeader: () => '<th data-column-id="network">Network</th>',
+                    bindHeaderEvents: jest.fn(), getVisibleColumns: () => ['network'],
+                    renderRow: device => `<td data-column-id="network">${device.ip}</td>`,
+                };
+                context.renderDevicesTableHeader();
+                expect(document.getElementById('devices_table_header').children).toHaveLength(2);
+                context.renderDeviceTable([{ serial: 'A', ip: '10.0.0.1' }, { serial: 'B', ip: '10.0.0.2' }]);
+                expect(document.querySelectorAll('.device-row-clickable')).toHaveLength(1);
+                expect(document.querySelector('.device-row-clickable [data-device-details]')).not.toBeNull();
+                expect(document.querySelector('#devices_load_more_sentinel td').colSpan).toBe(2);
+                expect(context.devicesVM.render.displayed).toBe(1);
+            });
+        });
     test('5xx retains disabled snapshot and retry, then recovers with fresh lock metadata', async () => {
         const fetch = jest.fn().mockResolvedValue({ ok: false, status: 503 });
         const { context, document } = settingsSetup(fetch);

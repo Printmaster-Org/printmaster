@@ -11023,6 +11023,9 @@ function updateAgentSelectionUI() {
  * Updates visual selection state for device rows/cards
  */
 function updateDeviceSelectionUI() {
+    document.querySelectorAll('[data-device-select]').forEach(input => {
+        input.checked = devicesVM.selection.selectedIds.has(input.dataset.deviceSelect);
+    });
     // Update table rows
     document.querySelectorAll('tr.device-row-clickable').forEach(row => {
         const serial = row.getAttribute('data-serial');
@@ -11044,6 +11047,38 @@ function updateDeviceSelectionUI() {
         } else {
             card.classList.remove('device-card-selected');
         }
+    });
+}
+
+function reconcileDeviceSelection(devices) {
+    const authorizedIds = new Set(devices.map(device => device.serial || device.ip));
+    for (const id of devicesVM.selection.selectedIds) {
+        if (!authorizedIds.has(id)) devicesVM.selection.selectedIds.delete(id);
+    }
+    if (!authorizedIds.has(devicesVM.selection.lastSelected)) devicesVM.selection.lastSelected = null;
+}
+
+function renderDeviceControls(device) {
+    const id = device.serial || device.ip || '';
+    const escapedId = escapeHtml(id);
+    const selected = devicesVM.selection.selectedIds.has(id);
+    return `<div class="device-selection-controls">
+        <label><input type="checkbox" data-device-select="${escapedId}" aria-label="Select device ${escapedId}" ${selected ? 'checked' : ''}> Select</label>
+        <button type="button" class="ghost-btn" data-device-details="${escapedId}" aria-label="Details for device ${escapedId}">Details</button>
+    </div>`;
+}
+
+function bindDeviceControls(container) {
+    if (!container || container.dataset.deviceControlsBound) return;
+    container.dataset.deviceControlsBound = 'true';
+    container.addEventListener('click', event => {
+        const details = event.target.closest('[data-device-details]');
+        if (details) {
+            window.__pm_shared.showPrinterDetails(details.dataset.deviceDetails, 'saved');
+            return;
+        }
+        const select = event.target.closest('[data-device-select]');
+        if (select) handleDeviceSelection(select.dataset.deviceSelect, { ctrlKey: true });
     });
 }
 
@@ -12451,7 +12486,7 @@ function initDevicesUI() {
             tbody.dataset.rowClickBound = 'true';
             tbody.addEventListener('click', (event) => {
                 // Don't trigger row click if clicking on a button or actions column
-                if (event.target.closest('button') || event.target.closest('.table-actions') || event.target.closest('.actions-col')) {
+                if (event.target.closest('button, input, label') || event.target.closest('.table-actions') || event.target.closest('.actions-col')) {
                     return;
                 }
                 const row = event.target.closest('tr.device-row-clickable');
@@ -12466,7 +12501,7 @@ function initDevicesUI() {
             });
             // Double-click opens device details
             tbody.addEventListener('dblclick', (event) => {
-                if (event.target.closest('button') || event.target.closest('.table-actions') || event.target.closest('.actions-col')) {
+                if (event.target.closest('button, input, label') || event.target.closest('.table-actions') || event.target.closest('.actions-col')) {
                     return;
                 }
                 const row = event.target.closest('tr.device-row-clickable');
@@ -12487,7 +12522,7 @@ function initDevicesUI() {
         cardsContainer.dataset.cardClickBound = 'true';
         cardsContainer.addEventListener('click', (event) => {
             // Don't trigger card click if clicking on a button or actions area
-            if (event.target.closest('button') || event.target.closest('.device-card-actions')) {
+            if (event.target.closest('button, input, label') || event.target.closest('.device-card-actions')) {
                 return;
             }
             const card = event.target.closest('.device-card-clickable');
@@ -12502,7 +12537,7 @@ function initDevicesUI() {
         });
         // Double-click opens device details
         cardsContainer.addEventListener('dblclick', (event) => {
-            if (event.target.closest('button') || event.target.closest('.device-card-actions')) {
+            if (event.target.closest('button, input, label') || event.target.closest('.device-card-actions')) {
                 return;
             }
             const card = event.target.closest('.device-card-clickable');
@@ -12525,16 +12560,19 @@ function initDevicesUI() {
     syncTenantFilterOptions('devices');
 
     [table, cardsContainer].filter(Boolean).forEach(container => {
+        bindDeviceControls(container);
+        if (container.dataset.deviceKeyboardBound) return;
+        container.dataset.deviceKeyboardBound = 'true';
         container.addEventListener('keydown', event => {
             if (event.target.closest('button, input, select, a')) return;
             const device = event.target.closest('.device-row-clickable, .device-card-clickable');
             if (!device) return;
             if (event.key === 'Enter') {
                 event.preventDefault();
-                showPrinterDetails(device.dataset.serial, 'saved');
+                window.__pm_shared.showPrinterDetails(device.dataset.serial || device.dataset.ip, 'saved');
             } else if (event.key === ' ') {
                 event.preventDefault();
-                handleDeviceSelection(device.dataset.serial, event);
+                handleDeviceSelection(device.dataset.serial || device.dataset.ip, event);
             }
         });
     });
@@ -12651,8 +12689,6 @@ function initDevicesLoader() {
                 if (devicesPaintFrame) cancelAnimationFrame(devicesPaintFrame);
                 devicesPaintFrame = null;
                 devicesVM.items = []; devicesVM.filtered = []; devicesVM.loaded = false;
-                devicesVM.selection.selectedIds.clear();
-                devicesVM.selection.lastSelected = null;
                 renderDevicesOverview();
                 return;
             }
@@ -12664,6 +12700,7 @@ function initDevicesLoader() {
                 else if (state.status === 'error') renderDevicesError(state.error);
                 else if (state.status === 'ready') {
                     devicesVM.items = enrichDevices(devicesLoader.getIndex());
+                    reconcileDeviceSelection(devicesVM.items);
                     devicesVM.loaded = true;
                     refreshDeviceFilters(); syncDevicesAgentFilterOptions();
                     applyDeviceFilters(); renderDevicesOverview();
@@ -12754,7 +12791,11 @@ function patchVisibleDeviceRows() {
         } else {
             const template = document.createElement('template');
             template.innerHTML = renderServerDeviceCard(device);
-            element.innerHTML = template.content.firstElementChild.innerHTML;
+            ['.device-card-header', '.device-card-info'].forEach(selector => {
+                const current = element.querySelector(selector);
+                const updated = template.content.querySelector(selector);
+                if (current && updated) current.innerHTML = updated.innerHTML;
+            });
         }
     });
     // A frame boundary guarantees rows paint before requesting beyond-page-count metrics.
@@ -13098,7 +13139,7 @@ function renderDevicesTableHeader() {
     if (!headerRow) return;
 
     if (devicesVM.tableCustomizer) {
-        headerRow.innerHTML = devicesVM.tableCustomizer.renderHeader();
+        headerRow.innerHTML = '<th scope="col">Selection / Details</th>' + devicesVM.tableCustomizer.renderHeader();
         // Re-bind header events for sorting/resizing
         const thead = headerRow.closest('thead');
         if (thead) {
@@ -13106,8 +13147,8 @@ function renderDevicesTableHeader() {
         }
     } else {
         // Fallback to static header
-        // Actions column removed - using context menu instead (right-click)
         headerRow.innerHTML = `
+            <th scope="col">Selection / Details</th>
             <th data-sort-key="manufacturer">Device</th>
             <th data-sort-key="status">Status</th>
             <th data-sort-key="consumables">Consumables</th>
@@ -13139,7 +13180,7 @@ function renderDeviceTable(devices, append = false) {
     if (!tbody) return;
 
     // Get visible columns count for colspan
-    const visibleColCount = devicesVM.tableCustomizer?.getVisibleColumns()?.length || 9;
+    const visibleColCount = (devicesVM.tableCustomizer?.getVisibleColumns()?.length || 8) + 1;
 
     if (!devices || devices.length === 0) {
         tbody.innerHTML = `<tr><td colspan="${visibleColCount}" class="muted-text">${deviceEmptyMessage()}</td></tr>`;
@@ -13196,7 +13237,7 @@ function renderDeviceTable(devices, append = false) {
             `;
         }
 
-        return `<tr tabindex="0" data-hydrated="${meta.rowState === 'ready'}" data-serial="${serial}" data-ip="${ip}" data-agent-id="${escapeHtml(device.agent_id || '')}" class="device-row-clickable" title="Click to view details, right-click for actions">${rowContent}</tr>`;
+        return `<tr tabindex="0" data-hydrated="${meta.rowState === 'ready'}" data-serial="${serial}" data-ip="${ip}" data-agent-id="${escapeHtml(device.agent_id || '')}" class="device-row-clickable" title="Click to select, double-click for details, right-click for actions"><td>${renderDeviceControls(device)}</td>${rowContent}</tr>`;
     }).join('');
 
     tbody.insertAdjacentHTML('beforeend', rows);
@@ -13257,7 +13298,7 @@ function loadMoreDevices() {
 
 function renderServerDeviceCard(device) {
     const meta = device.__meta || {};
-    const serial = escapeHtml(device.serial || '—');
+    const serial = escapeHtml(device.serial || '');
     const agentId = escapeHtml(device.agent_id || '');
     const networkLabel = escapeHtml(device.ip || 'N/A');
     const hostname = device.hostname ? ` • ${escapeHtml(device.hostname)}` : '';
@@ -13269,7 +13310,8 @@ function renderServerDeviceCard(device) {
     const agentName = escapeHtml(meta.agentName || 'Unassigned');
     const capabilityBadges = renderDeviceCapabilityBadges(device);
     return `
-        <div tabindex="0" data-hydrated="${meta.rowState === 'ready'}" class="device-card device-card-clickable" data-serial="${serial}" data-ip="${escapeHtml(device.ip || '')}" data-agent-id="${agentId}" data-mac="${escapeHtml(device.mac || '')}" data-source="saved" title="Click to view details, right-click for actions">
+        <div tabindex="0" data-hydrated="${meta.rowState === 'ready'}" class="device-card device-card-clickable" data-serial="${serial}" data-ip="${escapeHtml(device.ip || '')}" data-agent-id="${agentId}" data-mac="${escapeHtml(device.mac || '')}" data-source="saved" title="Click to select, double-click for details, right-click for actions">
+            ${renderDeviceControls(device)}
             <div class="device-card-header">
                 <div>
                     <div class="device-card-title">${escapeHtml(device.manufacturer || 'Unknown')} ${escapeHtml(device.model || '')}</div>

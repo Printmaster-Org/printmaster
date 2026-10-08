@@ -61,7 +61,7 @@ describe('agent trace tag controls', () => {
         document.body.innerHTML = `
             <button id="trace_tags_refresh_btn">Refresh</button>
             <button id="trace_tags_save_btn" disabled>Save Trace Tags</button>
-            <div id="trace_tags_container"></div>`;
+            <div id="trace_tags_container"><span>Loading...</span></div>`;
         context = {
             document,
             window: { __pm_shared: {
@@ -90,6 +90,7 @@ describe('agent trace tag controls', () => {
         context.fetch.mockResolvedValue({ ok: true, json: async () => ({ tags: { proxy_request: false } }) });
         await context.loadTraceTags();
 
+        expect(document.getElementById('trace_tags_container').textContent).not.toContain('Loading...');
         const tag = document.getElementById('trace_tag_proxy_request');
         expect(document.querySelector('label[for="trace_tag_proxy_request"]').contains(tag)).toBe(true);
         const save = document.getElementById('trace_tags_save_btn');
