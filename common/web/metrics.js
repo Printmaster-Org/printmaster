@@ -136,16 +136,24 @@ function renderTonerLegend(container, tonerSeries) {
 
     legendEl.style.display = 'flex';
     legendEl.style.flexWrap = 'wrap';
-    legendEl.innerHTML = sorted.map(name => {
+    legendEl.replaceChildren(...sorted.map(name => {
         const entry = tonerSeries[name];
         const color = resolveTonerColor(name, entry.colorKey);
         const lastPoint = entry.points && entry.points[entry.points.length - 1];
         const latestText = lastPoint ? Math.round(lastPoint.value) + '%' : '–';
-        return '<div class="toner-legend-item" style="display:flex;align-items:center;gap:6px;padding:4px 10px;background:rgba(0,0,0,0.15);border-radius:999px;margin:4px 6px;color:var(--text);font-size:12px">'
-            + '<span style="width:10px;height:10px;border-radius:50%;background:' + color + ';"></span>'
-            + '<span>' + name + ': <strong>' + latestText + '</strong></span>'
-            + '</div>';
-    }).join('');
+        const item = document.createElement('div');
+        item.className = 'toner-legend-item';
+        item.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 10px;background:rgba(0,0,0,0.15);border-radius:999px;margin:4px 6px;color:var(--text);font-size:12px';
+        const swatch = document.createElement('span');
+        swatch.style.cssText = 'width:10px;height:10px;border-radius:50%;background:' + color;
+        const label = document.createElement('span');
+        label.textContent = name + ': ';
+        const level = document.createElement('strong');
+        level.textContent = latestText;
+        label.appendChild(level);
+        item.append(swatch, label);
+        return item;
+    }));
 }
 
 // Load device metrics history and display in UI with interactive timeframe selector
@@ -630,11 +638,11 @@ async function refreshMetricsChart(serial) {
                     rowsHtml += '<button class="trash-btn" data-id="' + (item.id || '') + '" data-tier="' + (item.tier || '') + '" title="Delete this metrics row"></button>';
                     rowsHtml += '</span>';
                     rowsHtml += '</td>';
-                    rowsHtml += '<td style="padding:8px 12px;text-align:right">' + ((item.page_count||0).toLocaleString()) + '</td>';
-                    rowsHtml += '<td style="padding:8px 12px;text-align:right">' + ((item.color_pages||0).toLocaleString()) + '</td>';
-                    rowsHtml += '<td style="padding:8px 12px;text-align:right">' + ((item.mono_pages||0).toLocaleString()) + '</td>';
-                    rowsHtml += '<td style="padding:8px 12px;text-align:right">' + ((item.scan_count||0).toLocaleString()) + '</td>';
-                    rowsHtml += '<td style="padding:8px 12px;text-align:right">' + ((item.fax_pages||0).toLocaleString()) + '</td>';
+                    [window.__pm_shared_cards.getPageCount(item), ...['color_pages', 'mono_pages', 'scan_count', 'fax_pages'].map(
+                        key => window.__pm_shared_cards.getPageCount({ page_count: item[key] })
+                    )].forEach(value => {
+                        rowsHtml += '<td style="padding:8px 12px;text-align:right">' + (value === null ? 'Not collected' : value.toLocaleString()) + '</td>';
+                    });
                     rowsHtml += '</tr>';
                 }
                 return rowsHtml;
@@ -807,20 +815,18 @@ function drawMetricsChart(canvas, history, startTime, endTime, tonerSeries) {
     // Convert history to plottable data points
     const dataPoints = history.map(snapshot => ({
         time: new Date(snapshot.timestamp).getTime(),
-        value: snapshot.page_count || 0
-    })).filter(p => p.time >= startTime.getTime() && p.time <= endTime.getTime());
-
-    if (dataPoints.length === 0) {
+        value: window.__pm_shared_cards.getPageCount(snapshot)
+    })).filter(p => p.value !== null && p.time >= startTime.getTime() && p.time <= endTime.getTime());
+    const seriesToPlot = tonerSeries || {};
+    const hasTonerSeries = Object.keys(seriesToPlot).length > 0;
+    if (dataPoints.length === 0 && !hasTonerSeries) {
         drawEmptyChart(canvas);
         return;
     }
 
-    const seriesToPlot = tonerSeries || {};
-    const hasTonerSeries = Object.keys(seriesToPlot).length > 0;
-
     // Find min/max values for scaling
-    const minValue = Math.min(...dataPoints.map(p => p.value));
-    const maxValue = Math.max(...dataPoints.map(p => p.value));
+    const minValue = dataPoints.length ? Math.min(...dataPoints.map(p => p.value)) : 0;
+    const maxValue = dataPoints.length ? Math.max(...dataPoints.map(p => p.value)) : 1;
     const valueRange = maxValue - minValue || 1;
     const timeRange = endTime.getTime() - startTime.getTime();
 
@@ -834,7 +840,7 @@ function drawMetricsChart(canvas, history, startTime, endTime, tonerSeries) {
 
     // Horizontal grid lines
     const ySteps = 5;
-    for (let i = 0; i <= ySteps; i++) {
+    for (let i = 0; dataPoints.length && i <= ySteps; i++) {
         const value = minValue + (valueRange / ySteps) * i;
         const y = mapY(value);
 
@@ -898,7 +904,7 @@ function drawMetricsChart(canvas, history, startTime, endTime, tonerSeries) {
     ctx.fillStyle = 'rgba(255,255,255,0.6)';
     ctx.font = '11px monospace';
     ctx.textAlign = 'right';
-    for (let i = 0; i <= ySteps; i++) {
+    for (let i = 0; dataPoints.length && i <= ySteps; i++) {
         const value = Math.round(minValue + (valueRange / ySteps) * i);
         const y = mapY(value);
         ctx.fillText(value.toLocaleString(), padding.left - 8, y + 4);
@@ -1085,6 +1091,7 @@ window.__pm_shared_metrics.drawEmptyChart = drawEmptyChart;
 window.__pm_shared_metrics.buildTonerSeries = buildTonerSeries;
 window.__pm_shared_metrics.resolveTonerColor = resolveTonerColor;
 window.__pm_shared_metrics.getMetricsInitialRange = getMetricsInitialRange;
+window.__pm_shared_metrics.renderTonerLegend = renderTonerLegend;
 
 // Lightweight usage-sparkline loader used in saved-device cards
 async function loadUsageGraph(serial) {
@@ -1101,22 +1108,28 @@ async function loadUsageGraph(serial) {
     try {
         const url = '/api/devices/metrics/history?serial=' + encodeURIComponent(serial) + '&period=month';
         const res = await fetch(url);
-        if (!res.ok) {
-            container.innerHTML = '<div class="usage-graph-no-data">No data</div>';
-            return;
-        }
+        if (!res.ok) throw new Error('Usage history request failed (HTTP ' + res.status + ')');
         const history = await res.json();
         if (!history || history.length === 0) {
             container.innerHTML = '<div class="usage-graph-no-data">No data</div>';
             return;
         }
 
-        // Use page_count as the plotted value
-        const points = history.map(h => ({ t: new Date(h.timestamp).getTime(), v: Number(h.page_count || 0) }));
+        const points = history.map(h => ({ t: new Date(h.timestamp).getTime(), v: window.__pm_shared_cards.getPageCount(h) }))
+            .filter(point => Number.isFinite(point.t) && point.v !== null);
+        if (!points.length) {
+            container.innerHTML = '<div class="usage-graph-no-data">Not collected</div>';
+            return;
+        }
         drawUsageSparkline(canvas, points);
     } catch (e) {
         window.__pm_shared.warn('[Metrics] loadUsageGraph failed for', serial, e);
-        container.innerHTML = '<div class="usage-graph-no-data">Error</div>';
+        container.innerHTML = '<div class="usage-graph-no-data" role="status">Usage unavailable</div>';
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.textContent = 'Retry';
+        retry.addEventListener('click', () => loadUsageGraph(serial));
+        container.appendChild(retry);
     }
 }
 
