@@ -27,6 +27,25 @@ describe('metrics identity and loading', () => {
         expect(series['Matte Black'].points).toHaveLength(3);
     });
 
+    test('same cartridge remains continuous when alias formatting changes between snapshots', () => {
+        const series = metrics.buildTonerSeries([
+            { timestamp: '2026-10-01', toner_levels: { 'Light Grey Ink T44H9, T44P9': 70 } },
+            { timestamp: '2026-10-02', toner_levels: { supply_light_gray_ink_t44h9_t44p9: 65 } },
+            { timestamp: '2026-10-03', toner_levels: { 'LIGHT GRAY INK T44H9 T44P9': 60 } }
+        ]);
+        expect(Object.keys(series)).toHaveLength(1);
+        expect(Object.values(series)[0].points.map(point => point.value)).toEqual([70, 65, 60]);
+    });
+
+    test('conflicting alias readings retain two stable series instead of adding one per sample', () => {
+        const series = metrics.buildTonerSeries([1, 2, 3].map(day => ({
+            timestamp: `2026-10-0${day}`,
+            toner_levels: { 'Black Ink': 70 - day, supply_black_ink: 40 - day }
+        })));
+        expect(Object.keys(series)).toEqual(['Black Ink', 'Black Ink #2']);
+        expect(Object.values(series).map(entry => entry.points.length)).toEqual([3, 3]);
+    });
+
     test.each(['Gray', 'Light Gray', 'Light Cyan', 'Photo Black', 'Orange', 'Violet'])(
         'shares the card palette for %s', name => {
             expect(metrics.resolveTonerColor(name, 'default')).toBe(window.__pm_shared_cards.getTonerColor(name));

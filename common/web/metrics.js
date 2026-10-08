@@ -63,13 +63,23 @@ function extractSnapshotTonerEntries(snapshot) {
 
 function buildTonerSeries(history) {
     const series = {};
+    const identities = new Map();
     if (!Array.isArray(history)) return series;
     history.forEach(snapshot => {
         const timestamp = new Date(snapshot.timestamp).getTime();
         if (Number.isNaN(timestamp)) return;
+        const occurrences = new Map();
         extractSnapshotTonerEntries(snapshot).forEach(entry => {
             // Cartridge identity, not its base ink color, stays stable between snapshots.
-            const key = entry.label;
+            const identity = window.__pm_shared_cards?.getSupplyIdentity(entry.label) || entry.label.toLowerCase();
+            const occurrence = (occurrences.get(identity) || 0) + 1;
+            occurrences.set(identity, occurrence);
+            const seriesIdentity = identity + '#' + occurrence;
+            let key = identities.get(seriesIdentity);
+            if (!key) {
+                key = entry.label + (occurrence > 1 ? ' #' + occurrence : '');
+                identities.set(seriesIdentity, key);
+            }
             if (!series[key]) {
                 series[key] = { colorKey: entry.colorKey, points: [] };
             }

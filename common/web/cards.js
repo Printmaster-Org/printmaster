@@ -292,8 +292,7 @@
         const result = {};
         const identities = new Map();
         for (const [name, value] of Object.entries(levels || {})) {
-            const identity = getSupplyDisplayName(name).toLowerCase().replace(/grey/g, 'gray')
-                .replace(/[^a-z0-9]+/g, ' ').trim();
+            const identity = getSupplyIdentity(name);
             const prior = identities.get(identity);
             // Only collapse proven aliases, never distinct cartridges or conflicting readings.
             const equal = prior && (String(result[prior]) === String(value) ||
@@ -310,6 +309,11 @@
             identities.set(identity, name);
         }
         return result;
+    }
+
+    function getSupplyIdentity(name) {
+        return getSupplyDisplayName(name).toLowerCase().replace(/\bgrey\b/g, 'gray')
+            .replace(/[^a-z0-9]+/g, ' ').trim();
     }
 
     // Build the compact per-color toner bar dataset for a device/printer_info
@@ -562,6 +566,7 @@
     window.__pm_shared_cards.renderSavedCard = renderSavedCard;
     window.__pm_shared_cards.buildTonerLevels = buildTonerLevels;
     window.__pm_shared_cards.getSupplyDisplayName = getSupplyDisplayName;
+    window.__pm_shared_cards.getSupplyIdentity = getSupplyIdentity;
     window.__pm_shared_cards.normalizeSupplyLevels = normalizeSupplyLevels;
     window.__pm_shared_cards.getPageCount = getPageCount;
     window.__pm_shared_cards.checkDatabaseRotationWarning = checkDatabaseRotationWarning;
