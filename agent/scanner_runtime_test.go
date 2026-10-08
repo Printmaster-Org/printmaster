@@ -82,6 +82,58 @@ func TestScannerRuntimeQuickFullEffects(t *testing.T) {
 	}
 }
 
+func TestScannerRuntimeManualFullReadOnly(t *testing.T) {
+	runtime, store, calls := runtimeTestSetup(t, "SERIAL-1")
+	observation, err := scannerObservation("192.0.2.1", scanner.SourceManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runtime.request(context.Background(), observation, scanner.IntentManual,
+		scanner.WorkOptions{FullDetail: true}, "SERIAL-1", true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("manual full preview expected essential and detail queries, got %d", calls.Load())
+	}
+	if len(result.Queries) != 2 {
+		t.Fatalf("manual full result has %d queries, want 2", len(result.Queries))
+	}
+	if _, err := store.Get(context.Background(), "SERIAL-1"); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("read-only preview persisted scanner data: %v", err)
+	}
+}
+
+func TestScannerIPScanningAllowedFailsClosedOnSettingsErrors(t *testing.T) {
+	config, err := storage.NewAgentConfigStore(filepath.Join(t.TempDir(), "scanner-config.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := agentConfigStore
+	agentConfigStore = config
+	t.Cleanup(func() {
+		agentConfigStore = previous
+		if err := config.Close(); err != nil {
+			t.Errorf("close config store: %v", err)
+		}
+	})
+	if err := scannerIPScanningAllowed(); err != nil {
+		t.Fatalf("missing setting should retain the default: %v", err)
+	}
+	if err := config.SetConfigValue("discovery_settings", map[string]interface{}{"ip_scanning_enabled": false}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scannerIPScanningAllowed(); !errors.Is(err, errIPScanningDisabled) {
+		t.Fatalf("disabled setting error = %v, want %v", err, errIPScanningDisabled)
+	}
+	if err := config.SetConfigValue("discovery_settings", "invalid settings shape"); err != nil {
+		t.Fatal(err)
+	}
+	if err := scannerIPScanningAllowed(); err == nil || errors.Is(err, errIPScanningDisabled) {
+		t.Fatalf("invalid settings must fail closed with a read error, got %v", err)
+	}
+}
+
 func TestScannerRuntimeReusedIPRecordsReplacementWithoutTouchingOld(t *testing.T) {
 	runtime, store, _ := runtimeTestSetup(t, "NEW-SERIAL")
 	ctx := context.Background()

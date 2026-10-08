@@ -3392,10 +3392,11 @@ func runInteractive(ctx context.Context, configFlag string) {
 	// Controlled by discovery setting: auto_discover_enabled (bool) - master switch
 	// Individual live discovery methods can be enabled/disabled independently
 	var (
-		autoDiscoverMu       sync.Mutex
-		autoDiscoverCancel   context.CancelFunc
-		autoDiscoverRunning  bool
-		autoDiscoverInterval = 15 * time.Minute // Configurable via settings
+		autoDiscoverMu         sync.Mutex
+		autoDiscoverCancel     context.CancelFunc
+		autoDiscoverRunning    bool
+		autoDiscoverGeneration uint64
+		autoDiscoverInterval   = 15 * time.Minute // Configurable via settings
 
 		liveMDNSMu      sync.Mutex
 		liveMDNSCancel  context.CancelFunc
@@ -3409,10 +3410,10 @@ func runInteractive(ctx context.Context, configFlag string) {
 		liveSSDPCancel  context.CancelFunc
 		liveSSDPRunning bool
 
-		metricsRescanMu       sync.Mutex
-		metricsRescanCancel   context.CancelFunc
-		metricsRescanRunning  bool
-		metricsRescanInterval = 60 * time.Minute // Configurable via settings
+		metricsRescanMu         sync.Mutex
+		metricsRescanCancel     context.CancelFunc
+		metricsRescanRunning    bool
+		metricsRescanGeneration uint64
 
 		snmpTrapMu      sync.Mutex
 		snmpTrapCancel  context.CancelFunc
@@ -3431,11 +3432,21 @@ func runInteractive(ctx context.Context, configFlag string) {
 			return
 		}
 		workerCtx, cancel := context.WithCancel(mainScanner.ctx)
+		autoDiscoverGeneration++
+		generation := autoDiscoverGeneration
 		autoDiscoverCancel = cancel
 		autoDiscoverRunning = true
 		appLogger.Info("Auto Discover: starting periodic scanner", "interval", autoDiscoverInterval.String())
 
-		mainScanner.launch(func() {
+		launched := mainScanner.launch(func() {
+			defer func() {
+				autoDiscoverMu.Lock()
+				if generation == autoDiscoverGeneration {
+					autoDiscoverRunning = false
+					autoDiscoverCancel = nil
+				}
+				autoDiscoverMu.Unlock()
+			}()
 			ticker := time.NewTicker(autoDiscoverInterval)
 			defer ticker.Stop()
 
@@ -3489,10 +3500,6 @@ func runInteractive(ctx context.Context, configFlag string) {
 			for {
 				select {
 				case <-workerCtx.Done():
-					autoDiscoverMu.Lock()
-					autoDiscoverRunning = false
-					autoDiscoverCancel = nil
-					autoDiscoverMu.Unlock()
 					appLogger.Info("Auto Discover: stopped")
 					return
 				case <-ticker.C:
@@ -3500,6 +3507,11 @@ func runInteractive(ctx context.Context, configFlag string) {
 				}
 			}
 		})
+		if !launched {
+			cancel()
+			autoDiscoverRunning = false
+			autoDiscoverCancel = nil
+		}
 	}
 
 	stopAutoDiscover := func() {
@@ -3510,6 +3522,8 @@ func runInteractive(ctx context.Context, configFlag string) {
 			autoDiscoverCancel()
 			autoDiscoverCancel = nil
 		}
+		autoDiscoverGeneration++
+		autoDiscoverRunning = false
 	}
 
 	// getSNMPTimeoutSeconds returns the configured SNMP timeout in seconds
@@ -3630,25 +3644,28 @@ func runInteractive(ctx context.Context, configFlag string) {
 			appLogger.Info("Metrics rescan: starting", "interval_minutes", intervalMinutes)
 		}
 
-		metricsRescanInterval = interval
 		rescanCtx, cancel := context.WithCancel(mainScanner.ctx)
+		metricsRescanGeneration++
+		generation := metricsRescanGeneration
 		metricsRescanCancel = cancel
 		metricsRescanRunning = true
 
 		appLogger.Info("Metrics rescan: starting", "interval_minutes", intervalMinutes)
 
-		mainScanner.launch(func() {
+		launched := mainScanner.launch(func() {
 			defer func() {
 				metricsRescanMu.Lock()
-				metricsRescanRunning = false
-				metricsRescanCancel = nil
+				if generation == metricsRescanGeneration {
+					metricsRescanRunning = false
+					metricsRescanCancel = nil
+				}
 				metricsRescanMu.Unlock()
 			}()
 
 			// Run immediately on start
 			collectMetricsForSavedDevices(rescanCtx)
 
-			ticker := time.NewTicker(metricsRescanInterval)
+			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
 
 			for {
@@ -3661,6 +3678,11 @@ func runInteractive(ctx context.Context, configFlag string) {
 				}
 			}
 		})
+		if !launched {
+			cancel()
+			metricsRescanRunning = false
+			metricsRescanCancel = nil
+		}
 	}
 
 	stopMetricsRescan := func() {
@@ -3671,6 +3693,8 @@ func runInteractive(ctx context.Context, configFlag string) {
 			metricsRescanCancel()
 			metricsRescanCancel = nil
 		}
+		metricsRescanGeneration++
+		metricsRescanRunning = false
 	}
 
 	// Define the collection function
@@ -3728,12 +3752,18 @@ func runInteractive(ctx context.Context, configFlag string) {
 		if err := mainScanner.refreshIndex(mainScanner.ctx); err != nil {
 			appLogger.Warn("Scanner settings inventory refresh failed", "error", err)
 		}
+		ipScanningEnabled := true
+		if value, ok := req["ip_scanning_enabled"].(bool); ok {
+			ipScanningEnabled = value
+		}
 		autoDiscoverEnabled := false
 		if v, ok := req["auto_discover_enabled"]; ok {
 			if vb, ok2 := v.(bool); ok2 {
 				autoDiscoverEnabled = vb
 				if vb {
-					startAutoDiscover()
+					if ipScanningEnabled {
+						startAutoDiscover()
+					}
 					appLogger.Info("Auto Discover enabled via settings")
 				} else {
 					stopAutoDiscover()
@@ -3751,8 +3781,14 @@ func runInteractive(ctx context.Context, configFlag string) {
 		if v, ok := req["ip_scanning_enabled"]; ok {
 			if vb, ok2 := v.(bool); ok2 {
 				if !vb {
-					// Stop any periodic per-IP scanning
+					// Stop all active network scanning while the master toggle is off.
 					stopAutoDiscover()
+					stopLiveMDNS()
+					stopLiveWSDiscovery()
+					stopLiveSSDP()
+					stopSNMPTrap()
+					stopLLMNR()
+					stopMetricsRescan()
 					appLogger.Info("IP scanning disabled via settings: periodic and manual per-IP scans will be blocked")
 				} else {
 					// If enabling, only start auto-discover if auto_discover_enabled is true in the provided map
@@ -3770,7 +3806,7 @@ func runInteractive(ctx context.Context, configFlag string) {
 		}
 		if v, ok := req["auto_discover_live_mdns"]; ok {
 			if vb, ok2 := v.(bool); ok2 {
-				if vb && autoDiscoverEnabled {
+				if vb && autoDiscoverEnabled && ipScanningEnabled {
 					startLiveMDNS()
 					appLogger.Info("Live mDNS discovery enabled via settings")
 				} else {
@@ -3781,7 +3817,7 @@ func runInteractive(ctx context.Context, configFlag string) {
 		}
 		if v, ok := req["auto_discover_live_wsd"]; ok {
 			if vb, ok2 := v.(bool); ok2 {
-				if vb && autoDiscoverEnabled {
+				if vb && autoDiscoverEnabled && ipScanningEnabled {
 					startLiveWSDiscovery()
 					appLogger.Info("Live WS-Discovery enabled via settings")
 				} else {
@@ -3792,7 +3828,7 @@ func runInteractive(ctx context.Context, configFlag string) {
 		}
 		if v, ok := req["auto_discover_live_ssdp"]; ok {
 			if vb, ok2 := v.(bool); ok2 {
-				if vb && autoDiscoverEnabled {
+				if vb && autoDiscoverEnabled && ipScanningEnabled {
 					startLiveSSDP()
 					appLogger.Info("Live SSDP discovery enabled via settings")
 				} else {
@@ -3803,7 +3839,7 @@ func runInteractive(ctx context.Context, configFlag string) {
 		}
 		if v, ok := req["auto_discover_live_snmptrap"]; ok {
 			if vb, ok2 := v.(bool); ok2 {
-				if vb && autoDiscoverEnabled {
+				if vb && autoDiscoverEnabled && ipScanningEnabled {
 					startSNMPTrap()
 					appLogger.Info("SNMP Trap listener enabled via settings")
 				} else {
@@ -3814,7 +3850,7 @@ func runInteractive(ctx context.Context, configFlag string) {
 		}
 		if v, ok := req["auto_discover_live_llmnr"]; ok {
 			if vb, ok2 := v.(bool); ok2 {
-				if vb && autoDiscoverEnabled {
+				if vb && autoDiscoverEnabled && ipScanningEnabled {
 					startLLMNR()
 					appLogger.Info("LLMNR listener enabled via settings")
 				} else {
@@ -3825,7 +3861,7 @@ func runInteractive(ctx context.Context, configFlag string) {
 		}
 		if v, ok := req["metrics_rescan_enabled"]; ok {
 			if vb, ok2 := v.(bool); ok2 {
-				if vb {
+				if vb && ipScanningEnabled {
 					intervalMinutes := 60
 					intervalSeconds := 0
 					if iv, ok := req["metrics_rescan_interval_minutes"]; ok {
@@ -3846,7 +3882,11 @@ func runInteractive(ctx context.Context, configFlag string) {
 					}
 				} else {
 					stopMetricsRescan()
-					appLogger.Info("Metrics monitoring disabled")
+					if vb {
+						appLogger.Info("Metrics monitoring paused while IP scanning is disabled")
+					} else {
+						appLogger.Info("Metrics monitoring disabled")
+					}
 				}
 			}
 		}
@@ -4616,6 +4656,14 @@ func runInteractive(ctx context.Context, configFlag string) {
 		// If FullWalk is requested, perform a complete SNMP walk to capture all OIDs
 		// This helps debug vendor-specific issues where standard OIDs don't work
 		if req.FullWalk && req.DeviceIP != "" {
+			if err := scannerIPScanningAllowed(); err != nil {
+				status := http.StatusInternalServerError
+				if err == errIPScanningDisabled {
+					status = http.StatusForbidden
+				}
+				http.Error(w, err.Error(), status)
+				return
+			}
 			if appLogger != nil {
 				appLogger.Info("Performing full SNMP walk for report", "ip", req.DeviceIP)
 			}
@@ -4920,6 +4968,10 @@ func runInteractive(ctx context.Context, configFlag string) {
 
 		// If FullWalk is requested, perform a complete SNMP walk with progress
 		if req.FullWalk && req.DeviceIP != "" {
+			if err := scannerIPScanningAllowed(); err != nil {
+				sendEvent("error", map[string]string{"error": err.Error()})
+				return
+			}
 			sendEvent("progress", map[string]interface{}{
 				"stage":   "connecting",
 				"percent": 5,
@@ -5374,23 +5426,27 @@ func runInteractive(ctx context.Context, configFlag string) {
 			return
 		}
 
-		// Build SNMP client and perform a full diagnostic walk (no stop keywords)
-		cfg, err := agent.GetSNMPConfig()
+		observation, err := scannerObservation(req.IP, scanner.SourceManual)
+		if err != nil {
+			http.Error(w, "invalid ip", http.StatusBadRequest)
+			return
+		}
+		result, err := mainScanner.request(r.Context(), observation, scanner.IntentManual,
+			scanner.WorkOptions{TimeoutSeconds: 5, FullTimeoutSeconds: 5, FullDetail: true, SNMPAfterTCPFailure: true, MissingSerialFallback: true},
+			req.Serial, true, nil)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if err == errIPScanningDisabled {
+				status = http.StatusForbidden
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		pi, err := scannerPrinterInfo(result)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		client, err := agent.NewSNMPClient(cfg, req.IP, 5)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		defer client.Close()
-
-		cols := agent.FullDiagnosticWalk(client, nil, []string{"1.3.6.1.2.1", "1.3.6.1.2.1.43", "1.3.6.1.4.1"}, 10000)
-		pi, _ := agent.ParsePDUs(req.IP, cols, nil, func(string) {})
-		// Merge vendor-specific metrics (ICE-style OIDs)
-		agent.MergeVendorMetrics(&pi, cols, "")
 
 		// Return only the fields relevant for device details
 		proposed := map[string]interface{}{

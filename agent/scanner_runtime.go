@@ -195,13 +195,16 @@ func (r *scannerRuntime) requestWithSource(ctx context.Context, observation scan
 
 var errIPScanningDisabled = errors.New("ip scanning is disabled in agent settings")
 
-// scannerIPScanningAllowed applies the master network-scanning toggle to every network request.
+// scannerIPScanningAllowed applies the master network-scanning toggle to scanner requests.
 func scannerIPScanningAllowed() error {
 	if agentConfigStore == nil {
 		return nil
 	}
 	var settings map[string]interface{}
-	if agentConfigStore.GetConfigValue("discovery_settings", &settings) == nil && settings["ip_scanning_enabled"] == false {
+	if err := agentConfigStore.GetConfigValue("discovery_settings", &settings); err != nil {
+		return fmt.Errorf("read discovery settings before scanner request: %w", err)
+	}
+	if settings["ip_scanning_enabled"] == false {
 		return errIPScanningDisabled
 	}
 	return nil
