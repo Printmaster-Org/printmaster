@@ -15,6 +15,34 @@ body.light-mode #printer_details_modal {
   --muted: #51646b;
 }
 
+html body:not(.light-mode) {
+  --muted: #94aaaf;
+}
+
+html body.light-mode {
+  --muted: #51646b;
+}
+
+[role="dialog"] :focus-visible,
+.toner-bar:focus-visible,
+.copyable:focus-visible,
+.editable-field:focus-visible,
+.toast-dismiss:focus-visible {
+  outline: 2px solid var(--highlight);
+  outline-offset: 3px;
+}
+
+.toast-dismiss {
+  flex-shrink: 0;
+  padding: 4px;
+  min-width: 32px;
+  min-height: 32px;
+}
+
+.toast-message {
+  overflow-wrap: anywhere;
+}
+
 #printer_details_modal .device-details-header {
   flex-shrink: 0;
   padding-right: 44px;

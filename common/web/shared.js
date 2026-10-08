@@ -354,7 +354,7 @@ function showPrinterDetails(identifier, source) {
         throw e;
     }
 }
-    function showToast(message, type = 'info', duration = 3000) {
+    function showToast(message, type = 'info', duration = type === 'error' ? 8000 : 3000) {
         // Log error toasts to console for debugging
         if (type === 'error') {
             try { window.__pm_shared.error('[TOAST ERROR]', message); } catch (e) { console.error('[TOAST ERROR]', message); }
@@ -367,6 +367,8 @@ function showPrinterDetails(identifier, source) {
 
         const toast = document.createElement('div');
         toast.className = `toast toast-${type}`;
+        toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
+        toast.setAttribute('aria-atomic', 'true');
 
         const icons = {
             success: '✓',
@@ -374,22 +376,42 @@ function showPrinterDetails(identifier, source) {
             info: 'ℹ'
         };
 
-        toast.innerHTML = `
-            <span class="toast-icon">${icons[type] || icons.info}</span>
-            <span class="toast-message">${message}</span>
-        `;
+        const icon = document.createElement('span');
+        icon.className = 'toast-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        icon.textContent = icons[type] || icons.info;
+        const text = document.createElement('span');
+        text.className = 'toast-message';
+        text.textContent = message;
+        const dismiss = document.createElement('button');
+        dismiss.type = 'button';
+        dismiss.className = 'toast-dismiss';
+        dismiss.setAttribute('aria-label', 'Dismiss notification');
+        dismiss.textContent = '×';
+        toast.append(icon, text, dismiss);
 
         container.appendChild(toast);
 
-        // Auto-remove after duration
-        setTimeout(() => {
+        let timer;
+        const remove = () => {
+            clearTimeout(timer);
             toast.classList.add('toast-hiding');
             setTimeout(() => {
                 if (toast.parentNode) {
                     toast.parentNode.removeChild(toast);
                 }
             }, 300); // Match CSS animation duration
-        }, duration);
+        };
+        const resume = () => {
+            clearTimeout(timer);
+            if (!toast.contains(document.activeElement) && !toast.matches(':hover')) timer = setTimeout(remove, duration);
+        };
+        dismiss.onclick = remove;
+        toast.addEventListener('mouseenter', () => clearTimeout(timer));
+        toast.addEventListener('mouseleave', resume);
+        toast.addEventListener('focusin', () => clearTimeout(timer));
+        toast.addEventListener('focusout', resume);
+        resume();
     }
 
     // Ensure the shared namespace exposes showToast
@@ -475,6 +497,105 @@ function showPrinterDetails(identifier, source) {
 // MODAL SYSTEM
 // ============================================================================
 
+// Observe legacy and dynamically created dialogs so both applications share one
+// focus lifecycle without replacing their existing cancel/save handlers.
+(function installDialogAccessibility() {
+    const selector = '.modal, .modal-overlay, #printer_details_overlay';
+    const focusable = 'button, input:not([type="hidden"]), select, textarea, a[href], [tabindex]';
+    const stack = [];
+    const inertState = new Map();
+    let titleSequence = 0;
+    function visible(element) {
+        for (let node = element; node && node !== document; node = node.parentElement) {
+            if (node.hidden || getComputedStyle(node).display === 'none' || getComputedStyle(node).visibility === 'hidden') return false;
+        }
+        return element.isConnected;
+    }
+    function controls(dialog) {
+        return [...dialog.querySelectorAll(focusable)].filter(el => !el.disabled && el.tabIndex >= 0 && visible(el));
+    }
+    function focusDialog(entry) {
+        const target = entry.dialog.querySelector('[autofocus], [id$="_cancel"]');
+        (target && !target.disabled && visible(target) ? target : controls(entry.dialog)[0] || entry.dialog).focus();
+    }
+    function synchronize() {
+        if (typeof document === 'undefined' || !document.body) return;
+        const open = [...document.querySelectorAll(selector)].filter(visible);
+        const removed = stack.filter(entry => !open.includes(entry.overlay));
+        for (let index = stack.length - 1; index >= 0; index--) {
+            if (!open.includes(stack[index].overlay)) stack.splice(index, 1);
+        }
+        let newest;
+        for (const overlay of open) {
+            if (stack.some(entry => entry.overlay === overlay)) continue;
+            const dialog = overlay.querySelector('[role="dialog"], .modal-content, #printer_details_modal') || overlay;
+            dialog.setAttribute('role', 'dialog');
+            dialog.setAttribute('aria-modal', 'true');
+            dialog.tabIndex = -1;
+            const title = dialog.querySelector('.modal-title, h2, h3, h4, [id$="_title"]');
+            if (title && !dialog.hasAttribute('aria-labelledby')) {
+                if (!title.id) title.id = 'pm_dialog_title_' + ++titleSequence;
+                dialog.setAttribute('aria-labelledby', title.id);
+            }
+            newest = { overlay, dialog, opener: document.activeElement };
+            stack.push(newest);
+        }
+        for (const [node, inert] of inertState) {
+            if (inert) node.setAttribute('inert', '');
+            else node.removeAttribute('inert');
+        }
+        inertState.clear();
+        const top = stack[stack.length - 1];
+        if (top) {
+            // Nested modals may live inside a panel: inert its siblings at every
+            // ancestor, never the ancestor that contains the active dialog.
+            for (let node = top.overlay; node && node !== document.body; node = node.parentElement) {
+                for (const sibling of node.parentElement?.children || []) {
+                    if (sibling === node || /SCRIPT|STYLE|LINK/.test(sibling.tagName) || sibling.id === 'toast_container') continue;
+                    inertState.set(sibling, sibling.hasAttribute('inert'));
+                    sibling.setAttribute('inert', '');
+                }
+            }
+            if (newest || !top.dialog.contains(document.activeElement)) focusDialog(top);
+        } else if (removed.length) {
+            const opener = removed[0].opener;
+            if (opener?.isConnected && visible(opener)) opener.focus();
+        }
+    }
+    function initialize() {
+        new MutationObserver(synchronize).observe(document.body, {
+            subtree: true, childList: true, attributes: true, attributeFilter: ['style', 'class', 'hidden']
+        });
+        synchronize();
+        document.addEventListener('keydown', event => {
+            const top = stack[stack.length - 1];
+            if (!top) return;
+            if (event.key === 'Escape') {
+                const dismiss = top.dialog.querySelector('[id$="_cancel"], .modal-close-x, .modal-close, [id$="_close_x"], [aria-label^="Close"]')
+                    || controls(top.dialog).find(el => /^(close|cancel|ok)$/i.test(el.textContent.trim()));
+                if (dismiss && !dismiss.disabled) {
+                    event.preventDefault();
+                    event.stopImmediatePropagation();
+                    dismiss.click();
+                }
+            } else if (event.key === 'Tab') {
+                const items = controls(top.dialog);
+                const index = items.indexOf(document.activeElement);
+                if (!items.length || index < 0 || (!event.shiftKey && index === items.length - 1) || (event.shiftKey && index === 0)) {
+                    event.preventDefault();
+                    (items.length ? items[event.shiftKey ? items.length - 1 : 0] : top.dialog).focus();
+                }
+            }
+        }, true);
+        document.addEventListener('focusin', () => {
+            const top = stack[stack.length - 1];
+            if (top && !top.dialog.contains(document.activeElement) && visible(top.overlay)) focusDialog(top);
+        });
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initialize, { once: true });
+    else initialize();
+})();
+
 // Create a simple temporary confirm modal when the embedded `confirm_modal`
 // DOM is not available or when we want to avoid the native blocking
 // `window.confirm`. Returns a Promise<boolean> that resolves to true when
@@ -490,11 +611,11 @@ function createTemporaryConfirmModal(message, title = 'Confirm', isDangerous = f
             wrapper.innerHTML = `
                 <div class="modal-content" style="max-width:480px;">
                     <div class="modal-header">
-                        <h3 class="modal-title">${escapeHtml(title)}</h3>
+                        <h3 class="modal-title"></h3>
                         <button class="modal-close-x" title="Close">&times;</button>
                     </div>
                     <div class="modal-body">
-                        <p style="white-space:pre-wrap;">${escapeHtml(message)}</p>
+                        <p style="white-space:pre-wrap;"></p>
                     </div>
                     <div class="modal-footer">
                         <button class="modal-button modal-button-secondary" data-action="cancel">Cancel</button>
@@ -502,6 +623,8 @@ function createTemporaryConfirmModal(message, title = 'Confirm', isDangerous = f
                     </div>
                 </div>
             `;
+            wrapper.querySelector('.modal-title').textContent = title;
+            wrapper.querySelector('.modal-body p').textContent = message;
             document.body.appendChild(wrapper);
 
             const onConfirm = () => { cleanup(); resolve(true); };
@@ -525,6 +648,7 @@ function createTemporaryConfirmModal(message, title = 'Confirm', isDangerous = f
             closeX && closeX.addEventListener('click', onCancel);
             wrapper.addEventListener('click', onBackdrop);
         } catch (e) {
+            window.__pm_shared.error('Temporary confirmation dialog failed', e);
             try { resolve(false); } catch (ex) {}
         }
     });
@@ -843,7 +967,7 @@ function showPrompt(message, defaultValue = '', title = 'Input') {
                     </div>
                     <div class="modal-body">
                         <p id="prompt_modal_message">${message}</p>
-                        <input id="prompt_modal_input" class="modal-input" style="width:100%;padding:8px;margin-top:8px;" />
+                        <input id="prompt_modal_input" aria-labelledby="prompt_modal_message" class="modal-input" style="width:100%;padding:8px;margin-top:8px;" />
                     </div>
                     <div class="modal-footer">
                         <button class="modal-button modal-button-secondary" id="prompt_modal_cancel">Cancel</button>
@@ -865,6 +989,8 @@ function showPrompt(message, defaultValue = '', title = 'Input') {
         titleEl.textContent = title;
         messageEl.textContent = message;
         inputEl.value = defaultValue || '';
+        inputEl.setAttribute('aria-labelledby', 'prompt_modal_message');
+        if (closeBtn) closeBtn.setAttribute('aria-label', 'Close input dialog');
 
         let closed = false;
         const finalize = (result) => {
@@ -904,7 +1030,7 @@ function showPrompt(message, defaultValue = '', title = 'Input') {
 
         // Show modal and focus input
         modal.style.display = 'flex';
-        setTimeout(() => { try { inputEl.focus(); inputEl.select(); } catch (e) {} }, 10);
+        setTimeout(() => { if (!closed) { inputEl.focus(); inputEl.select(); } }, 10);
     });
 }
 
@@ -1391,7 +1517,7 @@ window.showMetricsModal = async function (opts = {}) {
                 <div class="modal-content" style="max-width:900px;">
                     <div class="modal-header">
                         <span class="modal-title" id="metrics_modal_title">Metrics</span>
-                        <span class="modal-close" id="metrics_modal_close_x">&times;</span>
+                        <button type="button" class="modal-close" id="metrics_modal_close_x" aria-label="Close metrics">&times;</button>
                     </div>
                     <div class="modal-body" id="metrics_modal_body" style="max-height:60vh;overflow:auto;padding:16px;">
                         <div id="metrics_modal_content" style="font-size:13px;color:var(--muted)">Loading...</div>

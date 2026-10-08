@@ -159,8 +159,8 @@
             `<h5 class="saved-device-card-title">${device.manufacturer||'Unknown'} ${device.model||''}</h5>` +
             `${capabilitiesHTML}` +
             `${deviceSourceBadgesHTML}` +
-            `<p class="saved-device-card-subtitle copyable" data-copy="${serial}">Serial: ${serial}${clipIcon}</p>` +
-            `<p class="saved-device-card-subtitle"><span class="copyable" data-copy="${ipVal}" style="display:inline-flex;align-items:center;gap:4px;">IP: ${ipVal}${clipIcon}</span>` + (macVal?`<span class="copyable" data-copy="${macVal}" style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;"> • MAC: ${macVal}${clipIcon}</span>`:'') + `</p>` +
+            `<p class="saved-device-card-subtitle copyable" role="button" tabindex="0" aria-label="Copy serial number" data-copy="${serial}">Serial: ${serial}${clipIcon}</p>` +
+            `<p class="saved-device-card-subtitle"><span class="copyable" role="button" tabindex="0" aria-label="Copy IP address" data-copy="${ipVal}" style="display:inline-flex;align-items:center;gap:4px;">IP: ${ipVal}${clipIcon}</span>` + (macVal?`<span class="copyable" role="button" tabindex="0" aria-label="Copy MAC address" data-copy="${macVal}" style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;"> • MAC: ${macVal}${clipIcon}</span>`:'') + `</p>` +
             `</div><div style="display:flex;gap:8px;flex-wrap:wrap;">` +
             (webUIUrl ? `<button class="primary" style="font-size:12px" data-action="webui" data-webui-url="${webUIUrl}" data-serial="${serial}">WebUI</button>` : '') +
             `<button data-action="details" data-ip="${device.ip||''}" data-serial="${serial}" data-source="saved">Details</button>` +
@@ -168,8 +168,8 @@
             `</div></div>` +
             `<div class="saved-device-card-grid"><div class="saved-device-card-inner-panel">` +
             `<div class="saved-device-card-section"><div class="saved-device-card-section-title">Device Info</div>` +
-            `<div class="saved-device-card-row"><span class="saved-device-card-label">Asset #</span><span class="saved-device-card-value editable-field" data-action="edit" data-serial="${serial}" data-field="asset_number" data-current="${item&&item.asset_number?item.asset_number:''}">${item&&item.asset_number?item.asset_number:'(click to add)'}</span></div>` +
-            `<div class="saved-device-card-row"><span class="saved-device-card-label">Location</span><span class="saved-device-card-value editable-field" data-action="edit" data-serial="${serial}" data-field="location" data-current="${item&&item.location?item.location:''}">${item&&item.location?item.location:'(click to add)'}</span></div>` +
+            `<div class="saved-device-card-row"><span class="saved-device-card-label">Asset #</span><span class="saved-device-card-value editable-field" role="button" tabindex="0" aria-label="Edit asset number" data-action="edit" data-serial="${serial}" data-field="asset_number" data-current="${item&&item.asset_number?item.asset_number:''}">${item&&item.asset_number?item.asset_number:'(click to add)'}</span></div>` +
+            `<div class="saved-device-card-row"><span class="saved-device-card-label">Location</span><span class="saved-device-card-value editable-field" role="button" tabindex="0" aria-label="Edit location" data-action="edit" data-serial="${serial}" data-field="location" data-current="${item&&item.location?item.location:''}">${item&&item.location?item.location:'(click to add)'}</span></div>` +
             `<div class="saved-device-card-row"><span class="saved-device-card-label">Total Pages</span><span class="saved-device-card-value" title="${lifeCount === null ? 'Page count not collected' : 'Last reported page count'}">${lifeCount === null ? 'Not collected' : lifeCount.toLocaleString()}</span></div>` +
             `</div>${consumablesSection}</div>${usageGraphHTML}</div></div>`;
     }
@@ -570,6 +570,13 @@
     window.__pm_shared_cards.isInkOrToner = isInkOrToner;
     window.__pm_shared_cards.getDeviceTonerBarData = getDeviceTonerBarData;
     window.__pm_shared_cards.renderTonerBars = renderTonerBars;
+
+    document.addEventListener('keydown', event => {
+        if ((event.key === 'Enter' || event.key === ' ') && event.target.matches('.copyable[role="button"], .editable-field[role="button"]')) {
+            event.preventDefault();
+            event.target.click();
+        }
+    });
 
     // Attach delegated click handler for copyable elements that use data-copy.
     // Await shared.ready so shared utilities (copyToClipboard, showToast) are
