@@ -155,6 +155,9 @@ Fine-tune discovery in **Settings** → **Discovery Settings**:
 The current Settings page groups automatic discovery, passive discovery, and
 metrics monitoring controls. The example below uses demo configuration.
 
+If settings cannot be loaded, Apply and auto-save are paused and **Retry** is available. This
+prevents saving displayed defaults or an old snapshot over the real settings.
+
 ![Agent discovery settings and metrics monitoring controls](screenshots/Settings%20-%20PrintMaster%20Agent.png)
 
 | Setting | Description |
@@ -215,6 +218,12 @@ For each printer, PrintMaster collects:
 | **Toner Levels** | Remaining toner/ink percentages |
 | **Status** | Online/offline, errors |
 | **Location** | If configured on the device |
+
+Use **Details** to open a device without a mouse gesture. Dialogs support
+keyboard navigation and restore focus when closed; deleting a device requires
+confirmation. Missing page counters are shown as **Not collected** rather than
+zero. If a refresh fails, check the visible error and use **Retry** instead of
+interpreting an empty result as an empty inventory.
 
 ---
 

@@ -85,6 +85,16 @@ synthetic demo data.
 Consumables use the same ink-color palette in device lists and details, including
 light shades and specialty inks. Percentages sit beside the labels above compact
 bars; waste and maintenance supplies retain status-based warning colors.
+Matching raw `supply_` aliases are shown once when their readings agree; distinct
+cartridges and conflicting readings remain separate. Explicit color supplies
+can be displayed even when a printer does not report its color capability.
+
+![Specialty ink colors with duplicate raw aliases removed and a full waste container](screenshots/Specialty%20Consumables%20-%20PrintMaster%20Agent.png)
+
+Missing page counters display **Not collected**, not zero. Device deletion
+requires confirmation. Dialogs support keyboard navigation, keep focus inside
+the active dialog, and restore focus when closed. Delayed responses from a
+previous device cannot replace the device currently being viewed.
 
 ![Device identity, asset tag, location, and metrics overview](screenshots/Device%20Details%20-%20PrintMaster%20Agent.png)
 
@@ -133,6 +143,12 @@ This allows you to track usage trends while keeping database size manageable.
 
 The server's **Metrics** tab brings fleet throughput and consumables history
 together with selectable time ranges.
+
+In device details, **Last 7 Days** opens that range, limited to the history
+available for the device. Cartridge history retains each cartridge's identity
+across snapshots and uses the same specialty-ink colors as the device cards.
+If metrics cannot be loaded, an unavailable message and **Retry** replace the
+chart rather than presenting old results as current or an error as empty data.
 
 ![Fleet throughput and consumables history charts](screenshots/Metrics%20-%20PrintMaster%20Server.png)
 
@@ -242,7 +258,10 @@ For device access:
 
 ## Alerts & Notifications
 
-The **Alerts** tab summarizes fleet health, alert categories, and recent events.
+The **Alerts** tab summarizes active alerts by severity, alert categories, and
+recent events. Severity totals count alerts, not healthy or unhealthy devices.
+If a refresh fails, previously loaded data is marked stale and **Retry** is
+available; a failed request is not presented as a zero-alert fleet.
 
 ![Fleet alert summary and recent events](screenshots/Alerts%20-%20PrintMaster%20Server.png)
 
