@@ -1391,9 +1391,12 @@
 
                 <!-- Alert Summary Sub-tab (dashboard view) -->
                 <div class="alerts-view-panel" data-alertsview-panel="summary">
-                    <!-- Fleet Health Overview -->
+                    <!-- Active alert counts -->
                     <div class="alert-summary-section">
-                        <h4 class="alert-summary-title">Fleet Health</h4>
+                        <h4 class="alert-summary-title">Active Alert Severity</h4>
+                        <p id="alert_summary_status" role="status">Loading alert summary…</p>
+                        <button id="alert_summary_retry" type="button" hidden>Retry</button>
+                        <p id="summary_no_active_alerts" hidden>No active alerts</p>
                         <div class="alert-summary-grid">
                             <div class="alert-summary-card healthy" id="summary_healthy_card">
                                 <div class="summary-card-icon">
@@ -1402,8 +1405,8 @@
                                     </svg>
                                 </div>
                                 <div class="summary-card-content">
-                                    <div class="summary-card-value" id="summary_healthy_count">0</div>
-                                    <div class="summary-card-label">Healthy</div>
+                                    <div class="summary-card-value" id="summary_healthy_count">—</div>
+                                    <div class="summary-card-label">Informational</div>
                                 </div>
                             </div>
                             <div class="alert-summary-card warning" id="summary_warning_card">
@@ -1413,7 +1416,7 @@
                                     </svg>
                                 </div>
                                 <div class="summary-card-content">
-                                    <div class="summary-card-value" id="summary_warning_count">0</div>
+                                    <div class="summary-card-value" id="summary_warning_count">—</div>
                                     <div class="summary-card-label">Warnings</div>
                                 </div>
                             </div>
@@ -1424,7 +1427,7 @@
                                     </svg>
                                 </div>
                                 <div class="summary-card-content">
-                                    <div class="summary-card-value" id="summary_critical_count">0</div>
+                                    <div class="summary-card-value" id="summary_critical_count">—</div>
                                     <div class="summary-card-label">Critical</div>
                                 </div>
                             </div>
@@ -1435,8 +1438,8 @@
                                     </svg>
                                 </div>
                                 <div class="summary-card-content">
-                                    <div class="summary-card-value" id="summary_offline_count">0</div>
-                                    <div class="summary-card-label">Offline</div>
+                                    <div class="summary-card-value" id="summary_offline_count">—</div>
+                                    <div class="summary-card-label">Offline Agents</div>
                                 </div>
                             </div>
                         </div>
@@ -1445,35 +1448,23 @@
                     <!-- Scope-level Status -->
                     <div class="alert-summary-row">
                         <div class="alert-summary-section flex-1">
-                            <h4 class="alert-summary-title">By Scope</h4>
+                            <h4 class="alert-summary-title">Active Alerts by Scope</h4>
                             <div class="scope-status-grid">
                                 <div class="scope-status-item">
                                     <span class="scope-label">Devices</span>
-                                    <div class="scope-bar-container">
-                                        <div class="scope-bar" id="scope_bar_devices" style="--healthy:100%;--warning:0%;--critical:0%;"></div>
-                                    </div>
-                                    <span class="scope-count" id="scope_count_devices">0 / 0</span>
+                                    <span class="scope-count" id="scope_count_devices">—</span>
                                 </div>
                                 <div class="scope-status-item">
                                     <span class="scope-label">Agents</span>
-                                    <div class="scope-bar-container">
-                                        <div class="scope-bar" id="scope_bar_agents" style="--healthy:100%;--warning:0%;--critical:0%;"></div>
-                                    </div>
-                                    <span class="scope-count" id="scope_count_agents">0 / 0</span>
+                                    <span class="scope-count" id="scope_count_agents">—</span>
                                 </div>
                                 <div class="scope-status-item">
                                     <span class="scope-label">Sites</span>
-                                    <div class="scope-bar-container">
-                                        <div class="scope-bar" id="scope_bar_sites" style="--healthy:100%;--warning:0%;--critical:0%;"></div>
-                                    </div>
-                                    <span class="scope-count" id="scope_count_sites">0 / 0</span>
+                                    <span class="scope-count" id="scope_count_sites">—</span>
                                 </div>
                                 <div class="scope-status-item">
                                     <span class="scope-label">Tenants</span>
-                                    <div class="scope-bar-container">
-                                        <div class="scope-bar" id="scope_bar_tenants" style="--healthy:100%;--warning:0%;--critical:0%;"></div>
-                                    </div>
-                                    <span class="scope-count" id="scope_count_tenants">0 / 0</span>
+                                    <span class="scope-count" id="scope_count_tenants">—</span>
                                 </div>
                             </div>
                         </div>

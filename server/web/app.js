@@ -1796,7 +1796,18 @@ function ensureAlertsViewReady(view) {
     }
 }
 
+let alertSummaryLastUpdated = null;
+
 async function loadAlertSummary() {
+    const status = document.getElementById('alert_summary_status');
+    const retry = document.getElementById('alert_summary_retry');
+    if (retry && !retry.dataset.bound) {
+        retry.dataset.bound = 'true';
+        retry.addEventListener('click', loadAlertSummary);
+    }
+    if (retry) retry.disabled = true;
+    if (status) status.textContent = alertSummaryLastUpdated
+        ? `Refreshing… Last updated ${alertSummaryLastUpdated.toLocaleString()}` : 'Loading alert summary…';
     try {
         // Fetch summary from API
         const resp = await fetch('/api/v1/alerts/summary');
@@ -1809,10 +1820,9 @@ async function loadAlertSummary() {
         const warningCount = summary.warning_count || 0;
         const infoCount = summary.info_count || 0;
         const totalActive = summary.active_count || 0;
-        const healthyCount = totalActive === 0 ? 1 : 0; // Show checkmark if no active alerts
-
         const el = (id) => document.getElementById(id);
-        if (el('summary_healthy_count')) el('summary_healthy_count').textContent = healthyCount > 0 ? '✓' : 0;
+        if (el('summary_healthy_count')) el('summary_healthy_count').textContent = infoCount;
+        if (el('summary_no_active_alerts')) el('summary_no_active_alerts').hidden = totalActive !== 0;
         if (el('summary_warning_count')) el('summary_warning_count').textContent = warningCount;
         if (el('summary_critical_count')) el('summary_critical_count').textContent = criticalCount;
         if (el('summary_offline_count')) el('summary_offline_count').textContent = summary.offline_counts?.agents || 0;
@@ -1825,10 +1835,9 @@ async function loadAlertSummary() {
         const siteAlerts = byScope['site'] || 0;
         const tenantAlerts = byScope['tenant'] || 0;
 
-        updateScopeBar('devices', deviceAlerts === 0 ? 100 : 0, deviceAlerts > 0 && deviceAlerts < 5 ? 100 : 0, deviceAlerts >= 5 ? 100 : 0, `${deviceAlerts} alerts`);
-        updateScopeBar('agents', agentAlerts === 0 ? 100 : 0, agentAlerts > 0 && agentAlerts < 3 ? 100 : 0, agentAlerts >= 3 ? 100 : 0, `${agentAlerts} alerts`);
-        updateScopeBar('sites', siteAlerts === 0 ? 100 : 0, siteAlerts > 0 && siteAlerts < 2 ? 100 : 0, siteAlerts >= 2 ? 100 : 0, `${siteAlerts} alerts`);
-        updateScopeBar('tenants', tenantAlerts === 0 ? 100 : 0, tenantAlerts > 0 ? 100 : 0, 0, `${tenantAlerts} alerts`);
+        Object.entries({ devices: deviceAlerts, agents: agentAlerts, sites: siteAlerts, tenants: tenantAlerts }).forEach(([scope, count]) => {
+            if (el(`scope_count_${scope}`)) el(`scope_count_${scope}`).textContent = `${count} alerts`;
+        });
 
         // Update breakdown by type
         // Backend provides: alerts_by_type map with keys: supply_low, supply_critical, device_offline, agent_offline, etc.
@@ -1846,15 +1855,23 @@ async function loadAlertSummary() {
         if (el('status_channels')) el('status_channels').textContent = summary.active_channels || 0;
 
         // Show maintenance mode / quiet hours status
-        if (summary.has_maintenance && el('maintenance_indicator')) {
-            el('maintenance_indicator').style.display = '';
+        if (el('maintenance_indicator')) {
+            el('maintenance_indicator').style.display = summary.has_maintenance ? '' : 'none';
         }
-        if (summary.is_quiet_hours && el('quiet_hours_indicator')) {
-            el('quiet_hours_indicator').style.display = '';
+        if (el('quiet_hours_indicator')) {
+            el('quiet_hours_indicator').style.display = summary.is_quiet_hours ? '' : 'none';
         }
+        alertSummaryLastUpdated = new Date();
+        if (status) status.textContent = `Last updated ${alertSummaryLastUpdated.toLocaleString()}`;
+        if (retry) retry.hidden = true;
     } catch (err) {
         console.error('Failed to load alert summary:', err);
-        // Keep showing zeros as fallback
+        if (status) status.textContent = alertSummaryLastUpdated
+            ? `Alert summary is stale: refresh failed. Last updated ${alertSummaryLastUpdated.toLocaleString()}`
+            : 'Alert summary unavailable. Could not load alert counts.';
+        if (retry) retry.hidden = false;
+    } finally {
+        if (retry) retry.disabled = false;
     }
 
     // Wire up "View All" link (always needed)
@@ -4557,18 +4574,34 @@ function ensureSettingsViewReady(view) {
 async function loadServerSettings(forceRefresh = false) {
     const container = document.getElementById('server_settings_container');
     if (!container) return;
-    if (serverSettingsVM.loading && !forceRefresh) {
+    if (serverSettingsVM.loading) {
         return;
     }
     serverSettingsVM.loading = true;
-    container.innerHTML = '<div style="color:var(--muted);">Loading server settings…</div>';
+    const hasForm = !!container.querySelector('#server_settings_save_btn');
+    if (hasForm && !container.querySelector('#server_settings_snapshot')) {
+        const snapshot = document.createElement('fieldset');
+        snapshot.id = 'server_settings_snapshot';
+        snapshot.style.cssText = 'border:0;padding:0;margin:0;min-width:0;';
+        snapshot.disabled = true;
+        snapshot.append(...container.childNodes);
+        container.appendChild(snapshot);
+    }
+    container.querySelector('#server_settings_load_error')?.remove();
+    if (!hasForm) container.textContent = 'Loading server settings…';
+    const readSettings = async (url) => {
+        const response = await fetch(url);
+        if (!response.ok) {
+            const error = new Error(`HTTP ${response.status}`);
+            error.status = response.status;
+            throw error;
+        }
+        return response.json();
+    };
     try {
         const [settingsResp, sourcesResp] = await Promise.all([
-            fetchJSON('/api/v1/server/settings'),
-            fetchJSON('/api/v1/server/settings/sources').catch(err => {
-                window.__pm_shared.warn('Failed to load server settings lock metadata', err);
-                return null;
-            })
+            readSettings('/api/v1/server/settings'),
+            readSettings('/api/v1/server/settings/sources')
         ]);
         const normalized = normalizeServerSettings(settingsResp || {});
         serverSettingsVM.original = cloneServerSettingsData(normalized);
@@ -4583,8 +4616,27 @@ async function loadServerSettings(forceRefresh = false) {
         renderServerSettingsForm();
     } catch (err) {
         serverSettingsVM.lastError = err;
-        const message = err && err.message ? err.message : err;
-        container.innerHTML = `<div style="color:var(--danger);">Failed to load server settings: ${message}</div>`;
+        // Never retain settings after an authorization failure or enable edits
+        // without fresh lock metadata. A network/5xx failure permits read-only review.
+        const safeSnapshot = hasForm && (err instanceof TypeError || err.status >= 500);
+        if (!safeSnapshot) {
+            container.replaceChildren();
+            serverSettingsVM.data = null;
+            serverSettingsVM.original = null;
+        }
+        const banner = document.createElement('div');
+        banner.id = 'server_settings_load_error';
+        banner.setAttribute('role', 'status');
+        const message = document.createElement('p');
+        message.textContent = safeSnapshot
+            ? 'Server settings are stale and read-only. Refresh failed; your previous form is retained.'
+            : 'Server settings unavailable. Could not load settings and lock metadata.';
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.textContent = 'Retry';
+        retry.addEventListener('click', () => loadServerSettings(true));
+        banner.append(message, retry);
+        container.prepend(banner);
         window.__pm_shared.error('Failed to load server settings', err);
     } finally {
         serverSettingsVM.loading = false;
@@ -19140,4 +19192,3 @@ function updateTimeFilter(index) {
     // Report Download Modal
     wireModalClose('report_download_modal', 'report_download_close_x', 'report_download_close');
 })();
-
