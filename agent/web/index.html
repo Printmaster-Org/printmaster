@@ -706,7 +706,7 @@
                         style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
                         <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
                             <span style="font-weight:500;color:var(--highlight)">Trace Logging (Granular)</span>
-                            <button style="padding:2px 8px;font-size:12px">Refresh</button>
+                            <button id="trace_tags_refresh_btn" style="padding:2px 8px;font-size:12px">Refresh</button>
                         </div>
                         <div style="font-size:12px;color:var(--muted);margin-bottom:6px">
                             Enable specific trace categories to get detailed logs without noise. Changes persist
@@ -716,7 +716,7 @@
                         <div id="trace_tags_container">
                             <span style="color:var(--muted);font-size:12px">Loading...</span>
                         </div>
-                        <button style="margin-top:8px">Save Trace Tags</button>
+                        <button id="trace_tags_save_btn" style="margin-top:8px" disabled>Save Trace Tags</button>
                     </div>
 
                 </div>

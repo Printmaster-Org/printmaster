@@ -3805,18 +3805,11 @@ document.addEventListener('DOMContentLoaded', async function () {
         });
     }
 
-    // Trace tags buttons
-    const loadTraceBtn = document.querySelector('button[onclick*="loadTraceTags"]');
-    if (loadTraceBtn) {
-        loadTraceBtn.removeAttribute('onclick');
-        loadTraceBtn.addEventListener('click', loadTraceTags);
-    }
-
-    const saveTraceBtn = document.querySelector('button[onclick*="saveTraceTags"]');
-    if (saveTraceBtn) {
-        saveTraceBtn.removeAttribute('onclick');
-        saveTraceBtn.addEventListener('click', saveTraceTags);
-    }
+    // Trace tag controls use stable IDs because they have no inline handlers.
+    const loadTraceBtn = document.getElementById('trace_tags_refresh_btn');
+    if (loadTraceBtn) loadTraceBtn.addEventListener('click', () => loadTraceTags({ confirmDiscard: true }));
+    const saveTraceBtn = document.getElementById('trace_tags_save_btn');
+    if (saveTraceBtn) saveTraceBtn.addEventListener('click', saveTraceTags);
 
     // Clear database button
     const clearDbBtn = document.getElementById('clear_database_btn');
@@ -4322,6 +4315,17 @@ function loadSettings() {
     }).catch(e => { window.__pm_shared.error('loadSettings failed', e); });
 }
 
+let traceTagsDirty = false;
+let traceTagsLoading = false;
+let traceTagsSaving = false;
+
+function updateTraceTagsSaveButton() {
+    const button = document.getElementById('trace_tags_save_btn');
+    if (!button) return;
+    button.disabled = !traceTagsDirty || traceTagsLoading || traceTagsSaving;
+    button.textContent = traceTagsDirty ? 'Save Trace Tags *' : 'Save Trace Tags';
+}
+
 // Available trace tag categories for granular logging, organized by section
 const TRACE_TAG_CATEGORIES = {
     'Proxy': [
@@ -4352,29 +4356,48 @@ const TRACE_TAG_CATEGORIES = {
     ]
 };
 
-function loadTraceTags() {
+async function loadTraceTags(options = {}) {
     const container = document.getElementById('trace_tags_container');
     if (!container) {
         window.__pm_shared.error('trace_tags_container element not found');
         return;
     }
 
-    fetch('/settings/trace_tags').then(async r => {
+    if (traceTagsDirty && options.confirmDiscard) {
+        const discard = await window.__pm_shared.showConfirm('Discard unsaved trace tag changes?', 'Refresh Trace Tags');
+        if (!discard) return false;
+    }
+
+    const refreshButton = document.getElementById('trace_tags_refresh_btn');
+    const originalRefreshText = refreshButton && refreshButton.textContent;
+    traceTagsLoading = true;
+    if (refreshButton) {
+        refreshButton.disabled = true;
+        refreshButton.textContent = 'Refreshing...';
+    }
+    updateTraceTagsSaveButton();
+
+    try {
+        const r = await fetch('/settings/trace_tags');
         if (!r.ok) {
-            window.__pm_shared.error('Failed to load trace tags:', r.status, r.statusText);
-            container.innerHTML = '<span style="color:var(--muted);font-size:12px">Failed to load tags (status ' + r.status + ')</span>';
-            return;
+            throw new Error('Failed to load trace tags (status ' + r.status + ')');
         }
         const data = await r.json();
         window.__pm_shared.log('Loaded trace tags:', data);
         // API returns tags as a map/object {tag: bool}, not an array
         const enabledTagsMap = data.tags || {};
 
-        container.innerHTML = '';
+        container.querySelector('[data-trace-tags-error]')?.remove();
+        container.querySelectorAll('.trace-tag-content').forEach(el => el.remove());
+        const content = document.createElement('div');
+        content.className = 'trace-tag-content';
+        container.appendChild(content);
 
         if (Object.keys(TRACE_TAG_CATEGORIES).length === 0) {
-            container.innerHTML = '<span style="color:var(--muted);font-size:12px">No trace tag categories defined</span>';
-            return;
+            content.innerHTML = '<span style="color:var(--muted);font-size:12px">No trace tag categories defined</span>';
+            traceTagsDirty = false;
+            updateTraceTagsSaveButton();
+            return true;
         }
 
         let totalTags = 0;
@@ -4396,10 +4419,12 @@ function loadTraceTags() {
             const sectionToggle = document.createElement('input');
             sectionToggle.type = 'checkbox';
             sectionToggle.className = 'section-toggle';
+            sectionToggle.id = 'trace_section_' + sectionName.toLowerCase().replace(/[^a-z0-9]+/g, '_');
             sectionToggle.dataset.section = sectionName;
             sectionToggle.onchange = () => toggleTraceSection(sectionName, sectionToggle.checked);
 
-            const sectionLabel = document.createElement('span');
+            const sectionLabel = document.createElement('label');
+            sectionLabel.htmlFor = sectionToggle.id;
             sectionLabel.style.fontWeight = '500';
             sectionLabel.style.color = 'var(--highlight)';
             sectionLabel.style.fontSize = '14px';
@@ -4407,7 +4432,7 @@ function loadTraceTags() {
 
             sectionDiv.appendChild(sectionToggle);
             sectionDiv.appendChild(sectionLabel);
-            container.appendChild(sectionDiv);
+            content.appendChild(sectionDiv);
 
             // Render tags in this section
             tags.forEach(tag => {
@@ -4425,11 +4450,16 @@ function loadTraceTags() {
                 checkbox.className = 'trace-tag-checkbox';
                 checkbox.dataset.section = sectionName;
                 checkbox.checked = enabledTagsMap[tag.id] === true;
-                checkbox.onchange = () => updateSectionToggle(sectionName);
+                checkbox.onchange = () => {
+                    updateSectionToggle(sectionName);
+                    traceTagsDirty = true;
+                    updateTraceTagsSaveButton();
+                };
 
                 label.appendChild(checkbox);
+                label.htmlFor = checkbox.id;
                 label.appendChild(document.createTextNode(tag.label));
-                container.appendChild(label);
+                content.appendChild(label);
                 totalTags++;
             });
 
@@ -4438,15 +4468,35 @@ function loadTraceTags() {
         });
 
         window.__pm_shared.log('Rendered', totalTags, 'trace tag checkboxes in', Object.keys(TRACE_TAG_CATEGORIES).length, 'sections');
-    }).catch(e => {
+        traceTagsDirty = false;
+        updateTraceTagsSaveButton();
+        return true;
+    } catch (e) {
         window.__pm_shared.error('loadTraceTags failed', e);
-        container.innerHTML = '<span style="color:var(--muted);font-size:12px">Error: ' + e.message + '</span>';
-    });
+        let error = container.querySelector('[data-trace-tags-error]');
+        if (!error) {
+            error = document.createElement('div');
+            error.dataset.traceTagsError = '';
+            error.style.cssText = 'color:var(--error,#d33);font-size:12px;margin-bottom:8px;';
+            container.prepend(error);
+        }
+        error.textContent = 'Failed to load trace tags: ' + e.message;
+        return false;
+    } finally {
+        traceTagsLoading = false;
+        if (refreshButton) {
+            refreshButton.disabled = false;
+            refreshButton.textContent = originalRefreshText;
+        }
+        updateTraceTagsSaveButton();
+    }
 }
 
 function toggleTraceSection(sectionName, checked) {
     const checkboxes = document.querySelectorAll('.trace-tag-checkbox[data-section="' + sectionName + '"]');
     checkboxes.forEach(cb => cb.checked = checked);
+    traceTagsDirty = true;
+    updateTraceTagsSaveButton();
 }
 
 function updateSectionToggle(sectionName) {
@@ -4465,7 +4515,8 @@ function updateSectionToggle(sectionName) {
     sectionToggle.indeterminate = anyChecked && !allChecked;
 }
 
-function saveTraceTags() {
+async function saveTraceTags() {
+    if (!traceTagsDirty || traceTagsLoading || traceTagsSaving) return false;
     // Build tags object as {tag_id: true/false}
     const tagsMap = {};
     Object.keys(TRACE_TAG_CATEGORIES).forEach(sectionName => {
@@ -4479,20 +4530,30 @@ function saveTraceTags() {
 
     window.__pm_shared.log('Saving trace tags:', tagsMap);
 
-    fetch('/settings/trace_tags', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tags: tagsMap })
-    }).then(async r => {
+    const button = document.getElementById('trace_tags_save_btn');
+    traceTagsSaving = true;
+    if (button) button.textContent = 'Saving...';
+    updateTraceTagsSaveButton();
+    try {
+        const r = await fetch('/settings/trace_tags', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tags: tagsMap })
+        });
         if (!r.ok) {
-            window.__pm_shared.showToast('Failed to save trace tags', 'error');
-            return;
+            throw new Error('Failed to save trace tags (status ' + r.status + ')');
         }
+        traceTagsDirty = false;
         window.__pm_shared.showToast('Trace tags saved successfully', 'success');
-    }).catch(e => {
+        return true;
+    } catch (e) {
         window.__pm_shared.error('saveTraceTags failed', e);
-        window.__pm_shared.showToast('Failed to save trace tags', 'error');
-    });
+        window.__pm_shared.showToast('Failed to save trace tags: ' + e.message, 'error');
+        return false;
+    } finally {
+        traceTagsSaving = false;
+        updateTraceTagsSaveButton();
+    }
 }
 
 
