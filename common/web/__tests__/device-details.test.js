@@ -143,6 +143,35 @@ describe('device details', () => {
         expect(document.getElementById('printer_metrics_summary').textContent).toContain('No metrics data available');
     });
 
+    test('color supplies are evidence of color capability but explicit monochrome still wins', () => {
+        const toner_levels = { Black: 60, Cyan: 50, Magenta: 40, Yellow: 30 };
+        expect(window.__pm_shared_cards.getDeviceTonerBarData({ toner_levels })).toHaveLength(4);
+        expect(window.__pm_shared_cards.getDeviceTonerBarData({ toner_levels, is_mono: true })).toHaveLength(1);
+    });
+
+    test('deduplicates matching aliases without merging distinct or conflicting cartridges', () => {
+        const levels = window.__pm_shared_cards.buildTonerLevels({ toner_levels: {
+            supply_light_gray_ink_cartridge_t44h9: 27,
+            'Light Gray Ink Cartridge T44H9': '27',
+            photo_black: 70, matte_black: 50,
+            'Violet Ink Cartridge A': 28, 'Violet Ink Cartridge B': 28,
+            'Gray Ink': 20, supply_gray_ink: 30
+        } });
+        expect(Object.keys(levels)).toHaveLength(7);
+        expect(levels['Light Gray Ink Cartridge T44H9']).toBe('27');
+        expect(levels.supply_light_gray_ink_cartridge_t44h9).toBeUndefined();
+        render({ ...device, toner_levels: levels });
+        expect(document.querySelector('.consumables-section').textContent).not.toContain('supply_');
+        expect(document.querySelector('.consumables-section').textContent).toContain('Light Gray Ink Cartridge T44H9');
+    });
+
+    test.each([[undefined, 'Not collected'], [null, 'Not collected'], ['', 'Not collected'], [0, '0'], ['12', '12']])(
+        'distinguishes missing page counts (%s) from zero', (page_count, expected) => {
+            const card = document.createElement('div');
+            card.innerHTML = window.__pm_shared_cards.renderSavedCard({ serial: device.serial, printer_info: { ...device, page_count } });
+            expect([...card.querySelectorAll('.saved-device-card-row')].find(row => row.textContent.includes('Total Pages')).textContent).toBe('Total Pages' + expected);
+        });
+
     test.each([
         ['Black', '#1a1a1a'],
         ['Cyan', '#00bcd4'],

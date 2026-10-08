@@ -123,7 +123,7 @@
         const device = (item && item.printer_info) || {};
         const serial = item && item.serial ? item.serial : '';
     const toners = buildTonerLevels(device);
-        const lifeCount = device.page_count || device.total_mono_impressions || 0;
+        const lifeCount = getPageCount(device);
 
         const graphId = 'usage-graph-' + (serial || (device.ip||'')).toString().replace(/[^a-zA-Z0-9]/g,'_');
         const usageGraphHTML = '<div id="' + graphId + '" class="usage-graph-container">' +
@@ -170,7 +170,7 @@
             `<div class="saved-device-card-section"><div class="saved-device-card-section-title">Device Info</div>` +
             `<div class="saved-device-card-row"><span class="saved-device-card-label">Asset #</span><span class="saved-device-card-value editable-field" data-action="edit" data-serial="${serial}" data-field="asset_number" data-current="${item&&item.asset_number?item.asset_number:''}">${item&&item.asset_number?item.asset_number:'(click to add)'}</span></div>` +
             `<div class="saved-device-card-row"><span class="saved-device-card-label">Location</span><span class="saved-device-card-value editable-field" data-action="edit" data-serial="${serial}" data-field="location" data-current="${item&&item.location?item.location:''}">${item&&item.location?item.location:'(click to add)'}</span></div>` +
-            `<div class="saved-device-card-row"><span class="saved-device-card-label">Total Pages</span><span class="saved-device-card-value">${(lifeCount||0).toLocaleString()}</span></div>` +
+            `<div class="saved-device-card-row"><span class="saved-device-card-label">Total Pages</span><span class="saved-device-card-value" title="${lifeCount === null ? 'Page count not collected' : 'Last reported page count'}">${lifeCount === null ? 'Not collected' : lifeCount.toLocaleString()}</span></div>` +
             `</div>${consumablesSection}</div>${usageGraphHTML}</div></div>`;
     }
 
@@ -189,7 +189,7 @@
             const v = Number(value);
             const pct = Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : null;
             const color = getConsumableColor(name, pct);
-            const label = escapeHtmlCards(name);
+            const label = escapeHtmlCards(getSupplyDisplayName(name));
             return '<div class="consumable-level" style="--consumable-color:' + color + '">'
                 + '<div class="consumable-level-header"><span class="consumable-level-name">'
                 + '<span class="consumable-color-swatch" aria-hidden="true"></span>' + label + '</span>'
@@ -201,7 +201,7 @@
                 + '</div></div>';
         } else {
             // Text description (e.g., part numbers, status messages)
-            return '<div class="consumable-description"><span>' + escapeHtmlCards(name) + ':</span><span>' + escapeHtmlCards(value) + '</span></div>';
+            return '<div class="consumable-description"><span>' + escapeHtmlCards(getSupplyDisplayName(name)) + ':</span><span>' + escapeHtmlCards(value) + '</span></div>';
         }
     }
 
@@ -274,6 +274,44 @@
         return Math.max(0, Math.min(100, Math.round(num)));
     }
 
+    function getPageCount(device) {
+        for (const value of [device?.page_count, device?.total_mono_impressions]) {
+            if (value === null || value === undefined || String(value).trim() === '') continue;
+            const count = Number(value);
+            if (Number.isFinite(count) && count >= 0) return count;
+        }
+        return null;
+    }
+
+    function getSupplyDisplayName(name) {
+        return String(name || '').replace(/^supply[_\s]+/i, '').replace(/_/g, ' ')
+            .replace(/\s+/g, ' ').trim();
+    }
+
+    function normalizeSupplyLevels(levels) {
+        const result = {};
+        const identities = new Map();
+        for (const [name, value] of Object.entries(levels || {})) {
+            const identity = getSupplyDisplayName(name).toLowerCase().replace(/grey/g, 'gray')
+                .replace(/[^a-z0-9]+/g, ' ').trim();
+            const prior = identities.get(identity);
+            // Only collapse proven aliases, never distinct cartridges or conflicting readings.
+            const equal = prior && (String(result[prior]) === String(value) ||
+                (normalizeTonerLevel(result[prior]) !== null && normalizeTonerLevel(result[prior]) === normalizeTonerLevel(value)));
+            if (equal) {
+                if (/^supply[_\s]/i.test(prior) && !/^supply[_\s]/i.test(name)) {
+                    delete result[prior];
+                    result[name] = value;
+                    identities.set(identity, name);
+                }
+                continue;
+            }
+            result[name] = value;
+            identities.set(identity, name);
+        }
+        return result;
+    }
+
     // Build the compact per-color toner bar dataset for a device/printer_info
     // object (and optional latest metrics snapshot). Reuses buildTonerLevels()
     // for source resolution and mono/color filtering, then narrows to actual
@@ -307,7 +345,8 @@
         if (!tonerData || tonerData.length === 0) return '<span class="muted-text">—</span>';
         const bars = tonerData.map(t => {
             const levelClass = t.level <= 10 ? 'critical' : t.level <= 25 ? 'low' : '';
-            return '<div class="toner-bar ' + levelClass + '" title="' + escapeHtmlCards(t.name) + ': ' + t.level + '%" style="--toner-color: ' + t.color + '; --toner-level: ' + t.level + '%"></div>';
+            const label = escapeHtmlCards(getSupplyDisplayName(t.name)) + ': ' + t.level + '%';
+            return '<div class="toner-bar ' + levelClass + '" role="img" tabindex="0" aria-label="' + label + '" title="' + label + '" style="--toner-color: ' + t.color + '; --toner-level: ' + t.level + '%"></div>';
         }).join('');
         return '<div class="toner-bars">' + bars + '</div>';
     }
@@ -412,7 +451,7 @@
                         else if (d.includes('yellow') || d === 'y') present.add('yellow');
                         else {
                             // If description doesn't match a color, include it by its exact text
-                            present.add(desc);
+                            present.add(normalize(desc));
                         }
                     }
                     // Filter out color keys not present
@@ -447,7 +486,8 @@
                     
                     // Device is mono if explicitly flagged as mono, or if not flagged as color
                     // and has no color usage history
-                    const deviceIsMono = isMono || (!isColor && !hasColorUsage);
+                    const hasColorSupplies = Object.keys(out).some(name => /cyan|magenta|yellow/i.test(name));
+                    const deviceIsMono = isMono || (!isColor && !hasColorUsage && !hasColorSupplies);
                     
                     if (deviceIsMono) {
                         // Drop CMY entries for mono devices - they don't have color supplies
@@ -463,13 +503,13 @@
         } catch (e) {
             // ignore
         }
-        return out;
+        return normalizeSupplyLevels(out);
     }
 
         // Render a compact consumable representation suitable for display on a saved-device card
         // Uses smaller bars and abbreviated labels to keep cards dense.
         function renderMiniConsumable(name, value, isLevel) {
-            const nameShort = (name || '').split(' ')[0]; // take first token as short label
+            const nameShort = escapeHtmlCards(getSupplyDisplayName(name));
             if (isLevel) {
                 const v = Number(value);
                 const pct = isNaN(v) ? 0 : Math.max(0, Math.min(100, v));
@@ -484,7 +524,7 @@
             // fallback textual mini entry
             return '<div class="mini-consumable">'
                 + '<div class="mini-consumable-label">' + nameShort + '</div>'
-                + '<div class="mini-consumable-pct">' + (value || '') + '</div>'
+                + '<div class="mini-consumable-pct">' + escapeHtmlCards(value) + '</div>'
                 + '</div>';
         }
 
@@ -521,6 +561,9 @@
     window.__pm_shared_cards = window.__pm_shared_cards || {};
     window.__pm_shared_cards.renderSavedCard = renderSavedCard;
     window.__pm_shared_cards.buildTonerLevels = buildTonerLevels;
+    window.__pm_shared_cards.getSupplyDisplayName = getSupplyDisplayName;
+    window.__pm_shared_cards.normalizeSupplyLevels = normalizeSupplyLevels;
+    window.__pm_shared_cards.getPageCount = getPageCount;
     window.__pm_shared_cards.checkDatabaseRotationWarning = checkDatabaseRotationWarning;
     window.__pm_shared_cards.renderCapabilities = renderCapabilities;
     window.__pm_shared_cards.getTonerColor = getTonerColor;
@@ -1050,12 +1093,13 @@
                 const durationMs = new Date(latest.timestamp).getTime() - new Date(oldest.timestamp).getTime();
                 const durationDays = Math.max(1, durationMs / (24 * 60 * 60 * 1000));
 
-                const lifetimePages = latest.page_count || 0;
-                const periodPages = lifetimePages - (oldest.page_count || 0);
-                const avgPages = (periodPages / durationDays).toFixed(1);
+                const lifetimePages = getPageCount(latest);
+                const oldestPages = getPageCount(oldest);
+                const periodPages = lifetimePages === null || oldestPages === null ? null : lifetimePages - oldestPages;
+                const avgPages = periodPages === null ? 'Not collected' : (periodPages / durationDays).toFixed(1);
                 let statsHtml = '<div class="device-metrics-summary-grid">';
-                statsHtml += renderMetricStat('Lifetime Pages', lifetimePages.toLocaleString(), 'All-time total');
-                statsHtml += renderMetricStat('7-day Delta', periodPages.toLocaleString(), 'vs earliest sample');
+                statsHtml += renderMetricStat('Lifetime Pages', lifetimePages === null ? 'Not collected' : lifetimePages.toLocaleString(), 'All-time total');
+                statsHtml += renderMetricStat('7-day Delta', periodPages === null ? 'Not collected' : periodPages.toLocaleString(), 'vs earliest sample');
                 statsHtml += renderMetricStat('Avg / Day', avgPages, Math.max(1, Math.round(durationDays)) + ' day window');
                 if (latest.mono_pages !== undefined || latest.mono_impressions !== undefined) {
                     const lifetimeMono = latest.mono_pages || latest.mono_impressions || 0;
