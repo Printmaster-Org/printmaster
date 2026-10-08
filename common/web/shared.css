@@ -1758,3 +1758,13 @@ body.light-mode .mini-consumable-bar {
 .device-card-status .toner-bar {
   width: 7px;
 }
+.modal .flatpickr-wrapper {
+  width: 100%;
+}
+
+.modal .flatpickr-calendar.static,
+.modal .flatpickr-calendar.static .flatpickr-days,
+.modal .flatpickr-calendar.static .dayContainer {
+  max-width: 100%;
+  min-width: 0;
+}

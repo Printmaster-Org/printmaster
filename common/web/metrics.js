@@ -350,6 +350,7 @@ async function initializeCustomDatetimePicker(serial, contentElOverride, preset,
         const fpInstance = fpLib(targetSelector, {
             // Keep the calendar inside the dialog's active focus/inert boundary.
             appendTo: contentEl || undefined,
+            static: true,
             mode: 'range',
             enableTime: true,
             dateFormat: 'Y-m-d H:i',

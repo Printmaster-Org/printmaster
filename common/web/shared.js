@@ -579,8 +579,8 @@ function showPrinterDetails(identifier, source) {
                 if (picker?.isOpen && top.dialog.contains(picker.calendarContainer)) {
                     event.preventDefault();
                     event.stopImmediatePropagation();
-                    picker.close();
                     picker.input?.focus();
+                    picker.close();
                     return;
                 }
                 const dismiss = top.dialog.querySelector('[id$="_cancel"], .modal-close-x, .modal-close, [id$="_close_x"], [aria-label^="Close"]')
