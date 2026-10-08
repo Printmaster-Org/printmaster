@@ -159,11 +159,13 @@ async function loadDeviceMetrics(serial, targetId, options = {}) {
         window.__pm_shared.error('[Metrics] metrics_content element not found and no target available');
         return;
     }
-    window.metricsDataRange?.flatpickr?.destroy();
+    window.metricsDataRange?.flatpickr?.destroy?.();
     contentEl.dataset.metricsSerial = serial;
     const generation = (contentEl._metricsGeneration || 0) + 1;
     contentEl._metricsGeneration = generation;
     contentEl._metricsOptions = options;
+    const previousRows = document.getElementById('metrics_rows_panel');
+    if (previousRows) previousRows.remove();
     try { window.__pm_shared && window.__pm_shared.debug && window.__pm_shared.debug('[Metrics] Rendering metrics into element:', contentEl.id || contentEl.tagName); } catch (e) {}
 
     // Create interactive metrics UI
@@ -265,7 +267,8 @@ function getMetricsInitialRange(minTime, maxTime, preset) {
 // Initialize custom datetime picker with actual data bounds.
 async function initializeCustomDatetimePicker(serial, contentElOverride, preset, generation) {
     const contentEl = contentElOverride || document.getElementById('metrics_content');
-    const current = () => !contentElOverride || (contentEl._metricsGeneration === generation && contentEl.dataset.metricsSerial === serial);
+    const current = () => !contentElOverride || generation === undefined ||
+        (contentEl._metricsGeneration === generation && contentEl.dataset.metricsSerial === serial);
     try { window.__pm_shared && window.__pm_shared.debug && window.__pm_shared.debug('[Metrics] (shared) initializeCustomDatetimePicker called'); } catch (e) {}
     try {
         // Fetch only bounds to determine available data range (fast, small payload)
@@ -327,6 +330,8 @@ async function initializeCustomDatetimePicker(serial, contentElOverride, preset,
         // Initialize flatpickr with range mode
         const targetSelector = contentElOverride ? (contentElOverride.querySelector('#metrics_datetime_range')) : document.querySelector('#metrics_datetime_range');
         const fpInstance = fpLib(targetSelector, {
+            // Keep the calendar inside the dialog's active focus/inert boundary.
+            appendTo: contentEl || undefined,
             mode: 'range',
             enableTime: true,
             dateFormat: 'Y-m-d H:i',
@@ -458,8 +463,10 @@ async function refreshMetricsChart(serial) {
     const contentEl = canvas.closest('[data-metrics-serial]');
     if (contentEl && contentEl.dataset.metricsSerial !== serial) return;
     const request = contentEl ? (contentEl._metricsRequest || 0) + 1 : 0;
+    const generation = contentEl?._metricsGeneration;
     if (contentEl) contentEl._metricsRequest = request;
-    const current = () => !contentEl || (contentEl.isConnected && contentEl.dataset.metricsSerial === serial && contentEl._metricsRequest === request);
+    const current = () => !contentEl || (contentEl.isConnected && contentEl.dataset.metricsSerial === serial &&
+        contentEl._metricsRequest === request && contentEl._metricsGeneration === generation);
 
     try {
         // Get selected dates from flatpickr
@@ -467,6 +474,7 @@ async function refreshMetricsChart(serial) {
         if (!fp || !fp.selectedDates || fp.selectedDates.length !== 2) {
             window.__pm_shared.warn('[Metrics] No valid date range selected');
             statsEl.textContent = 'Please select a date range';
+            canvas.hidden = true;
             renderTonerLegend(container, {});
             return;
         }
@@ -478,6 +486,7 @@ async function refreshMetricsChart(serial) {
         // Validate range
         if (endTime <= startTime) {
             statsEl.textContent = 'End time must be after start time';
+            canvas.hidden = true;
             renderTonerLegend(container, {});
             return;
         }

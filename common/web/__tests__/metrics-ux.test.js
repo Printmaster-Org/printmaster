@@ -63,4 +63,36 @@ describe('metrics identity and loading', () => {
         expect(document.getElementById('metrics_rows_panel').hidden).toBe(true);
         expect(document.getElementById('metrics_chart').hidden).toBe(true);
     });
+
+    test('reopening the same device ignores an old history request even when request counters match', async () => {
+        const content = document.getElementById('metrics_content');
+        content.dataset.metricsSerial = 'A';
+        content.innerHTML = '<div id="metrics_stats">Loading</div><canvas id="metrics_chart"></canvas><div id="toner_legend"></div>';
+        content._metricsGeneration = 1;
+        window.metricsDataRange = { flatpickr: { selectedDates: [new Date('2026-10-01'), new Date('2026-10-08')] } };
+        let complete;
+        fetch.mockReturnValue(new Promise(resolve => { complete = resolve; }));
+        const pending = metrics.refreshMetricsChart('A');
+        content._metricsGeneration = 2;
+        content.querySelector('#metrics_stats').textContent = 'New view';
+        complete({ ok: false, status: 503 });
+        await pending;
+        expect(content.querySelector('#metrics_stats').textContent).toBe('New view');
+        expect(window.__pm_shared.error).not.toHaveBeenCalled();
+    });
+
+    test('date picker remains within its modal and new empty history removes previous rows', async () => {
+        document.body.insertAdjacentHTML('beforeend', '<div id="metrics_rows_panel">Old rows</div>');
+        fetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+        await metrics.loadDeviceMetrics('A', 'metrics_content');
+        expect(document.getElementById('metrics_rows_panel')).toBeNull();
+        const picker = jest.fn(() => ({ selectedDates: [], destroy: jest.fn() }));
+        window.__pm_shared.flatpickrReady = Promise.resolve(picker);
+        fetch.mockResolvedValue({ ok: true, json: async () => ({
+            min_timestamp: '2026-10-01T00:00:00Z', max_timestamp: '2026-10-08T00:00:00Z'
+        }) });
+        await metrics.loadDeviceMetrics('B', 'metrics_content');
+        expect(picker.mock.calls[0][1].appendTo).toBe(document.getElementById('metrics_content'));
+        expect(document.getElementById('metrics_chart').hidden).toBe(true);
+    });
 });
