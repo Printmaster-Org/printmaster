@@ -184,51 +184,24 @@
     // This mirrors the richer behavior from the agent bundle so both
     // saved cards and the details modal show consistent supply UI.
     function renderConsumable(name, value, isLevel) {
-        const nameLower = (name || '').toLowerCase();
-
         // If it's a numeric level (0-100), show as progress bar
         if (isLevel) {
             const v = Number(value);
-            const pct = isNaN(v) ? '' : Math.max(0, Math.min(100, v));
-
-            // Determine color based on supply type and level
-            let color;
-            let icon = '';
-
-            // Toner colors
-            // Use a slightly lighter tone for black to ensure contrast in dark mode
-            if (nameLower.includes('black') || nameLower === 'k') { color = '#444'; icon = '●'; }
-            else if (nameLower.includes('cyan') || nameLower === 'c') { color = '#0097a7'; icon = '●'; }
-            else if (nameLower.includes('magenta') || nameLower === 'm') { color = '#c2185b'; icon = '●'; }
-            else if (nameLower.includes('yellow') || nameLower === 'y') { color = '#fbc02d'; icon = '●'; }
-            // Waste/Maintenance items (reverse logic - high is bad)
-            else if (nameLower.includes('waste') || nameLower.includes('maintenance')) {
-                icon = '⚠';
-                if (pct === '') color = '#888';
-                else if (pct > 80) color = '#d32f2f';
-                else if (pct > 50) color = '#f57c00';
-                else color = '#388e3c';
-            }
-            // Other supplies (low is bad)
-            else {
-                icon = '▮';
-                if (pct === '') color = '#888';
-                else if (pct < 20) color = '#d32f2f';
-                else if (pct < 50) color = '#f57c00';
-                else color = '#388e3c';
-            }
-
-            const pctTextColor = (nameLower.includes('yellow') ? '#000' : '#fff');
-            let html = '<div style="margin-top:6px">';
-            html += '<div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:4px">' + icon + ' ' + name + '</div>';
-            html += '<div style="background:#001f22;border:1px solid rgba(255,255,255,0.06);padding:6px;border-radius:8px;max-width:100%;width:100%;position:relative">';
-            html += '<div style="width:' + pct + '%;background:' + color + ';height:18px;border-radius:6px;box-shadow:inset 0 -2px 4px rgba(0,0,0,0.4)"></div>';
-            html += '<div style="position:absolute;left:8px;top:2px;font-size:12px;color:' + pctTextColor + '">' + (pct !== '' ? pct + '%' : 'n/a') + '</div>';
-            html += '</div></div>';
-            return html;
+            const pct = Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : null;
+            const color = getConsumableColor(name, pct);
+            const label = escapeHtmlCards(name);
+            return '<div class="consumable-level" style="--consumable-color:' + color + '">'
+                + '<div class="consumable-level-header"><span class="consumable-level-name">'
+                + '<span class="consumable-color-swatch" aria-hidden="true"></span>' + label + '</span>'
+                + '<span class="consumable-level-percent">' + (pct === null ? 'n/a' : pct + '%') + '</span></div>'
+                + '<div class="consumable-level-track" role="progressbar" aria-label="' + label
+                + '" aria-valuemin="0" aria-valuemax="100"'
+                + (pct === null ? '' : ' aria-valuenow="' + pct + '"') + '>'
+                + '<div class="consumable-level-fill" style="width:' + (pct === null ? 0 : pct) + '%"></div>'
+                + '</div></div>';
         } else {
             // Text description (e.g., part numbers, status messages)
-            return '<div style="margin-top:6px;display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:13px"><div style="color:var(--muted)">' + name + ':</div><div>' + value + '</div></div>';
+            return '<div class="consumable-description"><span>' + escapeHtmlCards(name) + ':</span><span>' + escapeHtmlCards(value) + '</span></div>';
         }
     }
 
@@ -249,14 +222,18 @@
         'green': '#4caf50',
         'red': '#f44336',
         'blue': '#2196f3',
+        'violet': '#9c27b0',
     };
 
     function getTonerColor(name) {
-        const key = (name || '').toLowerCase().replace(/[^a-z_]/g, '_');
+        const key = String(name || '').toLowerCase().replace(/grey/g, 'gray')
+            .replace(/[^a-z]+/g, '_').replace(/^_|_$/g, '');
+        const aliases = { k: 'black', c: 'cyan', m: 'magenta', y: 'yellow' };
+        if (aliases[key]) return TONER_COLORS[aliases[key]];
         if (TONER_COLORS[key]) return TONER_COLORS[key];
-        // Try partial match
-        for (const [k, v] of Object.entries(TONER_COLORS)) {
-            if (key.includes(k) || k.includes(key)) return v;
+        // Match specific shades before their base colors, including supply keys.
+        for (const colorName of Object.keys(TONER_COLORS).sort((a, b) => b.length - a.length)) {
+            if (('_' + key + '_').includes('_' + colorName + '_')) return TONER_COLORS[colorName];
         }
         // Default gray for unknown
         return '#757575';
@@ -277,6 +254,17 @@
         }
         if (lower.includes('toner') || lower.includes('ink')) return true;
         return false;
+    }
+
+    function getConsumableColor(name, level) {
+        const lower = String(name || '').toLowerCase();
+        if (lower.includes('waste') || lower.includes('maintenance')) {
+            if (level === null) return '#888';
+            return level > 80 ? '#d32f2f' : level > 50 ? '#f57c00' : '#388e3c';
+        }
+        if (isInkOrToner(name) || /^[kcmy]$/i.test(name)) return getTonerColor(name);
+        if (level === null) return '#888';
+        return level < 20 ? '#d32f2f' : level < 50 ? '#f57c00' : '#388e3c';
     }
 
     function normalizeTonerLevel(value) {
@@ -328,8 +316,7 @@
     // Reused by saved cards and the details modal to avoid duplicated markup.
     function renderConsumablesSection(tonerLevels) {
         if (!tonerLevels || Object.keys(tonerLevels).length === 0) return '';
-        let out = '<div class="consumables-section" style="background:rgba(0,0,0,0.2);border:1px solid rgba(255,255,255,0.05);border-radius:6px;padding:10px;margin-bottom:8px">';
-        out += '<div style="font-weight:600;color:var(--highlight);margin-bottom:8px;font-size:14px">Consumables</div>';
+        let out = '<div class="consumables-section">';
         for (const [k, v] of Object.entries(tonerLevels)) {
             // If value looks numeric, treat as a percentage level; otherwise render as text
             const isNumeric = (v !== null && v !== undefined) && (typeof v === 'number' || (!isNaN(Number(v)) && String(v).trim() !== ''));
@@ -486,13 +473,7 @@
             if (isLevel) {
                 const v = Number(value);
                 const pct = isNaN(v) ? 0 : Math.max(0, Math.min(100, v));
-                // color selection similar to full render but simpler
-                let color = '#6c6';
-                const nl = nameShort.toLowerCase();
-                if (nl.includes('black') || nl === 'k') color = '#444';
-                else if (nl.includes('cyan') || nl === 'c') color = '#0097a7';
-                else if (nl.includes('magenta') || nl === 'm') color = '#c2185b';
-                else if (nl.includes('yellow') || nl === 'y') color = '#fbc02d';
+                const color = getConsumableColor(name, pct);
 
                 return '<div class="mini-consumable">'
                     + '<div class="mini-consumable-label">' + nameShort + '</div>'

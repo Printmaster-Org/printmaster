@@ -92,4 +92,76 @@ describe('device details', () => {
         expect(document.querySelector('#printer_details_actions').textContent).toContain('Save Device');
         expect(document.querySelector('#printer_details_title').textContent).toContain('(Discovered)');
     });
+
+    test.each([
+        ['Black', '#1a1a1a'],
+        ['Cyan', '#00bcd4'],
+        ['Magenta', '#e91e63'],
+        ['Yellow', '#ffc107'],
+        ['Photo Black Ink', '#333'],
+        ['Matte Black Ink', '#444'],
+        ['Light Cyan Ink', '#4dd0e1'],
+        ['Light Magenta Ink', '#f48fb1'],
+        ['Gray Ink Cartridge T44H7, T44P7, T44W7', '#9e9e9e'],
+        ['Green Ink Cartridge T44HB, T44PB, T44WB', '#4caf50'],
+        ['Light Gray Ink Cartridge T44H9, T44P9, T44W9', '#bdbdbd'],
+        ['supply_light_grey_ink_cartridge_t44h9', '#bdbdbd'],
+        ['Orange Ink Cartridge T44HA, T44PA, T44WA', '#ff9800'],
+        ['Violet Ink Cartridge T44HD, T44PD, T44WD', '#9c27b0'],
+        ['supply_violet_ink_cartridge_t44hd', '#9c27b0'],
+        ['k', '#1a1a1a'],
+        ['Unknown ink', '#757575'],
+        ['', '#757575']
+    ])('resolves the shared palette for %s', (name, color) => {
+        expect(window.__pm_shared_cards.getTonerColor(name)).toBe(color);
+    });
+
+    test('full, mini and table ink bars share colors regardless of supply level', () => {
+        const toner_levels = {
+            'Light Gray Ink Cartridge T44H9': 27,
+            'Green Ink Cartridge T44HB': 3,
+            'Orange Ink Cartridge T44HA': 28,
+            'Violet Ink Cartridge T44HD': 100
+        };
+        const printer = { ...device, toner_levels };
+        render(printer);
+        const rows = [...document.querySelectorAll('.consumable-level')];
+        const miniCard = document.createElement('div');
+        miniCard.innerHTML = window.__pm_shared_cards.renderSavedCard({ serial: device.serial, printer_info: printer });
+        const miniFills = miniCard.querySelectorAll('.mini-consumable-bar > div');
+        const tableData = window.__pm_shared_cards.getDeviceTonerBarData(printer);
+        Object.entries(toner_levels).forEach(([name, level], index) => {
+            const color = window.__pm_shared_cards.getTonerColor(name);
+            expect(rows[index].style.getPropertyValue('--consumable-color')).toBe(color);
+            expect(rows[index].querySelector('[role="progressbar"]').getAttribute('aria-valuenow')).toBe(String(level));
+            expect(rows[index].querySelector('.consumable-level-fill').style.width).toBe(level + '%');
+            expect(rows[index].querySelector('.consumable-level-percent').textContent).toBe(level + '%');
+            const probe = document.createElement('div');
+            probe.style.background = color;
+            expect(miniFills[index].style.background).toBe(probe.style.background);
+            expect(tableData.find(entry => entry.name === name).color).toBe(color);
+        });
+        expect(document.querySelectorAll('#printer_consumables_card_actual .device-details-card-title')).toHaveLength(1);
+    });
+
+    test.each([
+        ['waste_toner', 100, '#d32f2f'],
+        ['waste_black_toner', 60, '#f57c00'],
+        ['maintenance', 20, '#388e3c'],
+        ['drum', 5, '#d32f2f'],
+        ['drum', 30, '#f57c00'],
+        ['drum', 90, '#388e3c']
+    ])('retains status coloring for %s at %s%%', (name, level, color) => {
+        render({ ...device, toner_levels: { [name]: level } });
+        expect(document.querySelector('.consumable-level').style.getPropertyValue('--consumable-color')).toBe(color);
+    });
+
+    test('clamps levels and renders supply names and descriptions as text', () => {
+        render({ ...device, toner_levels: { 'Gray <img src=x> Ink': -10, 'Orange Ink': 120, 'Part <b>number</b>': '<script>bad()</script>' } });
+        const rows = document.querySelectorAll('.consumable-level');
+        expect(rows[0].querySelector('[role="progressbar"]').getAttribute('aria-valuenow')).toBe('0');
+        expect(rows[1].querySelector('[role="progressbar"]').getAttribute('aria-valuenow')).toBe('100');
+        expect(document.querySelector('.consumable-description').textContent).toContain('<script>bad()</script>');
+        expect(document.querySelector('.consumables-section img, .consumables-section script, .consumables-section b')).toBeNull();
+    });
 });

@@ -82,6 +82,10 @@ values have a labeled edit button beside them. Device information uses two colum
 on desktop and stacks on narrow screens. All screenshots in this guide use
 synthetic demo data.
 
+Consumables use the same ink-color palette in device lists and details, including
+light shades and specialty inks. Percentages sit beside the labels above compact
+bars; waste and maintenance supplies retain status-based warning colors.
+
 ![Device identity, asset tag, location, and metrics overview](screenshots/Device%20Details%20-%20PrintMaster%20Agent.png)
 
 ### Collected Data
