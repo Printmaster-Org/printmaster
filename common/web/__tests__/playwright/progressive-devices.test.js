@@ -80,6 +80,9 @@ test('Agent update channel modal dispatches exact selection and cancels without 
     for (const channel of channels) {
         await page.evaluate(() => { window.__pm_shared.updateAgent('agent-1'); });
         await expect(page.locator('#agent_update_channel')).toBeVisible();
+        await expect(page.locator('#agent_update_channel option[value="stable"]')).toHaveText('Stable');
+        await expect(page.locator('#agent_update_channel option[value="beta"]')).toHaveText('Beta');
+        await expect(page.locator('#agent_update_channel option[value="dev"]')).toHaveText('Dev');
         await page.locator('#agent_update_channel').selectOption(channel);
         await page.locator('.modal-overlay [data-action="confirm"]').click();
         await expect.poll(() => commands.length).toBe(channels.indexOf(channel) + 1);
@@ -142,13 +145,88 @@ test('Fleet persistent channel selector renders and saves through existing setti
         return {
             labels: Array.from(input.options).map(option => option.textContent),
             drafts, count: root.querySelectorAll('select[data-settings-path="features.agent_update_channel"]').length,
-            firstPanel: root.querySelector('.settings-section-panel').id
+            channelPanel: input.closest('.settings-section-panel').id
         };
     });
     expect(selected.labels).toEqual(['Use Agent configuration', 'Stable', 'Beta', 'Dev']);
     expect(selected.drafts).toEqual(['stable', 'beta', 'dev']);
     expect(selected.count).toBe(1);
-    expect(selected.firstPanel).toBe('fleet_update_channel_section');
+    expect(selected.channelPanel).toBe('auto_update_policy_section');
+});
+
+test('Agent Updates scopes support channel overrides, inheritance, and readable responsive layout', async ({ page }) => {
+    await open(page, { devices: [] });
+    await page.evaluate(() => {
+        const root = document.getElementById('settings_form_root');
+        document.body.appendChild(root);
+        [...document.body.children].forEach(child => { if (child !== root) child.style.display = 'none'; });
+        root.style.width = 'calc(100% - 32px)';
+        root.style.maxWidth = '1100px';
+        root.style.margin = '16px auto';
+        settingsUIState.globalSnapshot = { settings: { features: { agent_update_channel: 'stable' } } };
+        settingsUIState.globalDraft = cloneSettings(settingsUIState.globalSnapshot.settings);
+        settingsUIState.tenantSnapshot = { overrides: { features: { agent_update_channel: 'dev' } } };
+        settingsUIState.agentSnapshot = { overrides: { features: { agent_update_channel: 'dev' } } };
+        settingsUIState.tenantDraft = { features: { agent_update_channel: 'dev' } };
+        settingsUIState.agentDraft = { features: { agent_update_channel: 'dev' } };
+        settingsUIState.agentBaseSnapshot = { settings: { features: { agent_update_channel: 'beta' } } };
+        settingsUIState.tenantOverridesDraft = { features: { agent_update_channel: 'dev' } };
+        settingsUIState.agentOverridesDraft = { features: { agent_update_channel: 'dev' } };
+        settingsUIState.selectedTenantId = 'tenant-1';
+        settingsUIState.selectedAgentId = 'agent-1';
+        const field = { path: 'features.agent_update_channel', type: 'select', title: 'Agent Update Channel',
+            description: 'Choose the release channel for this scope. Global defaults flow through customer overrides to permitted Agent overrides.',
+            enum: ['', 'stable', 'beta', 'dev'], default: '' };
+        settingsUIState.schema = { fields: [field] };
+        settingsUIState.groupedFields = { features: [field] };
+        settingsUIState.managedSections = new Set(['features']);
+        settingsUIState.agentEnforcedSections = new Set();
+        applyPolicySnapshot('global', false, DEFAULT_UPDATE_POLICY_SPEC);
+        applyPolicySnapshot('tenant', false, DEFAULT_UPDATE_POLICY_SPEC);
+        bindSettingsEvents();
+    });
+    for (const scope of ['global', 'tenant', 'agent']) {
+        await page.evaluate(scope => {
+            settingsUIState.scope = scope;
+            renderSettingsForm();
+        }, scope);
+        const panel = page.locator('#auto_update_policy_section');
+        const channel = panel.locator('select[data-settings-path="features.agent_update_channel"]');
+        await expect(panel.locator('h4')).toHaveText('Agent Updates');
+        await expect(channel).toBeEnabled();
+        await channel.selectOption('dev');
+        expect(await page.evaluate(scope => settingsUIState[`${scope}Draft`].features.agent_update_channel, scope)).toBe('dev');
+        await page.evaluate(() => renderSettingsForm());
+        if (scope !== 'global') {
+            await expect(panel.locator('.settings-badge.override')).toBeVisible();
+            await panel.getByRole('button', { name: 'Inherit', exact: true }).click();
+            await expect(channel).toHaveValue(scope === 'tenant' ? 'stable' : 'beta');
+            await expect(panel.locator('.settings-badge.inherited')).toBeVisible();
+            expect(await page.evaluate(scope => settingsUIState[`${scope}Dirty`], scope)).toBe(true);
+            expect(await page.evaluate(scope => flattenOverrides(settingsUIState[`${scope}OverridesDraft`]), scope)).toEqual([]);
+        }
+        const layout = await panel.evaluate(panel => {
+            const header = panel.querySelector('.settings-section-header');
+            const title = header.querySelector('h4').getBoundingClientRect();
+            const description = header.querySelector('p').getBoundingClientRect();
+            const fieldTitle = panel.querySelector('.field-title').getBoundingClientRect();
+            const select = panel.querySelector('select').getBoundingClientRect();
+            return { titleHeight: title.height, stacked: description.top >= title.bottom,
+                fieldTitleHeight: fieldTitle.height, selectWidth: select.width,
+                overflow: panel.scrollWidth > panel.clientWidth };
+        });
+        expect(layout.titleHeight).toBeLessThanOrEqual(30);
+        expect(layout.fieldTitleHeight).toBeLessThanOrEqual(30);
+        expect(layout.stacked).toBe(true);
+        expect(layout.selectWidth).toBeGreaterThanOrEqual(180);
+        expect(layout.overflow).toBe(false);
+    }
+    await page.evaluate(() => {
+        settingsUIState.agentEnforcedSections.add('features');
+        renderSettingsForm();
+    });
+    await expect(page.locator('#auto_update_policy_section select')).toBeDisabled();
+    await expect(page.locator('#auto_update_policy_section .inherit-btn')).toHaveCount(0);
 });
 
 test('last-seen aging marks temporary printers offline; filters, table and recovery agree', async ({ page }) => {

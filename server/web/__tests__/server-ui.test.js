@@ -265,33 +265,82 @@ describe('server control accessibility', () => {
                 }
             });
 
-            test('release channel is prominent, unique, and respects Features ownership', () => {
-                const field = { path: 'features.agent_update_channel', type: 'select' };
+            test.each(['global', 'tenant', 'agent'])('release channel is inside Agent Updates at %s scope and respects ownership', scope => {
+                const field = { path: 'features.agent_update_channel', type: 'select', enum: ['', 'stable', 'beta', 'dev'] };
                 const state = {
                     schema: {}, globalDraft: { features: { agent_update_channel: 'dev' } },
-                    scope: 'global', groupedFields: { features: [field] }, managedSections: new Set(['features'])
+                    tenantDraft: { features: { agent_update_channel: 'beta' } },
+                    agentDraft: { features: { agent_update_channel: 'stable' } },
+                    scope, groupedFields: { features: [field] }, managedSections: new Set(['features']),
+                    agentEnforcedSections: new Set(), lockedKeys: new Set(),
+                    selectedTenantId: 'tenant-1', selectedAgentId: 'agent-1'
                 };
-                const renderRow = jest.fn((meta, value) => {
-                    const row = document.createElement('div');
-                    row.dataset.settingsPath = meta.path;
-                    row.textContent = value;
-                    return row;
-                });
-                const { context, document } = setup(['renderSettingsForm'], {
+                const { context, document } = setup([
+                    'getSettingsDraft', 'renderSettingsForm', 'refreshPolicyPanel', 'renderUpdatePolicySection',
+                    'renderSettingsFieldRow', 'createInputForField'
+                ], {
                     settingsUIState: state, renderManagedSectionsPanel: () => null,
-                    renderSettingsFieldRow: renderRow, orderedSettingsSections: () => ['features'],
+                    renderTenantEnforcementPanel: () => null, orderedSettingsSections: () => ['features'],
                     getValueByPath: (draft) => draft.features.agent_update_channel,
                     SETTINGS_SECTION_LABELS: { features: 'Features' }, escapeHtml: value => value,
-                    refreshPolicyPanel: jest.fn()
+                    resolveFieldValue: (field, value) => value, userCan: () => true,
+                    hasOverride: () => scope !== 'global', pathToArray: path => path.split('.'),
+                    getSettingsPayload: () => ({}), getPolicyState: () => ({ loaded: true, enabled: false })
                 });
                 context.renderSettingsForm();
                 const root = document.getElementById('settings_form_root');
-                expect(root.firstElementChild.id).toBe('fleet_update_channel_section');
-                expect(root.querySelectorAll('[data-settings-path="features.agent_update_channel"]')).toHaveLength(1);
-                expect(renderRow).toHaveBeenLastCalledWith(field, 'dev', 'global', true, false);
+                const panel = root.querySelector('#auto_update_policy_section');
+                expect(panel.querySelector('h4').textContent).toBe('Agent Updates');
+                expect(root.querySelector('#fleet_update_channel_section')).toBeNull();
+                const channel = () => panel.querySelector('select[data-settings-path="features.agent_update_channel"]');
+                expect(root.querySelectorAll('select[data-settings-path="features.agent_update_channel"]')).toHaveLength(1);
+                expect(channel().value).toBe({ global: 'dev', tenant: 'beta', agent: 'stable' }[scope]);
+                expect(channel().disabled).toBe(false);
+                if (scope !== 'global') expect(panel.querySelector('.inherit-btn').textContent).toBe('Inherit');
+                context.refreshPolicyPanel();
+                expect(root.querySelectorAll('select[data-settings-path="features.agent_update_channel"]')).toHaveLength(1);
+                if (scope === 'agent') {
+                    state.agentEnforcedSections.add('features');
+                    context.renderSettingsForm();
+                    expect(root.querySelector('#auto_update_policy_section select').disabled).toBe(true);
+                    expect(root.querySelector('#auto_update_policy_section .inherit-btn')).toBeNull();
+                }
                 state.managedSections.clear();
                 context.renderSettingsForm();
-                expect(renderRow).toHaveBeenLastCalledWith(field, 'dev', 'global', false, false);
+                expect(root.querySelector('#auto_update_policy_section select').disabled).toBe(true);
+                expect(root.querySelector('#auto_update_policy_section').textContent).toContain('Section Management');
+            });
+
+            test.each(['global', 'tenant', 'agent'])('Save Changes persists the channel at %s scope', async scope => {
+                const overrides = { features: { agent_update_channel: 'beta' } };
+                const fetchJSON = jest.fn().mockResolvedValue({});
+                const state = {
+                    globalDirty: true, globalSettingsDirty: true, globalDraft: overrides,
+                    managedSections: new Set(['features']),
+                    tenantDirty: true, tenantSettingsDirty: true, tenantOverridesDraft: overrides,
+                    tenantEnforcedSections: new Set(), selectedTenantId: 'tenant-1',
+                    agentDirty: true, agentOverridesDraft: overrides,
+                    agentEnforcedSections: new Set(), selectedAgentId: 'agent-1'
+                };
+                const { context } = setup(['saveGlobalSettings', 'saveTenantSettings', 'saveAgentSettings'], {
+                    settingsUIState: state, fetchJSON, getPolicyState: () => ({ dirty: false }),
+                    cloneSettings: value => JSON.parse(JSON.stringify(value)),
+                    flattenOverrides: () => ['features.agent_update_channel'],
+                    loadGlobalSettingsSnapshot: jest.fn(), loadTenantSnapshot: jest.fn(),
+                    loadAgentSnapshot: jest.fn(), renderSettingsUI: jest.fn(),
+                    window: { __pm_shared: { showToast: jest.fn() } }
+                });
+                await context[{ global: 'saveGlobalSettings', tenant: 'saveTenantSettings', agent: 'saveAgentSettings' }[scope]]();
+                expect(fetchJSON).toHaveBeenCalledTimes(1);
+                const [endpoint, request] = fetchJSON.mock.calls[0];
+                expect(endpoint).toBe({
+                    global: '/api/v1/settings/global',
+                    tenant: '/api/v1/settings/tenants/tenant-1',
+                    agent: '/api/v1/settings/agents/agent-1'
+                }[scope]);
+                expect(request.method).toBe('PUT');
+                const payload = JSON.parse(request.body);
+                expect((scope === 'tenant' ? payload.overrides : payload).features.agent_update_channel).toBe('beta');
             });
         });
 

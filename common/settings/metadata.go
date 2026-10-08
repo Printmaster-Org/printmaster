@@ -281,7 +281,7 @@ func DefaultSchema() Schema {
 			Path:        "features.agent_update_channel",
 			Type:        FieldTypeSelect,
 			Title:       "Agent Update Channel",
-			Description: "Persistent Server-selected update channel. Empty uses Agent configuration. Applies to old Agents too; enable prerelease intake and sync before choosing beta/dev. Force install Fleet channel bypasses version pins for bootstrap.",
+			Description: "Persistent release channel: global default, customer override, then Agent override unless customer-enforced. Empty uses Agent configuration; Inherit removes an override. Enable prerelease intake and sync before choosing Beta/Dev.",
 			Scope:       ScopeTenant,
 			EditableBy:  []EditableRole{RoleServerAdmin, RoleTenantAdmin},
 			Default:     "",

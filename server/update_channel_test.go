@@ -71,6 +71,23 @@ func TestLegacyAgentManifestUsesSavedFleetChannel(t *testing.T) {
 	}
 	assertChannel(request("boundary-machine-a", "boundary-agent-a", false), "beta")
 	assertChannel(request("boundary-machine-b", "boundary-agent-b", false), "dev")
+	if err := f.store.UpsertAgentSettings(ctx, &storage.AgentSettingsRecord{AgentID: "boundary-agent-a", Overrides: map[string]interface{}{"features": map[string]interface{}{"agent_update_channel": "stable"}}}); err != nil {
+		t.Fatal(err)
+	}
+	assertChannel(request("boundary-machine-a", "boundary-agent-a", false), "stable")
+	assertChannel(request("boundary-machine-b", "boundary-agent-b", false), "dev")
+	if err := f.store.UpsertTenantSettings(ctx, &storage.TenantSettingsRecord{TenantID: "boundary-a", Overrides: map[string]interface{}{"features": map[string]interface{}{"agent_update_channel": "beta"}}, EnforcedSections: []string{"features"}}); err != nil {
+		t.Fatal(err)
+	}
+	assertChannel(request("boundary-machine-a", "boundary-agent-a", false), "beta")
+	if err := f.store.DeleteAgentSettings(ctx, "boundary-agent-a"); err != nil {
+		t.Fatal(err)
+	}
+	assertChannel(request("boundary-machine-a", "boundary-agent-a", false), "beta")
+	if err := f.store.DeleteTenantSettings(ctx, "boundary-a"); err != nil {
+		t.Fatal(err)
+	}
+	assertChannel(request("boundary-machine-a", "boundary-agent-a", false), "dev")
 	if w := request("boundary-machine-a", "boundary-agent-b", false); w.Code != http.StatusForbidden {
 		t.Fatalf("foreign Agent selected: %d %s", w.Code, w.Body.String())
 	}

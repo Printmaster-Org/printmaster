@@ -12023,11 +12023,11 @@ function showAgentUpdateChannelConfirm() {
                         <option value="">Configured channel (respect update policy)</option>
                         <option value="fleet">Force install Fleet channel (supports older Agents)</option>
                         <option value="stable">Stable</option>
-                        <option value="beta">Beta / Release Candidate</option>
-                        <option value="dev">Development</option>
+                        <option value="beta">Beta</option>
+                        <option value="dev">Dev</option>
                     </select></label>
                     <p class="muted-text">An explicit channel installs its latest cached release for this Agent platform, even if this means reinstalling or downgrading. Maintenance windows and version pins are bypassed; scheduled channel settings stay unchanged.</p>
-                    <p class="muted-text">Set persistent Agent Update Channel under Fleet Settings → Features. To bootstrap older Agents (including 0.31.1), save dev there, then choose Force install Fleet channel. Beta/dev requires prerelease intake and cached artifacts. Explicit Stable/Beta/Dev choices still require an updated Agent.</p>
+                    <p class="muted-text">Set persistent Agent Update Channel under Fleet Settings → Agent Updates at global, customer, or Agent scope. To bootstrap older Agents (including 0.31.1), save Dev there, then choose Force install Fleet channel. Beta/Dev requires prerelease intake and cached artifacts. Explicit Stable/Beta/Dev choices still require an updated Agent.</p>
                 </div>
                 <div class="modal-footer"><button class="modal-button modal-button-secondary" data-action="cancel">Cancel</button><button class="modal-button modal-button-danger" data-action="confirm">Update Agent</button></div>
             </div>`;
@@ -14846,6 +14846,17 @@ function updateAgentSelect() {
     });
 }
 
+function getSettingsDraft(scope) {
+    if (scope === 'global') {
+        return settingsUIState.globalDraft;
+    }
+    if (scope === 'tenant') {
+        return settingsUIState.tenantDraft || settingsUIState.globalDraft;
+    }
+    const base = getSettingsPayload(settingsUIState.agentBaseSnapshot || settingsUIState.globalSnapshot) || {};
+    return settingsUIState.agentDraft || cloneSettings(Object.keys(base).length ? base : settingsUIState.globalDraft);
+}
+
 function renderSettingsForm() {
     const root = document.getElementById('settings_form_root');
     if (!root) return;
@@ -14854,15 +14865,7 @@ function renderSettingsForm() {
         return;
     }
     const scope = settingsUIState.scope;
-    let draft;
-    if (scope === 'global') {
-        draft = settingsUIState.globalDraft;
-    } else if (scope === 'tenant') {
-        draft = settingsUIState.tenantDraft || settingsUIState.globalDraft;
-    } else {
-        const base = getSettingsPayload(settingsUIState.agentBaseSnapshot || settingsUIState.globalSnapshot) || {};
-        draft = settingsUIState.agentDraft || cloneSettings(Object.keys(base).length ? base : settingsUIState.globalDraft);
-    }
+    const draft = getSettingsDraft(scope);
     root.innerHTML = '';
 
     // Add section management controls at top when in global scope
@@ -14876,19 +14879,6 @@ function renderSettingsForm() {
         if (enforcementPanel) {
             root.appendChild(enforcementPanel);
         }
-    }
-
-    const channelField = (settingsUIState.groupedFields.features || []).find(field => field.path === 'features.agent_update_channel');
-    if (channelField) {
-        const panel = document.createElement('div');
-        panel.className = 'settings-section-panel';
-        panel.id = 'fleet_update_channel_section';
-        panel.innerHTML = '<div class="settings-section-header"><h4>Agent Builds / Release Channel</h4><p>Choose Stable, Beta, or Dev builds for this fleet scope. A channel must have cached releases before it can supply updates. Channel selection is managed with the Features section; auto-update scheduling is configured below.</p></div>';
-        const row = renderSettingsFieldRow(channelField, getValueByPath(draft, channelField.path), scope,
-            settingsUIState.managedSections.has('features'),
-            scope === 'agent' && settingsUIState.agentEnforcedSections.has('features'));
-        if (row) panel.appendChild(row);
-        root.appendChild(panel);
     }
 
     orderedSettingsSections().forEach(sectionKey => {
@@ -14941,9 +14931,7 @@ function renderSettingsForm() {
     if (!root.children.length) {
         root.innerHTML = '<div class="muted-text">No server-managed settings are available in this build.</div>';
     }
-    if (scope === 'global' || scope === 'tenant') {
-        refreshPolicyPanel();
-    }
+    refreshPolicyPanel();
 }
 
 /**
@@ -15247,7 +15235,7 @@ function renderUpdatePolicySection(root) {
 
     const header = document.createElement('div');
     header.className = 'settings-section-header';
-    header.innerHTML = `<h4>Auto-Update Policy</h4><p>Control how often agents check for updates, which versions they target, and how rollouts are staged.</p>`;
+    header.innerHTML = '<h4>Agent Updates</h4><p>Choose Stable, Beta, or Dev builds and configure automatic updates. Channel defaults flow from global to customer to Agent; use Inherit to remove an override. Beta/Dev requires prerelease intake and cached releases.</p>';
     panel.appendChild(header);
 
     const body = document.createElement('div');
@@ -15256,15 +15244,47 @@ function renderUpdatePolicySection(root) {
     const policyState = getPolicyState(scope);
     const canEdit = userCan('settings.fleet.write');
 
+    const channelField = (settingsUIState.groupedFields.features || []).find(field => field.path === 'features.agent_update_channel');
+    if (channelField) {
+        const row = renderSettingsFieldRow(channelField, getValueByPath(getSettingsDraft(scope), channelField.path), scope,
+            settingsUIState.managedSections.has('features'),
+            scope === 'agent' && settingsUIState.agentEnforcedSections.has('features'));
+        if (row) body.appendChild(row);
+        const ownership = document.createElement('div');
+        ownership.className = 'muted-text';
+        ownership.textContent = !settingsUIState.managedSections.has('features')
+            ? 'Channel control requires Features to be enabled in Section Management.'
+            : scope === 'agent' && settingsUIState.agentEnforcedSections.has('features')
+                ? 'This customer enforces Features, including the update channel; Agent overrides are locked.'
+                : 'Channel control follows Features section management and customer enforcement. Use Agent configuration is a channel value, not an inheritance reset.';
+        body.appendChild(ownership);
+    }
+
+    if (scope === 'agent') {
+        const message = document.createElement('div');
+        message.className = 'muted-text';
+        message.textContent = 'Automatic update cadence, version pins, maintenance windows, and rollout policy are configured at global or customer scope. This Agent can override its channel unless the customer enforces Features.';
+        body.appendChild(message);
+        panel.appendChild(body);
+        root.appendChild(panel);
+        return;
+    }
+
     if (scope === 'tenant' && !settingsUIState.selectedTenantId) {
-        body.innerHTML = '<div class="muted-text">Select a customer to manage auto-update overrides.</div>';
+        const message = document.createElement('div');
+        message.className = 'muted-text';
+        message.textContent = 'Select a customer to manage Agent update overrides.';
+        body.appendChild(message);
         panel.appendChild(body);
         root.appendChild(panel);
         return;
     }
 
     if (!policyState || !policyState.loaded) {
-        body.innerHTML = '<div class="muted-text">Loading auto-update policy…</div>';
+        const message = document.createElement('div');
+        message.className = 'muted-text';
+        message.textContent = 'Loading auto-update policy…';
+        body.appendChild(message);
         panel.appendChild(body);
         root.appendChild(panel);
         return;
@@ -15725,6 +15745,7 @@ function clearTenantOverride(path) {
     setNestedValue(settingsUIState.tenantDraft, path, baseValue);
     const originalOverrides = getOverridesPayload(settingsUIState.tenantSnapshot);
     settingsUIState.tenantSettingsDirty = !deepEqual(settingsUIState.tenantOverridesDraft, originalOverrides);
+    syncSettingsDirtyFlags();
     renderSettingsForm();
     renderOverrideSummary();
     updateActionButtons();

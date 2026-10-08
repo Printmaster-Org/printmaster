@@ -7721,7 +7721,46 @@ input[type="checkbox"]:indeterminate::before {
 .auto-update-policy .settings-section-header {
   flex-direction: column;
   align-items: flex-start;
-  gap: 4px;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.auto-update-policy .settings-section-header h4,
+.auto-update-policy .settings-section-header p {
+  margin: 0;
+}
+
+.auto-update-policy .settings-section-header p {
+  max-width: 80ch;
+  line-height: 1.6;
+}
+
+#auto_update_policy_section .settings-field-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+#auto_update_policy_section .field-description {
+  margin-top: 5px;
+  line-height: 1.6;
+}
+
+#auto_update_policy_section .settings-field-control {
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+#auto_update_policy_section .settings-field-control select {
+  min-width: min(220px, 100%);
+}
+
+@media (max-width: 768px) {
+  #auto_update_policy_section .settings-field-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
 }
 
 .auto-update-field-list {
