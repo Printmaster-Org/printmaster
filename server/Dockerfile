@@ -42,6 +42,13 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Runtime stage - use Alpine for minimal size with shell support for entrypoint
 FROM alpine:3.24
 
+LABEL org.opencontainers.image.title="PrintMaster Server" \
+    org.opencontainers.image.description="Central multi-site printer fleet monitoring, dashboards, and Agent management. Docs: https://docs.printmaster.work/deployment/docker/" \
+    org.opencontainers.image.source="https://github.com/Printmaster-Org/printmaster" \
+    org.opencontainers.image.documentation="https://docs.printmaster.work/deployment/docker/" \
+    org.opencontainers.image.url="https://github.com/Printmaster-Org/printmaster/releases" \
+    org.opencontainers.image.licenses="MIT"
+
 # Install su-exec for dropping privileges (tiny, no dependencies)
 # Install sqlite3 for database management and testing
 RUN apk add --no-cache su-exec sqlite

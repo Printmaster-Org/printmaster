@@ -88,6 +88,29 @@ eight-printer fleet. Device names, counters, supplies, and alerts are demo data.
 
 ## Quick Start
 
+### Container packages and release notes
+
+The [Server package](https://github.com/printmaster-org/printmaster/pkgs/container/printmaster-server)
+provides central fleet monitoring and Agent management; the
+[Agent package](https://github.com/printmaster-org/printmaster/pkgs/container/printmaster-agent)
+provides site-local printer discovery, SNMP metrics, and reporting.
+See the [Docker deployment overview](https://docs.printmaster.work/deployment/docker/)
+for setup and operating guidance.
+
+Both images support Linux amd64 and arm64. Use `latest` for Stable, `beta` for
+Beta testing, and `main` only for developer/debugging builds. Pin exact versions
+such as `0.32.0` or `0.32.0-beta.1` (without a `v` prefix) for reproducible
+deployments; `dev-<short-sha>` identifies main builds.
+
+Published images include OCI descriptions, license/source/documentation links,
+version, full source revision, creation time, channel, and a version-specific
+GitHub Release URL. The multi-architecture index also carries this metadata so
+GHCR can display the package description. Read changes at the component's
+GitHub Release, for example `agent-v0.32.0-beta.1` or `server-v0.32.0-beta.1`;
+examples are naming conventions, not claims that those versions exist.
+Images built locally retain basic product/documentation labels; versioned
+publishing metadata is applied by CD.
+
 ### Server (Docker)
 
 ```bash

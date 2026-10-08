@@ -137,6 +137,20 @@ jobs:
       run: |
         bash scripts/release-version.sh server "$GITHUB_REF" >> "$GITHUB_OUTPUT"
     
+    - name: Get container metadata
+      id: container_metadata
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
+        BUILD_TYPE: ${{ steps.version.outputs.build_type }}
+        REVISION: ${{ github.sha }}
+        CREATED: ${{ steps.version.outputs.build_time }}
+      run: |
+        {
+          echo 'labels<<EOF'
+          bash scripts/container-metadata.sh server "$VERSION" "$BUILD_TYPE" "$REVISION" "$CREATED"
+          echo 'EOF'
+        } >> "$GITHUB_OUTPUT"
+
     - name: Build and push by digest
       id: build
       uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -144,6 +158,7 @@ jobs:
         context: .
         file: ./server/Dockerfile
         platforms: ${{ matrix.platform }}
+        labels: ${{ steps.container_metadata.outputs.labels }}
         build-args: |
           VERSION=${{ steps.version.outputs.version }}
           BUILD_TIME=${{ steps.version.outputs.build_time }}
@@ -151,7 +166,7 @@ jobs:
           BUILD_TYPE=${{ steps.version.outputs.build_type }}
         cache-from: type=gha,scope=server-${{ matrix.suffix }}
         cache-to: type=gha,mode=max,scope=server-${{ matrix.suffix }}
-        outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-server,push-by-digest=true,name-canonical=true,push=true
+        outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-server,push-by-digest=true,name-canonical=true,push=true,oci-mediatypes=true
         provenance: false
         sbom: false
     
@@ -203,6 +218,20 @@ jobs:
       run: |
         bash scripts/release-version.sh server "$GITHUB_REF" >> "$GITHUB_OUTPUT"
     
+    - name: Get container metadata
+      id: container_metadata
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
+        BUILD_TYPE: ${{ steps.version.outputs.build_type }}
+        REVISION: ${{ github.sha }}
+        CREATED: ${{ steps.version.outputs.build_time }}
+      run: |
+        {
+          echo 'labels<<EOF'
+          bash scripts/container-metadata.sh server "$VERSION" "$BUILD_TYPE" "$REVISION" "$CREATED"
+          echo 'EOF'
+        } >> "$GITHUB_OUTPUT"
+
     - name: Extract metadata
       id: meta
       uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -217,13 +246,18 @@ jobs:
           type=raw,value=beta,enable=${{ steps.version.outputs.is_beta }}
           type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
           type=raw,value=dev-${{ steps.version.outputs.git_commit }},enable=${{ github.ref == 'refs/heads/main' }}
-        labels: |
-          org.opencontainers.image.description=PrintMaster Server container image (build ${{ steps.version.outputs.version }} / commit ${{ steps.version.outputs.git_commit }})
+        labels: ${{ steps.container_metadata.outputs.labels }}
     
     - name: Create manifest list and push
       working-directory: /tmp/digests
       run: |
+        labels=$(jq -er '.labels | to_entries[] | "\(.key)=\(.value)"' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+        annotations=()
+        while IFS= read -r label; do
+          annotations+=(--annotation "index:$label")
+        done <<< "$labels"
         docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+          "${annotations[@]}" \
           $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-server@sha256:%s ' *)
     
     - name: Inspect image
