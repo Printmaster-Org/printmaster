@@ -51,7 +51,7 @@
         <div style="display:flex;align-items:center;gap:12px;">
             <button id="join_token_btn" title="Add an agent" class="modal-button modal-button-primary" style="display:none;">Add Agent</button>
             <label class="theme-toggle">
-                <input type="checkbox" id="theme-toggle-checkbox">
+                <input type="checkbox" id="theme-toggle-checkbox" aria-label="Toggle color theme">
                 <div class="theme-toggle-slider">
                     <div class="theme-toggle-icon"></div>
                 </div>
@@ -1738,7 +1738,7 @@
                             </h4>
                             <p class="muted-text">Page counts, print volumes, and usage trends by device.</p>
                             <div style="display:flex;gap:8px;align-items:center;margin:8px 0 12px;">
-                                <label class="muted-text" style="font-size:12px;">Range</label>
+                                <label for="usage_report_range" class="muted-text" style="font-size:12px;">Range</label>
                                 <select id="usage_report_range" style="flex:1;min-width:0;">
                                     <option value="current">Current</option>
                                     <option value="last_7d">Last week</option>
@@ -1934,7 +1934,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <span class="modal-title" id="confirm_modal_title">Confirm Action</span>
-                <span class="modal-close" id="confirm_modal_close_x">&times;</span>
+                <button type="button" class="modal-close" id="confirm_modal_close_x" aria-label="Close confirmation">&times;</button>
             </div>
             <div class="modal-body">
                 <p id="confirm_modal_message">Are you sure?</p>
@@ -1978,7 +1978,7 @@
         <div class="modal-dialog" style="max-width:720px;">
             <div class="modal-header">
                 <span class="modal-title" id="add_agent_title">Add Agent</span>
-                <span class="modal-close" id="add_agent_close_x">&times;</span>
+                <button type="button" class="modal-close" id="add_agent_close_x" aria-label="Close add agent">&times;</button>
             </div>
             <div class="modal-body" id="add_agent_body" style="max-height:520px;overflow-y:auto;">
                 <div id="add_agent_step_indicator" style="font-size:13px;color:var(--muted);margin-bottom:8px;">Step 1/3</div>
@@ -1998,7 +1998,7 @@
         <div class="modal-content" style="max-width:520px;">
             <div class="modal-header">
                 <span class="modal-title" id="input_modal_title">Input</span>
-                <span class="modal-close" id="input_modal_close_x">&times;</span>
+                <button type="button" class="modal-close" id="input_modal_close_x" aria-label="Close input dialog">&times;</button>
             </div>
             <div class="modal-body" id="input_modal_body">
                 <div id="input_modal_label" style="margin-bottom:8px;color:var(--muted);"></div>
@@ -2016,7 +2016,7 @@
         <div class="modal-content sso-modal-content">
             <div class="modal-header">
                 <span class="modal-title" id="sso_modal_title">Add OIDC Provider</span>
-                <span class="modal-close" id="sso_modal_close">&times;</span>
+                <button type="button" class="modal-close" id="sso_modal_close" aria-label="Close SSO dialog">&times;</button>
             </div>
             <form id="sso_modal_form">
                 <div class="modal-body sso-modal-body">
@@ -2158,7 +2158,7 @@
         <div class="modal-content user-modal-content">
             <div class="modal-header">
                 <span class="modal-title" id="user_modal_title">Add User</span>
-                <span class="modal-close" id="user_modal_close_x">&times;</span>
+                <button type="button" class="modal-close" id="user_modal_close_x" aria-label="Close user editor">&times;</button>
             </div>
             <div class="modal-body user-modal-body">
                 <div class="user-form-grid">
@@ -2237,7 +2237,7 @@
         <div class="modal-content user-modal-content">
             <div class="modal-header">
                 <span class="modal-title">Invite User</span>
-                <span class="modal-close" id="invite_user_modal_close_x">&times;</span>
+                <button type="button" class="modal-close" id="invite_user_modal_close_x" aria-label="Close user invitation">&times;</button>
             </div>
             <div class="modal-body user-modal-body">
                 <div class="invite-info">

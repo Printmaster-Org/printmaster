@@ -844,6 +844,9 @@ function showLoginModal() {
     const errEl = document.getElementById('login_error');
 
     const doSubmit = async () => {
+        if (modal.dataset.loginPending === 'true') return;
+        modal.dataset.loginPending = 'true';
+        submit.disabled = true;
         errEl.style.display = 'none';
         const u = document.getElementById('login_username').value || '';
         const p = document.getElementById('login_password').value || '';
@@ -861,12 +864,20 @@ function showLoginModal() {
         } catch (ex) {
             errEl.textContent = ex && ex.message ? ex.message : 'Login failed';
             errEl.style.display = 'block';
+        } finally {
+            modal.dataset.loginPending = 'false';
+            submit.disabled = false;
         }
     };
 
     submit.onclick = doSubmit;
     cancel.onclick = () => { modal.style.display = 'none'; };
-    document.getElementById('login_password').addEventListener('keypress', function (e) { if (e.key === 'Enter') { doSubmit(); } });
+    document.getElementById('login_password').onkeydown = e => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            doSubmit();
+        }
+    };
 }
 
 // Log out the current user and show login modal
@@ -9156,7 +9167,7 @@ function renderSitesTree(tenantId, sites, agents) {
                     <span class="site-meta">${siteAgentList.length} agents, ${site.device_count || 0} devices</span>
                     <div class="site-actions">
                         <button class="btn btn-xs" onclick="openSiteModal('${escapedTenantId}', '${escapedSiteId}')">Edit</button>
-                        <button class="btn btn-xs btn-danger" onclick="deleteSiteInline('${escapedTenantId}', '${escapedSiteId}', '${escapedSiteName}')">×</button>
+                        <button type="button" class="btn btn-xs btn-danger" aria-label="Delete site ${escapeHtml(site.name)}" onclick="deleteSiteInline('${escapedTenantId}', '${escapedSiteId}', '${escapedSiteName}')">×</button>
                     </div>
                 </div>
                 <div class="site-agents">

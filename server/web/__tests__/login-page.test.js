@@ -64,6 +64,28 @@ async function flushPromises() {
 }
 
 describe('login page behavior', () => {
+    test('pending password login ignores repeated Enter and permits retry after failure', async () => {
+        const { window, triggerInit } = setupDom();
+        queueFetchResponses(window, [mockFetchResponse({ local_login: true, providers: [] })]);
+        triggerInit();
+        await flushPromises();
+        let resolveLogin;
+        window.fetch.mockImplementation(() => new Promise(resolve => { resolveLogin = resolve; }));
+        const password = window.document.getElementById('login_password');
+        const enter = () => password.dispatchEvent(new window.KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+        }));
+        enter();
+        enter();
+        expect(window.fetch).toHaveBeenCalledTimes(2);
+        expect(window.document.getElementById('login_submit').disabled).toBe(true);
+        resolveLogin(mockFetchResponse('Invalid credentials', false));
+        await flushPromises();
+        expect(window.document.getElementById('login_submit').disabled).toBe(false);
+        enter();
+        expect(window.fetch).toHaveBeenCalledTimes(3);
+    });
+
     test('login placeholders distinguish bootstrap username from configured secret', () => {
         const { window } = setupDom();
         expect(window.document.getElementById('login_username').placeholder).toBe('Default: admin');

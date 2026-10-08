@@ -199,3 +199,38 @@ describe('server settings recovery', () => {
         expect(document.getElementById('draft').closest('fieldset').disabled).toBe(true);
     });
 });
+
+describe('server control accessibility', () => {
+    test('theme, report range and modal close controls have accessible names and native semantics', () => {
+        const { document } = setup([]);
+        expect(document.getElementById('theme-toggle-checkbox').getAttribute('aria-label')).toBeTruthy();
+        expect(document.querySelector('label[for="usage_report_range"]')).not.toBeNull();
+        document.querySelectorAll('.modal-close').forEach(close => {
+            expect(close.tagName).toBe('BUTTON');
+            expect(close.type).toBe('button');
+            expect(close.getAttribute('aria-label')).toBeTruthy();
+        });
+    });
+
+    test('reopening login replaces the Enter handler and pending submissions are guarded', async () => {
+        let resolveFetch;
+        const fetch = jest.fn(() => new Promise(resolve => { resolveFetch = resolve; }));
+        const { context, document } = setup(['showLoginModal'], { fetch });
+        context.showLoginModal();
+        context.showLoginModal();
+        const password = document.getElementById('login_password');
+        const pressEnter = () => password.dispatchEvent(
+            new document.defaultView.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+        );
+        pressEnter();
+        pressEnter();
+        document.getElementById('login_submit').click();
+        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(document.getElementById('login_submit').disabled).toBe(true);
+        resolveFetch({ ok: false, text: async () => 'Invalid credentials' });
+        await new Promise(resolve => setImmediate(resolve));
+        expect(document.getElementById('login_submit').disabled).toBe(false);
+        pressEnter();
+        expect(fetch).toHaveBeenCalledTimes(2);
+    });
+});

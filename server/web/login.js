@@ -426,7 +426,13 @@
         navigateTo(target);
     }
 
+    let loginPending = false;
+
     async function doLogin(){
+        if(loginPending) return;
+        loginPending = true;
+        const submit = document.getElementById('login_submit');
+        if(submit) submit.disabled = true;
         const errEl = elements.error;
         if(errEl){
             errEl.style.display = 'none';
@@ -445,6 +451,9 @@
             await completeRedirect();
         }catch(e){
             showError(e && e.message ? e.message : 'Login failed');
+        }finally{
+            loginPending = false;
+            if(submit) submit.disabled = false;
         }
     }
 
@@ -468,7 +477,12 @@
         }
         const pwd = document.getElementById('login_password');
         if(pwd){
-            pwd.addEventListener('keypress', function(e){ if(e.key==='Enter'){ doLogin(); } });
+            pwd.onkeydown = function(e){
+                if(e.key==='Enter'){
+                    e.preventDefault();
+                    doLogin();
+                }
+            };
         }
     }
 

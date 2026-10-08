@@ -8774,6 +8774,8 @@ input[type="checkbox"]:indeterminate::before {
 }
 
 .modal-close {
+  background: transparent;
+  border: 0;
   font-size: 28px;
   color: var(--muted);
   cursor: pointer;
@@ -10751,6 +10753,21 @@ select:hover {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+@media (max-width: 600px) {
+  .dashboard-tree-controls,
+  .dashboard-tree-controls-left,
+  .dashboard-tree-controls-right {
+    flex-wrap: wrap;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  .dashboard-tree-controls {
+    gap: 8px;
+  }
 }
 
 .refresh-icon {
