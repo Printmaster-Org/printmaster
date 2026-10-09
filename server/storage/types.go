@@ -333,6 +333,18 @@ type FleetMetrics struct {
 	History     FleetHistory     `json:"history"`
 }
 
+// AggregatedMetricsFilter narrows the scope of GetAggregatedMetrics. Empty
+// fields impose no constraint, and all non-empty fields must match. Callers are
+// responsible for authorizing the filter values; the store only applies them.
+type AggregatedMetricsFilter struct {
+	// TenantIDs limits results to agents owned by these tenants (nil = all tenants).
+	TenantIDs []string
+	// AgentID limits results to devices currently reported by this agent.
+	AgentID string
+	// DeviceSerial limits results to a single device.
+	DeviceSerial string
+}
+
 // AggregatedMetrics describes the fleet view returned by the metrics endpoint.
 type AggregatedMetrics struct {
 	GeneratedAt time.Time    `json:"generated_at"`
@@ -674,7 +686,8 @@ type Store interface {
 	GetMetricsHistory(ctx context.Context, serial string, since time.Time) ([]*MetricsSnapshot, error)
 	// GetMetricsBounds returns the min/max timestamps and total point count for a device's metrics.
 	GetMetricsBounds(ctx context.Context, serial string) (minTS, maxTS time.Time, count int64, err error)
-	GetAggregatedMetrics(ctx context.Context, since time.Time, tenantIDs []string) (*AggregatedMetrics, error)
+	// GetAggregatedMetrics returns dashboard totals and hourly history scoped by filter.
+	GetAggregatedMetrics(ctx context.Context, since time.Time, filter AggregatedMetricsFilter) (*AggregatedMetrics, error)
 	GetDatabaseStats(ctx context.Context) (*DatabaseStats, error)
 
 	// Audit logging

@@ -228,6 +228,39 @@ func TestTenantInventoryMetricsScopes(t *testing.T) {
 	}
 }
 
+// TestMetricsAggregatedFiltersNarrowResults verifies that the agent and device
+// filters on /api/metrics/aggregated are applied, not silently ignored.
+func TestMetricsAggregatedFiltersNarrowResults(t *testing.T) {
+	tenantInventoryStore(t)
+	for _, tc := range []struct {
+		user                 *storage.User
+		query                string
+		wantAgents, wantDevs int
+		wantPages            int64
+	}{
+		{NewTestAdminUser(), "", 3, 3, 369},
+		{NewTestAdminUser(), "?agent_id=agent-b", 1, 1, 123},
+		{NewTestAdminUser(), "?device_serial=device-unassigned", 1, 1, 123},
+		{NewTestAdminUser(), "?agent_id=agent-a&device_serial=device-b", 0, 0, 0},
+		{NewTestUser(storage.RoleViewer, "tenant-a"), "?agent_id=agent-a", 1, 1, 123},
+		{NewTestUser(storage.RoleViewer, "tenant-a"), "?device_serial=device-a", 1, 1, 123},
+	} {
+		rr := httptest.NewRecorder()
+		handleMetricsAggregated(rr, InjectTestUser(httptest.NewRequest(http.MethodGet, "/api/metrics/aggregated"+tc.query, nil), tc.user))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s %q: status %d: %s", tc.user.Role, tc.query, rr.Code, rr.Body.String())
+		}
+		var agg storage.AggregatedMetrics
+		if err := json.Unmarshal(rr.Body.Bytes(), &agg); err != nil {
+			t.Fatal(err)
+		}
+		totals := agg.Fleet.Totals
+		if totals.Agents != tc.wantAgents || totals.Devices != tc.wantDevs || totals.PageCount != tc.wantPages {
+			t.Errorf("%s %q: totals %+v; want agents=%d devices=%d pages=%d", tc.user.Role, tc.query, totals, tc.wantAgents, tc.wantDevs, tc.wantPages)
+		}
+	}
+}
+
 func TestTenantInventoryGlobalSnapshots(t *testing.T) {
 	store := tenantInventoryStore(t)
 	snapshot := &storage.ServerMetricsSnapshot{Timestamp: time.Now().UTC(), Tier: "raw"}

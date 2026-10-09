@@ -4408,8 +4408,11 @@ const (
 	consumableCritical
 )
 
-// GetAggregatedMetrics calculates fleet-wide aggregated metrics for dashboards
-func (s *BaseStore) GetAggregatedMetrics(ctx context.Context, since time.Time, tenantIDs []string) (*AggregatedMetrics, error) {
+// GetAggregatedMetrics calculates aggregated dashboard metrics for the fleet,
+// or for the tenant, agent, or device subset selected by filter. Every total,
+// status count, consumable band, and history series is computed only from the
+// devices that match the filter.
+func (s *BaseStore) GetAggregatedMetrics(ctx context.Context, since time.Time, filter AggregatedMetricsFilter) (*AggregatedMetrics, error) {
 	now := time.Now().UTC()
 	agg := &AggregatedMetrics{
 		GeneratedAt: now,
@@ -4417,6 +4420,7 @@ func (s *BaseStore) GetAggregatedMetrics(ctx context.Context, since time.Time, t
 		RangeEnd:    now,
 	}
 
+	tenantIDs := filter.TenantIDs
 	allowedTenants := make(map[string]struct{}, len(tenantIDs))
 	for _, id := range tenantIDs {
 		allowedTenants[id] = struct{}{}
@@ -4426,8 +4430,9 @@ func (s *BaseStore) GetAggregatedMetrics(ctx context.Context, since time.Time, t
 	if err != nil {
 		return nil, err
 	}
-	filteredAgents := make([]*Agent, 0, len(agents))
-	agentTenantMap := make(map[string]string, len(agents))
+	// scopedAgents holds the agents that pass the tenant and agent filters. A
+	// device is in scope only if its owning agent is in this map.
+	scopedAgents := make(map[string]struct{}, len(agents))
 	for _, a := range agents {
 		if a == nil {
 			continue
@@ -4437,10 +4442,15 @@ func (s *BaseStore) GetAggregatedMetrics(ctx context.Context, since time.Time, t
 				continue
 			}
 		}
-		filteredAgents = append(filteredAgents, a)
-		agentTenantMap[a.AgentID] = a.TenantID
+		if filter.AgentID != "" && a.AgentID != filter.AgentID {
+			continue
+		}
+		scopedAgents[a.AgentID] = struct{}{}
 	}
-	agg.Fleet.Totals.Agents = len(filteredAgents)
+	agg.Fleet.Totals.Agents = len(scopedAgents)
+	// Unscoped requests keep the legacy behaviour of counting devices whose
+	// agent row is missing; any filter requires a known, in-scope agent.
+	requireScopedAgent := len(tenantIDs) > 0 || filter.AgentID != ""
 
 	devices, err := s.ListAllDevices(ctx)
 	if err != nil {
@@ -4450,15 +4460,20 @@ func (s *BaseStore) GetAggregatedMetrics(ctx context.Context, since time.Time, t
 	filteredDevices := make([]*Device, 0, len(devices))
 	serialMap := make(map[string]struct{}, len(devices))
 	deviceBySerial := make(map[string]*Device, len(devices))
+	deviceAgents := make(map[string]struct{})
 	for _, d := range devices {
 		if d == nil {
 			continue
 		}
-		if len(tenantIDs) > 0 {
-			if _, ok := agentTenantMap[d.AgentID]; !ok {
+		if requireScopedAgent {
+			if _, ok := scopedAgents[d.AgentID]; !ok {
 				continue
 			}
 		}
+		if filter.DeviceSerial != "" && d.Serial != filter.DeviceSerial {
+			continue
+		}
+		deviceAgents[d.AgentID] = struct{}{}
 		filteredDevices = append(filteredDevices, d)
 		serialMap[d.Serial] = struct{}{}
 		deviceBySerial[d.Serial] = d
@@ -4474,6 +4489,10 @@ func (s *BaseStore) GetAggregatedMetrics(ctx context.Context, since time.Time, t
 		}
 	}
 	agg.Fleet.Totals.Devices = len(filteredDevices)
+	if filter.DeviceSerial != "" {
+		// A single-device view reports only the agent that owns that device.
+		agg.Fleet.Totals.Agents = len(deviceAgents)
+	}
 
 	if len(filteredDevices) == 0 {
 		return agg, nil
@@ -4536,10 +4555,20 @@ func (s *BaseStore) GetAggregatedMetrics(ctx context.Context, since time.Time, t
 	`
 	args := []interface{}{since.UTC()}
 	if len(tenantIDs) > 0 {
-		query += ` AND a.tenant_id IN (` + s.buildPlaceholderListFrom(len(tenantIDs), 2) + `)`
+		query += ` AND a.tenant_id IN (` + s.buildPlaceholderListFrom(len(tenantIDs), len(args)+1) + `)`
 		for _, id := range tenantIDs {
 			args = append(args, id)
 		}
+	}
+	// Push the narrow filters into SQL so single-agent and single-device views
+	// do not scan the whole fleet's history. Rows are additionally checked
+	// against serialMap below, which is the authoritative scope.
+	if filter.DeviceSerial != "" {
+		query += ` AND m.serial = ` + s.dialect.Placeholder(len(args)+1)
+		args = append(args, filter.DeviceSerial)
+	} else if filter.AgentID != "" {
+		query += ` AND m.agent_id = ` + s.dialect.Placeholder(len(args)+1)
+		args = append(args, filter.AgentID)
 	}
 	query += ` ORDER BY m.timestamp ASC`
 

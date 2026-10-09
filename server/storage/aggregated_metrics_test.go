@@ -361,7 +361,7 @@ func TestGetAggregatedMetrics(t *testing.T) {
 
 	// Get aggregated metrics with no tenant filter
 	since := time.Now().UTC().Add(-24 * time.Hour)
-	agg, err := s.GetAggregatedMetrics(ctx, since, nil)
+	agg, err := s.GetAggregatedMetrics(ctx, since, AggregatedMetricsFilter{})
 	if err != nil {
 		t.Fatalf("GetAggregatedMetrics: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestGetAggregatedMetrics(t *testing.T) {
 	}
 
 	// Get aggregated metrics with tenant filter
-	agg2, err := s.GetAggregatedMetrics(ctx, since, []string{"tenant-1"})
+	agg2, err := s.GetAggregatedMetrics(ctx, since, AggregatedMetricsFilter{TenantIDs: []string{"tenant-1"}})
 	if err != nil {
 		t.Fatalf("GetAggregatedMetrics with tenant filter: %v", err)
 	}
@@ -385,7 +385,7 @@ func TestGetAggregatedMetrics(t *testing.T) {
 	}
 
 	// Get aggregated metrics with non-matching tenant filter
-	agg3, err := s.GetAggregatedMetrics(ctx, since, []string{"other-tenant"})
+	agg3, err := s.GetAggregatedMetrics(ctx, since, AggregatedMetricsFilter{TenantIDs: []string{"other-tenant"}})
 	if err != nil {
 		t.Fatalf("GetAggregatedMetrics with non-matching tenant: %v", err)
 	}
@@ -405,7 +405,7 @@ func TestGetAggregatedMetrics_EmptyDatabase(t *testing.T) {
 	ctx := context.Background()
 	since := time.Now().UTC().Add(-24 * time.Hour)
 
-	agg, err := s.GetAggregatedMetrics(ctx, since, nil)
+	agg, err := s.GetAggregatedMetrics(ctx, since, AggregatedMetricsFilter{})
 	if err != nil {
 		t.Fatalf("GetAggregatedMetrics on empty db: %v", err)
 	}
@@ -462,7 +462,7 @@ func TestGetAggregatedMetrics_WithStatusMessages(t *testing.T) {
 	}
 
 	since := time.Now().UTC().Add(-24 * time.Hour)
-	agg, err := s.GetAggregatedMetrics(ctx, since, nil)
+	agg, err := s.GetAggregatedMetrics(ctx, since, AggregatedMetricsFilter{})
 	if err != nil {
 		t.Fatalf("GetAggregatedMetrics: %v", err)
 	}
@@ -542,7 +542,7 @@ func TestGetAggregatedMetrics_DeltaHistoryWithPreSeed(t *testing.T) {
 	// Query for the last hour only - the seed metric is outside this window
 	since := now.Add(-1 * time.Hour)
 
-	agg, err := s.GetAggregatedMetrics(ctx, since, nil)
+	agg, err := s.GetAggregatedMetrics(ctx, since, AggregatedMetricsFilter{})
 	if err != nil {
 		t.Fatalf("GetAggregatedMetrics: %v", err)
 	}
@@ -569,5 +569,84 @@ func TestGetAggregatedMetrics_DeltaHistoryWithPreSeed(t *testing.T) {
 	}
 	if colorDelta != 50 {
 		t.Errorf("expected color delta of 50 pages, got %d", colorDelta)
+	}
+}
+
+// TestGetAggregatedMetrics_AgentAndDeviceFilters verifies that agent and device
+// filters scope totals and history to the selected subset instead of returning
+// the whole fleet, and that filters combine with AND semantics.
+func TestGetAggregatedMetrics_AgentAndDeviceFilters(t *testing.T) {
+	t.Parallel()
+	s, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	fixtures := []struct {
+		agentID, tenantID, serial string
+		pages                     int
+	}{
+		{"agent-a", "tenant-1", "SER-A1", 100},
+		{"agent-a", "tenant-1", "SER-A2", 200},
+		{"agent-b", "tenant-2", "SER-B1", 400},
+	}
+	since := time.Now().UTC().Add(-2 * time.Hour)
+	for _, f := range fixtures {
+		agent := &Agent{AgentID: f.agentID, Name: f.agentID, Hostname: f.agentID, Platform: "linux", Version: "1.0.0", ProtocolVersion: "1", Status: "active", Token: "tok-" + f.agentID, TenantID: f.tenantID}
+		if err := s.RegisterAgent(ctx, agent); err != nil {
+			t.Fatalf("RegisterAgent %s: %v", f.agentID, err)
+		}
+		device := &Device{AgentID: f.agentID}
+		device.Serial = f.serial
+		if err := s.UpsertDevice(ctx, device); err != nil {
+			t.Fatalf("UpsertDevice %s: %v", f.serial, err)
+		}
+		// Two samples inside the window produce a history delta equal to pages.
+		for i, count := range []int{1000, 1000 + f.pages} {
+			snap := &MetricsSnapshot{Serial: f.serial, AgentID: f.agentID, Timestamp: since.Add(time.Duration(i+1) * time.Minute), PageCount: count}
+			if err := s.SaveMetrics(ctx, snap); err != nil {
+				t.Fatalf("SaveMetrics %s: %v", f.serial, err)
+			}
+		}
+	}
+
+	sumHistory := func(agg *AggregatedMetrics) int64 {
+		var total int64
+		for _, p := range agg.Fleet.History.TotalImpressions {
+			total += p.Value
+		}
+		return total
+	}
+
+	cases := []struct {
+		name                  string
+		filter                AggregatedMetricsFilter
+		agents, devices       int
+		pageTotal, historySum int64
+	}{
+		{"unfiltered", AggregatedMetricsFilter{}, 2, 3, 3700, 700},
+		{"agent", AggregatedMetricsFilter{AgentID: "agent-a"}, 1, 2, 2300, 300},
+		{"device", AggregatedMetricsFilter{DeviceSerial: "SER-B1"}, 1, 1, 1400, 400},
+		{"agent and own device", AggregatedMetricsFilter{AgentID: "agent-a", DeviceSerial: "SER-A2"}, 1, 1, 1200, 200},
+		{"agent and foreign device", AggregatedMetricsFilter{AgentID: "agent-a", DeviceSerial: "SER-B1"}, 0, 0, 0, 0},
+		{"tenant excludes agent", AggregatedMetricsFilter{TenantIDs: []string{"tenant-2"}, AgentID: "agent-a"}, 0, 0, 0, 0},
+		{"unknown device", AggregatedMetricsFilter{DeviceSerial: "missing"}, 0, 0, 0, 0},
+	}
+	for _, tc := range cases {
+		agg, err := s.GetAggregatedMetrics(ctx, since, tc.filter)
+		if err != nil {
+			t.Fatalf("%s: GetAggregatedMetrics: %v", tc.name, err)
+		}
+		if agg.Fleet.Totals.Agents != tc.agents || agg.Fleet.Totals.Devices != tc.devices {
+			t.Errorf("%s: agents/devices = %d/%d, want %d/%d", tc.name, agg.Fleet.Totals.Agents, agg.Fleet.Totals.Devices, tc.agents, tc.devices)
+		}
+		if agg.Fleet.Totals.PageCount != tc.pageTotal {
+			t.Errorf("%s: page total = %d, want %d", tc.name, agg.Fleet.Totals.PageCount, tc.pageTotal)
+		}
+		if got := sumHistory(agg); got != tc.historySum {
+			t.Errorf("%s: history sum = %d, want %d", tc.name, got, tc.historySum)
+		}
 	}
 }

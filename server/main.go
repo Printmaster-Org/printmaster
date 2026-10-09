@@ -7489,11 +7489,13 @@ func handleMetricsSummary(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(stats)
 }
 
-// handleMetricsAggregated returns fleet-wide aggregated metrics for the dashboard
-// Supports optional filters:
-//   - tenant_id: filter to specific tenant
-//   - agent_id: filter to specific agent
-//   - device_serial: filter to specific device
+// handleMetricsAggregated returns aggregated dashboard metrics. Results are
+// always limited to the caller's tenants. Optional query filters narrow them:
+//   - tenant_id: a single tenant the caller may access (403 otherwise)
+//   - agent_id: devices reported by one agent the caller may access
+//   - device_serial: one device whose owning agent the caller may access
+//
+// Filters combine with AND semantics and are applied by the store.
 func handleMetricsAggregated(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
@@ -7566,22 +7568,20 @@ func handleMetricsAggregated(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	agg, err := serverStore.GetAggregatedMetrics(ctx, since, tenantIDs)
+	// Filters are applied inside the store so every total, band, and history
+	// series reflects only the selected tenant, agent, or device.
+	filter := storage.AggregatedMetricsFilter{
+		TenantIDs:    tenantIDs,
+		AgentID:      filterAgentID,
+		DeviceSerial: filterDeviceSerial,
+	}
+	agg, err := serverStore.GetAggregatedMetrics(ctx, since, filter)
 	if err != nil {
-		logError("Failed to get aggregated metrics", "error", err)
+		logError("Failed to get aggregated metrics", "error", err, "tenant_id", filterTenantID, "agent_id", filterAgentID, "device_serial", filterDeviceSerial)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-
-	// Apply agent filter if specified
-	if filterAgentID != "" {
-		agg = filterAggregatedMetricsByAgent(agg, filterAgentID)
-	}
-
-	// Apply device filter if specified
-	if filterDeviceSerial != "" {
-		agg = filterAggregatedMetricsByDevice(agg, filterDeviceSerial)
-	}
+	logDebug("Aggregated metrics served", "tenant_id", filterTenantID, "agent_id", filterAgentID, "device_serial", filterDeviceSerial, "agents", agg.Fleet.Totals.Agents, "devices", agg.Fleet.Totals.Devices)
 
 	// Server DB statistics contain global inventory counts, not tenant totals.
 	if principal.IsAdmin() {
@@ -7590,30 +7590,6 @@ func handleMetricsAggregated(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(agg)
-}
-
-// filterAggregatedMetricsByAgent filters aggregated metrics to only include data for a specific agent.
-// This is used for single-agent views on the metrics dashboard.
-func filterAggregatedMetricsByAgent(agg *storage.AggregatedMetrics, agentID string) *storage.AggregatedMetrics {
-	if agg == nil || agentID == "" {
-		return agg
-	}
-	// For now, we return the full aggregation since device-level filtering would require
-	// the aggregation query to be modified. The client-side filtering handles display.
-	// TODO: Implement proper server-side filtering by modifying GetAggregatedMetrics to accept agent filter
-	return agg
-}
-
-// filterAggregatedMetricsByDevice filters aggregated metrics to only include data for a specific device.
-// This is used for single-device views on the metrics dashboard.
-func filterAggregatedMetricsByDevice(agg *storage.AggregatedMetrics, serial string) *storage.AggregatedMetrics {
-	if agg == nil || serial == "" {
-		return agg
-	}
-	// For now, we return the full aggregation since device-level filtering would require
-	// the aggregation query to be modified. The client-side filtering handles display.
-	// TODO: Implement proper server-side filtering by modifying GetAggregatedMetrics to accept device filter
-	return agg
 }
 
 // Stored server snapshots contain global fleet totals. They cannot safely be
