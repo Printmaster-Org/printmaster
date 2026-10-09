@@ -30,12 +30,18 @@ func newBoundaryFixture(t *testing.T) boundaryFixture {
 	// SQLite :memory: is per connection; concurrent stream authorization must
 	// share the same fixture DB rather than open an empty second connection.
 	store.(*storage.SQLiteStore).DB().SetMaxOpenConns(1)
-	serverLogger = logger.New(logger.ERROR, t.TempDir(), 100)
+	// Logger.Close releases agent.log; on Windows an open handle makes the
+	// TempDir cleanup (registered first, so run after this one) fail the test.
+	fixtureLogger := logger.New(logger.ERROR, t.TempDir(), 100)
+	serverLogger = fixtureLogger
 	sseHub = NewSSEHub()
 	hub := sseHub
 	t.Cleanup(func() {
 		hub.Stop()
 		serverStore, serverLogger, sseHub = previousStore, previousLogger, previousHub
+		if err := fixtureLogger.Close(); err != nil {
+			t.Logf("close fixture logger: %v", err)
+		}
 	})
 	f := boundaryFixture{store: store, sessions: map[string]string{}, users: map[string]*storage.User{}}
 	ctx := context.Background()
