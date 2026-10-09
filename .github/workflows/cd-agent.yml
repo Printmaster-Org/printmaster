@@ -427,24 +427,10 @@ jobs:
       id: version
       run: |
         bash scripts/release-version.sh agent "$GITHUB_REF" >> "$GITHUB_OUTPUT"
-        AGENT_VERSION="${GITHUB_REF#refs/tags/agent-v}"
-        
-        # Extract major.minor for compatible server matching
-        MAJOR_MINOR=$(echo "${AGENT_VERSION%%-*}" | cut -d. -f1,2)
-        
-        # Find latest stable server with matching minor version (e.g., agent 0.9.5 -> server 0.9.*).
-        # Dev tags (server-vX.Y.Z-dev.sha) sort above their stable release, so exclude them.
-        MATCHING_SERVER_TAG=$(git tag -l "server-v${MAJOR_MINOR}.*" --sort=-version:refname | grep -E '^server-v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)
-        
-        if [ -n "$MATCHING_SERVER_TAG" ]; then
-          echo "server_version=${MATCHING_SERVER_TAG#server-v}" >> $GITHUB_OUTPUT
-          echo "server_tag=$MATCHING_SERVER_TAG" >> $GITHUB_OUTPUT
-          echo "Found compatible server: $MATCHING_SERVER_TAG"
-        else
-          echo "server_version=" >> $GITHUB_OUTPUT
-          echo "server_tag=" >> $GITHUB_OUTPUT
-          echo "No compatible server found for v${MAJOR_MINOR}.*"
-        fi
+
+    - name: Resolve companion Server release
+      id: companion
+      run: bash scripts/release-companion.sh server "${GITHUB_REF#refs/tags/agent-v}" >> "$GITHUB_OUTPUT"
     
     - name: Prepare release binaries
       run: |
@@ -589,7 +575,7 @@ jobs:
           sudo dnf config-manager addrepo --from-repofile=https://packages.printmaster.work/printmaster.repo && sudo dnf install -y printmaster-agent
           ```
           
-          **Windows:** Download the MSI installer from Assets below.
+          ${{ steps.version.outputs.is_beta == 'true' && '**Windows:** Download the `.exe` binary from Assets below. MSI installers are Stable-only.' || '**Windows:** Download the MSI installer from Assets below.' }}
           
           **Docker:**
           ```bash
@@ -604,14 +590,7 @@ jobs:
           
           ### 🖥️ Server Download
           
-          For multi-site management, you'll also need the PrintMaster Server:
-          
-          **Latest Server: v${{ steps.version.outputs.server_version }}** — [View Release](https://github.com/printmaster-org/printmaster/releases/tag/${{ steps.version.outputs.server_tag }})
-          
-          ```bash
-          # Docker (recommended)
-          docker pull ghcr.io/printmaster-org/printmaster-server:latest
-          ```
+          ${{ steps.companion.outputs.server_section }}
           
           ---
           
