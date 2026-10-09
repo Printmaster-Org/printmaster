@@ -197,6 +197,16 @@ type AgentUpdateManifest struct {
 	PublishedAt     time.Time `json:"published_at,omitempty"`
 	GeneratedAt     time.Time `json:"generated_at"`
 	Signature       string    `json:"signature,omitempty"`
+	// SignedPayload is the base64 encoding of the exact ManifestPayload JSON
+	// bytes that Signature covers. The unsigned fields above are rebuilt from
+	// storage and cannot be re-serialized byte-for-byte, so Agents verify the
+	// signature against these bytes and then compare the fields they act on.
+	SignedPayload string `json:"signed_payload,omitempty"`
+	// SigningKeyID and SigningPublicKey (base64 ed25519) identify the key that
+	// produced Signature. Agents pin the key on first use; delivering it here
+	// does not by itself prove authenticity (see the Agent's key pinning).
+	SigningKeyID     string `json:"signing_key_id,omitempty"`
+	SigningPublicKey string `json:"signing_public_key,omitempty"`
 }
 
 // GetLatestManifest returns the newest manifest for the component, platform,
@@ -289,7 +299,12 @@ func (m *Manager) GetLatestManifest(ctx context.Context, component, platform, ar
 		Channel:         latest.Channel,
 		Signature:       latest.Signature,
 		GeneratedAt:     latest.GeneratedAt,
+		SigningKeyID:    latest.SigningKeyID,
 	}
+	if latest.ManifestJSON != "" {
+		result.SignedPayload = base64.StdEncoding.EncodeToString([]byte(latest.ManifestJSON))
+	}
+	m.attachSigningPublicKey(ctx, result)
 
 	if artifact != nil {
 		result.SHA256 = artifact.SHA256
@@ -298,6 +313,22 @@ func (m *Manager) GetLatestManifest(ctx context.Context, component, platform, ar
 	}
 
 	return result, nil
+}
+
+// attachSigningPublicKey adds the public half of the manifest's signing key so
+// Agents can verify the signature. A missing or retired key is not fatal: the
+// manifest is still served and the Agent logs that it could not verify it.
+func (m *Manager) attachSigningPublicKey(ctx context.Context, manifest *AgentUpdateManifest) {
+	if manifest.SigningKeyID == "" {
+		return
+	}
+	key, err := m.store.GetSigningKey(ctx, manifest.SigningKeyID)
+	if err != nil || key == nil {
+		m.logInfo("Manifest signing key unavailable; Agents cannot verify this manifest",
+			"key_id", manifest.SigningKeyID, "version", manifest.Version, "error", err)
+		return
+	}
+	manifest.SigningPublicKey = key.PublicKey
 }
 
 func (m *Manager) signArtifactWithKey(ctx context.Context, artifact *storage.ReleaseArtifact, key *storage.SigningKey) (*storage.ReleaseManifest, error) {

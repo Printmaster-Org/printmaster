@@ -125,6 +125,7 @@ type Manager struct {
 	restartFn        func() error
 	launchHelperFn   func(helperPath string) error // For testing: allows mocking the helper launch
 	progressCallback ProgressCallback
+	keyPins          *signingKeyPinStore // Log-only manifest signing key pin.
 
 	// Package manager support (Linux dpkg/apt/dnf/rpm)
 	usePackageManager bool   // True if binary is managed by a package manager
@@ -264,6 +265,7 @@ func NewManager(opts Options) (*Manager, error) {
 	mgr := &Manager{
 		log:               opts.Log,
 		stateDir:          stateDir,
+		keyPins:           newSigningKeyPinStore(stateDir),
 		enabled:           opts.Enabled,
 		disabledReason:    disabledReason,
 		currentVersion:    opts.CurrentVersion,
@@ -777,6 +779,8 @@ func (m *Manager) fetchManifest(ctx context.Context) (*UpdateManifest, error) {
 		m.logWarn("Rejected update manifest", "requested_format", format, "manifest_format", manifest.Format, "version", manifest.Version, "error", err)
 		return nil, err
 	}
+	// Log-only: the audit reports signature problems but never blocks.
+	m.auditManifestSignature(manifest)
 	return manifest, nil
 }
 

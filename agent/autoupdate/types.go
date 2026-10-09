@@ -87,6 +87,13 @@ type UpdateManifest struct {
 	PublishedAt time.Time `json:"published_at,omitempty"`
 	GeneratedAt time.Time `json:"generated_at"`
 	Signature   string    `json:"signature,omitempty"`
+	// SignedPayload (base64), SigningKeyID and SigningPublicKey (base64
+	// ed25519) let the Agent verify Signature. Servers that predate signed
+	// payload delivery omit them. Keep this layout identical in
+	// agent.UpdateManifest and autoupdate.UpdateManifest.
+	SignedPayload    string `json:"signed_payload,omitempty"`
+	SigningKeyID     string `json:"signing_key_id,omitempty"`
+	SigningPublicKey string `json:"signing_public_key,omitempty"`
 }
 
 // CheckResult captures the outcome of an update availability check.
