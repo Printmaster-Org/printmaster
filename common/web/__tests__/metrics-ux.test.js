@@ -27,6 +27,16 @@ describe('metrics identity and loading', () => {
         expect(series['Matte Black'].points).toHaveLength(3);
     });
 
+    test('ink snapshot metadata corrects chart labels without changing readings', () => {
+        const series = metrics.buildTonerSeries([{
+            timestamp: '2026-10-09',
+            toner_levels: { toner_black: 28, waste_toner: 100 },
+            raw_data: { is_inkjet: true, toner_desc_black: 'Photo Black Ink Cartridge T44H1' }
+        }]);
+        expect(Object.keys(series)).toEqual(['Photo Black Ink Cartridge T44H1', 'Waste Ink']);
+        expect(series['Photo Black Ink Cartridge T44H1'].points[0].value).toBe(28);
+    });
+
     test('same cartridge remains continuous when alias formatting changes between snapshots', () => {
         const series = metrics.buildTonerSeries([
             { timestamp: '2026-10-01', toner_levels: { 'Light Grey Ink T44H9, T44P9': 70 } },

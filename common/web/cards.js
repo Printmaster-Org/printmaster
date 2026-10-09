@@ -316,6 +316,56 @@
             .replace(/[^a-z0-9]+/g, ' ').trim();
     }
 
+    function resolveSupplyNames(levels, device, latest) {
+        const sources = [device, latest];
+        for (const source of [...sources]) {
+            if (source) sources.push(source.raw_data, source.raw, source.metrics);
+        }
+        for (const source of [...sources]) {
+            if (source?.raw_data) sources.push(source.raw_data);
+        }
+        const description = color => {
+            for (const source of sources) {
+                const value = source?.[`toner_desc_${color}`];
+                if (typeof value === 'string' && value.trim()) return value.trim();
+            }
+            return '';
+        };
+        const isInk = sources.some(source => source?.is_inkjet === true || /inkjet/i.test(source?.device_type || '')) ||
+            ['black', 'cyan', 'magenta', 'yellow'].some(color => /\bink\b/i.test(description(color))) ||
+            [...Object.keys(levels), ...sources.flatMap(source => Array.isArray(source?.consumables) ? source.consumables : [])]
+                .some(name => /\bink\b/i.test(getSupplyDisplayName(name)));
+        const result = {};
+        const originalNames = new Map();
+        for (const [name, value] of Object.entries(levels)) {
+            const generic = /^(?:(?:toner|ink)[_ ](?:level[_ ])?)?(black|cyan|magenta|yellow|k|c|m|y)$/i.exec(name);
+            let label = name;
+            let fallbackLabel = name;
+            if (generic) {
+                const color = { k: 'black', c: 'cyan', m: 'magenta', y: 'yellow' }[generic[1].toLowerCase()] || generic[1].toLowerCase();
+                fallbackLabel = `${color[0].toUpperCase()}${color.slice(1)} ${isInk ? 'Ink' : 'Toner'}`;
+                label = description(color) || fallbackLabel;
+            } else if (isInk && /^waste[_ ]toner$/i.test(name)) {
+                // A shared waste metric cannot identify which of multiple maintenance boxes it measures.
+                label = 'Waste Ink';
+            }
+            if (Object.prototype.hasOwnProperty.call(result, label) && String(result[label]) !== String(value)) {
+                const priorName = originalNames.get(label);
+                if (name === label && priorName !== label) {
+                    result[priorName] = result[label];
+                    result[label] = value;
+                    originalNames.set(label, name);
+                } else {
+                    result[fallbackLabel] = value;
+                }
+            } else {
+                result[label] = value;
+                originalNames.set(label, fallbackLabel);
+            }
+        }
+        return result;
+    }
+
     // Build the compact per-color toner bar dataset for a device/printer_info
     // object (and optional latest metrics snapshot). Reuses buildTonerLevels()
     // for source resolution and mono/color filtering, then narrows to actual
@@ -412,7 +462,7 @@
                 for (const m of mappings) {
                     const val = pick(m.keys);
                     if (val !== undefined) {
-                        out[m.name] = val;
+                        out[pick(m.descKeys) || m.name] = val;
                         continue;
                     }
                     // If no numeric level, try to provide a descriptive name from descKeys
@@ -442,7 +492,7 @@
             // from device metrics (color pages) and raw values.
             if (p) {
                 // Normalize keys for comparison
-                const normalize = (s) => String(s || '').toLowerCase();
+                const normalize = getSupplyIdentity;
 
                 // If the device provided a consumables array, use that to limit keys
                 if (Array.isArray(p.consumables) && p.consumables.length > 0) {
@@ -507,7 +557,7 @@
         } catch (e) {
             // ignore
         }
-        return normalizeSupplyLevels(out);
+        return normalizeSupplyLevels(resolveSupplyNames(out, p, latest));
     }
 
         // Render a compact consumable representation suitable for display on a saved-device card

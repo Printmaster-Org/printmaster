@@ -1,10 +1,46 @@
 package agent
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/gosnmp/gosnmp"
 )
+
+func TestParsePDUsPreservesNamedInkAndMaintenanceSupplies(t *testing.T) {
+	t.Parallel()
+	supplies := []struct {
+		desc  string
+		level int
+	}{
+		{"Photo Black Ink Cartridge T44H1", 28},
+		{"Matte Black Ink Cartridge T44H8", 61},
+		{"Cyan Ink Cartridge T44H2", 27},
+		{"Light Cyan Ink Cartridge T44H5", 72},
+		{"Vivid Magenta Ink Cartridge T44H3", 30},
+		{"Vivid Light Magenta Ink Cartridge T44H6", 49},
+		{"Maintenance Box T6997", 39},
+		{"Maintenance Box2 T6997", 100},
+	}
+	var pdus []gosnmp.SnmpPDU
+	for i, supply := range supplies {
+		for column, value := range map[int]interface{}{6: supply.desc, 9: supply.level, 8: 100} {
+			pdus = append(pdus, gosnmp.SnmpPDU{Name: fmt.Sprintf("1.3.6.1.2.1.43.11.1.1.%d.1.%d", column, i+1), Value: value})
+		}
+	}
+	pi, ok := ParsePDUsWithoutNetwork("192.0.2.10", pdus, nil, nil)
+	if !ok {
+		t.Fatal("supply table was not detected as printer data")
+	}
+	for _, supply := range supplies {
+		if got, ok := pi.TonerLevels[supply.desc]; !ok || got != supply.level {
+			t.Fatalf("lost %s: %+v", supply.desc, pi.TonerLevels)
+		}
+	}
+	if got := pi.TonerLevels[pi.TonerDescBlack]; got != pi.TonerLevelBlack {
+		t.Fatalf("legacy black description/level disagree: %s %d != %d", pi.TonerDescBlack, got, pi.TonerLevelBlack)
+	}
+}
 
 func TestSerialLabelBoundaries(t *testing.T) {
 	t.Parallel()

@@ -1,0 +1,47 @@
+{
+  "manufacturer": "Epson",
+  "model": "SC-P9500 Series",
+  "toner_levels": {
+    "Gray Ink Cartridge T44H7, T44P7, T44W7": 28,
+    "Green Ink Cartridge T44HB, T44PB, T44WB": 30,
+    "Light Gray Ink Cartridge T44H9, T44P9, T44W9": 27,
+    "Orange Ink Cartridge T44HA, T44PA, T44WA": 28,
+    "Violet Ink Cartridge T44HD, T44PD, T44WD": 28,
+    "supply_gray_ink_cartridge_t44h7,_t44p7,_t44w7": 28,
+    "supply_green_ink_cartridge_t44hb,_t44pb,_t44wb": 30,
+    "supply_light_gray_ink_cartridge_t44h9,_t44p9,_t44w9": 27,
+    "supply_orange_ink_cartridge_t44ha,_t44pa,_t44wa": 28,
+    "supply_violet_ink_cartridge_t44hd,_t44pd,_t44wd": 28,
+    "toner_black": 28,
+    "toner_cyan": 28,
+    "toner_magenta": 30,
+    "toner_yellow": 28,
+    "waste_toner": 100
+  },
+  "raw_data": {
+    "consumables": [
+      "Violet Ink Cartridge T44HD, T44PD, T44WD",
+      "Gray Ink Cartridge T44H7, T44P7, T44W7",
+      "Light Gray Ink Cartridge T44H9, T44P9, T44W9",
+      "Photo Black Ink Cartridge T44H1, T44P1, T44W1",
+      "Matte Black Ink Cartridge T44H8, T44P8, T44W8",
+      "Cyan Ink Cartridge T44H2, T44P2, T44W2",
+      "Vivid Light Magenta Ink Cartridge T44H6, T44P6, T44W6",
+      "Orange Ink Cartridge T44HA, T44PA, T44WA",
+      "Green Ink Cartridge T44HB, T44PB, T44WB",
+      "Maintenance Box T6997",
+      "Maintenance Box2 T6997",
+      "Vivid Magenta Ink Cartridge T44H3, T44P3, T44W3",
+      "Yellow Ink Cartridge T44H4, T44P4, T44W4",
+      "Light Cyan Ink Cartridge T44H5, T44P5, T44W5"
+    ],
+    "raw_data": {
+      "is_inkjet": true,
+      "is_color": true,
+      "toner_desc_black": "Photo Black Ink Cartridge T44H1, T44P1, T44W1",
+      "toner_desc_cyan": "Cyan Ink Cartridge T44H2, T44P2, T44W2",
+      "toner_desc_magenta": "Vivid Light Magenta Ink Cartridge T44H6, T44P6, T44W6",
+      "toner_desc_yellow": "Yellow Ink Cartridge T44H4, T44P4, T44W4"
+    }
+  }
+}

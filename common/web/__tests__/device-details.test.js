@@ -1,6 +1,7 @@
 /** @jest-environment jsdom */
 
 require('../cards.js');
+const epsonSupplies = require('./fixtures/epson-p9500-supplies.json');
 
 describe('device details', () => {
     const device = {
@@ -177,6 +178,66 @@ describe('device details', () => {
         render({ ...device, toner_levels: levels });
         expect(document.querySelector('.consumables-section').textContent).not.toContain('supply_');
         expect(document.querySelector('.consumables-section').textContent).toContain('Light Gray Ink Cartridge T44H9');
+    });
+
+    test('saved Epson diagnostic recovers linked cartridge names without inventing missing levels', () => {
+        const levels = window.__pm_shared_cards.buildTonerLevels(epsonSupplies);
+        expect(Object.keys(levels)).toHaveLength(10);
+        expect(levels['Photo Black Ink Cartridge T44H1, T44P1, T44W1']).toBe(28);
+        expect(levels['Cyan Ink Cartridge T44H2, T44P2, T44W2']).toBe(28);
+        expect(levels['Vivid Light Magenta Ink Cartridge T44H6, T44P6, T44W6']).toBe(30);
+        expect(levels['Yellow Ink Cartridge T44H4, T44P4, T44W4']).toBe(28);
+        expect(levels['Waste Ink']).toBe(100);
+        expect(Object.keys(levels).some(name => /matte black|light cyan|maintenance box/i.test(name))).toBe(false);
+        render({ ...device, ...epsonSupplies });
+        const text = document.querySelector('.consumables-section').textContent;
+        expect(text).not.toMatch(/toner|supply_/i);
+        expect(text).toContain('Photo Black Ink Cartridge T44H1, T44P1, T44W1');
+        const bars = window.__pm_shared_cards.getDeviceTonerBarData(epsonSupplies);
+        expect(bars).toHaveLength(9);
+        expect(window.__pm_shared_cards.renderTonerBars(bars)).not.toMatch(/toner black/i);
+    });
+
+    test.each([
+        [{ raw_data: { is_inkjet: true } }, 'Black Ink', 'Waste Ink'],
+        [{ raw_data: { is_laser: true } }, 'Black Toner', 'waste_toner'],
+        [{}, 'Black Toner', 'waste_toner']
+    ])('generic supplies follow device technology without guessing part numbers', (context, black, waste) => {
+        const levels = window.__pm_shared_cards.buildTonerLevels({
+            ...context, toner_levels: { toner_black: 23, waste_toner: 40 }
+        });
+        expect(levels).toEqual({ [black]: 23, [waste]: 40 });
+    });
+
+    test('legacy raw levels use exact descriptions; unlinked cartridge lists do not guess mappings', () => {
+        const levels = window.__pm_shared_cards.buildTonerLevels({
+            raw_data: { toner_level_black: 14, toner_desc_black: 'Black Ink Cartridge ABC123' }
+        });
+        expect(levels).toEqual({ 'Black Ink Cartridge ABC123': 14 });
+        expect(window.__pm_shared_cards.buildTonerLevels({
+            toner_levels: { toner_black: 14 }, consumables: ['Photo Black Ink A', 'Matte Black Ink B']
+        })).toEqual({ 'Black Ink': 14 });
+    });
+
+    test('explicit supply inventory retains named maintenance and non-CMY ink aliases', () => {
+        const levels = window.__pm_shared_cards.buildTonerLevels({
+            consumables: ['Maintenance Box2 T6997', 'Violet Ink Cartridge T44HD'],
+            toner_levels: { supply_maintenance_box2_t6997: 39, supply_violet_ink_cartridge_t44hd: 28 }
+        });
+        expect(Object.keys(levels)).toHaveLength(2);
+        expect(levels.supply_maintenance_box2_t6997).toBe(39);
+    });
+
+    test.each([true, false])('conflicting generic/named readings survive name resolution regardless of order (%s)', genericFirst => {
+        const named = 'Photo Black Ink Cartridge ABC123';
+        const pairs = [['toner_black', 20], [named, 30]];
+        const levels = window.__pm_shared_cards.buildTonerLevels({
+            toner_levels: Object.fromEntries(genericFirst ? pairs : [...pairs].reverse()),
+            raw_data: { toner_desc_black: named, is_inkjet: true }
+        });
+        expect(Object.values(levels).sort()).toEqual([20, 30]);
+        expect(levels[named]).toBe(30);
+        expect(levels['Black Ink']).toBe(20);
     });
 
     test.each([[undefined, 'Not collected'], [null, 'Not collected'], ['', 'Not collected'], [0, '0'], ['12', '12']])(

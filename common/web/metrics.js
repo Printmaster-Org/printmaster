@@ -43,7 +43,7 @@ function extractSnapshotTonerEntries(snapshot) {
     let rawLevels = {};
     try {
         if (window.__pm_shared_cards && typeof window.__pm_shared_cards.buildTonerLevels === 'function') {
-            rawLevels = window.__pm_shared_cards.buildTonerLevels(null, snapshot) || {};
+            rawLevels = window.__pm_shared_cards.buildTonerLevels(snapshot) || {};
         } else if (snapshot) {
             rawLevels = snapshot.toners || snapshot.toner || snapshot.toner_levels || {};
         }

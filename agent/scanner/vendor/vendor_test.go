@@ -1,12 +1,54 @@
 package vendor
 
 import (
+	"fmt"
+	"math"
+	"strings"
 	"testing"
 
 	"printmaster/agent/supplies"
 
 	"github.com/gosnmp/gosnmp"
 )
+
+func TestSuppliesPreserveDistinctInkCartridgesAndMaintenanceBoxes(t *testing.T) {
+	t.Parallel()
+	supplies := []struct {
+		desc  string
+		level int
+		class int
+	}{
+		{"Photo Black Ink Cartridge T44H1", 28, 3},
+		{"Matte Black Ink Cartridge T44H8", 61, 3},
+		{"Cyan Ink Cartridge T44H2", 27, 3},
+		{"Light Cyan Ink Cartridge T44H5", 72, 3},
+		{"Vivid Magenta Ink Cartridge T44H3", 30, 3},
+		{"Vivid Light Magenta Ink Cartridge T44H6", 49, 3},
+		{"Gray Ink Cartridge T44H7", 28, 0},
+		{"Maintenance Box T6997", 39, 4},
+		{"Maintenance Box2 T6997", 100, 4},
+	}
+	var pdus []gosnmp.SnmpPDU
+	for i, supply := range supplies {
+		for column, value := range map[int]interface{}{6: supply.desc, 9: supply.level, 8: 100, 4: supply.class} {
+			pdus = append(pdus, gosnmp.SnmpPDU{Name: fmt.Sprintf("1.3.6.1.2.1.43.11.1.1.%d.1.%d", column, i+1), Value: value})
+		}
+	}
+	for _, module := range []VendorModule{&GenericVendor{}, &EpsonVendor{}} {
+		result := module.Parse(pdus)
+		for _, supply := range supplies {
+			key := "supply_" + strings.ReplaceAll(strings.ToLower(supply.desc), " ", "_")
+			if got, ok := result[key].(float64); !ok || math.Abs(got-float64(supply.level)) > 0.000001 {
+				t.Fatalf("%T lost %s: %+v", module, key, result)
+			}
+		}
+		for _, key := range []string{"toner_black", "toner_cyan", "toner_magenta", "waste_toner"} {
+			if _, ok := result[key]; ok {
+				t.Fatalf("%T emitted ambiguous aggregate %s", module, key)
+			}
+		}
+	}
+}
 
 func TestVendorDetection(t *testing.T) {
 	tests := []struct {

@@ -813,6 +813,9 @@ func parsePDUs(scanIP string, vars []gosnmp.SnmpPDU, meta *ScanMeta, logFn func(
 						descYellow = desc
 					}
 				}
+				if supplies.PreserveDescription(desc) {
+					key = desc
+				}
 			}
 
 			// Calculate percentage from level and max capacity per RFC 3805 (Printer-MIB)
@@ -1315,28 +1318,34 @@ func parsePDUs(scanIP string, vars []gosnmp.SnmpPDU, meta *ScanMeta, logFn func(
 	}
 
 	// populate per-color toner level fields from discovered descriptions when present
-	// Use the normalized key (toner_black, etc.) to look up levels since that's how we store them
+	supplyLevel := func(desc, canonical string) (int, bool) {
+		if v, ok := tonerLevels[desc]; ok {
+			return v, true
+		}
+		v, ok := tonerLevels[canonical]
+		return v, ok
+	}
 	if descBlack != "" {
 		pi.TonerDescBlack = descBlack
-		if v, ok := tonerLevels["toner_black"]; ok {
+		if v, ok := supplyLevel(descBlack, "toner_black"); ok {
 			pi.TonerLevelBlack = v
 		}
 	}
 	if descCyan != "" {
 		pi.TonerDescCyan = descCyan
-		if v, ok := tonerLevels["toner_cyan"]; ok {
+		if v, ok := supplyLevel(descCyan, "toner_cyan"); ok {
 			pi.TonerLevelCyan = v
 		}
 	}
 	if descMagenta != "" {
 		pi.TonerDescMagenta = descMagenta
-		if v, ok := tonerLevels["toner_magenta"]; ok {
+		if v, ok := supplyLevel(descMagenta, "toner_magenta"); ok {
 			pi.TonerLevelMagenta = v
 		}
 	}
 	if descYellow != "" {
 		pi.TonerDescYellow = descYellow
-		if v, ok := tonerLevels["toner_yellow"]; ok {
+		if v, ok := supplyLevel(descYellow, "toner_yellow"); ok {
 			pi.TonerLevelYellow = v
 		}
 	}

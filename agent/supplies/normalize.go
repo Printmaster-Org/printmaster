@@ -28,6 +28,13 @@ var epsonInkCartridgePattern = regexp.MustCompile(`(?i)SJIC\d+P?[- ]?(BK|C|M|Y)\
 // - Epson: SJIC35P-BK, SJIC35P-C
 // - Generic: XXX-BK, XXX-C, XXX-M, XXX-Y
 var genericColorSuffixPattern = regexp.MustCompile(`(?i)[- ](BK|CY|MG|YL|C|M|Y)$`)
+var namedSupplyPattern = regexp.MustCompile(`(?i)\b(ink|maintenance|maint\s+box)\b`)
+
+// PreserveDescription avoids collapsing distinct ink cartridges or maintenance
+// boxes into the legacy four-color/waste metric slots.
+func PreserveDescription(desc string) bool {
+	return namedSupplyPattern.MatchString(desc)
+}
 
 // NormalizeDescription maps a raw supply description to a canonical metric key
 // understood by storage and server layers (e.g., "Black Toner" -> "toner_black").

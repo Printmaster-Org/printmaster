@@ -225,7 +225,7 @@ func parseSuppliesTable(pdus []gosnmp.SnmpPDU) map[string]interface{} {
 		// This prevents random OIDs from being treated as supplies
 		if entry.Class == 0 {
 			normalized := supplies.NormalizeDescription(entry.Description)
-			if normalized == "" {
+			if normalized == "" && !supplies.PreserveDescription(entry.Description) {
 				continue // Unknown description and no class - skip
 			}
 		}
@@ -265,6 +265,9 @@ func parseSuppliesTable(pdus []gosnmp.SnmpPDU) map[string]interface{} {
 		if entry.Class == 4 && metricName == "" {
 			metricName = "waste_toner"
 		}
+		if supplies.PreserveDescription(desc) {
+			metricName = ""
+		}
 
 		if metricName != "" {
 			// Deduplication: if key already exists, prefer the value that's not 100%
@@ -294,7 +297,7 @@ func parseSuppliesTable(pdus []gosnmp.SnmpPDU) map[string]interface{} {
 			result[metricName] = percentage
 		}
 
-		// Store raw description for unknown supplies
+		// Preserve named ink/maintenance supplies and unclassified descriptions.
 		if metricName == "" && percentage >= 0 {
 			// Store with sanitized description as key
 			sanitized := strings.ToLower(entry.Description)

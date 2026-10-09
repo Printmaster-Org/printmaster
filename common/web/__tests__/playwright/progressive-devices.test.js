@@ -3,6 +3,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { inventoryResponse } = require('./inventory-fixture');
+const epsonSupplies = require('../fixtures/epson-p9500-supplies.json');
 const serverWeb = path.resolve(__dirname, '../../../../server/web');
 const commonWeb = path.resolve(__dirname, '../..');
 let server, baseURL;
@@ -64,6 +65,22 @@ async function open(page, options = {}) {
 }
 const cards = page => page.locator('#devices_cards .device-card-clickable');
 const stageCalls = (calls, stage) => calls.filter(call => call.path.endsWith(stage));
+
+test('saved Epson ink diagnostics show linked replacement names without toner wording', async ({ page }) => {
+    await open(page, { devices: [] });
+    await page.evaluate(fixture => {
+        window.__pm_shared_cards.showPrinterDetailsData({ ...fixture, serial: 'EPSON-FIXTURE', ip: '192.0.2.10' }, 'saved');
+    }, epsonSupplies);
+    const supplies = page.locator('#printer_consumables_card_actual');
+    await expect(supplies).toBeVisible();
+    await expect(supplies).toContainText('Photo Black Ink Cartridge T44H1, T44P1, T44W1');
+    await expect(supplies).toContainText('Vivid Light Magenta Ink Cartridge T44H6, T44P6, T44W6');
+    await expect(supplies).toContainText('Waste Ink');
+    await expect(supplies).not.toContainText(/toner|supply_/i);
+    await expect(supplies.locator('[role="progressbar"]')).toHaveCount(10);
+    expect(await supplies.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+});
+
 async function openFilters(page) {
     await page.locator('#devices_filters_open').click();
     await expect(page.locator('#devices_search')).toBeVisible();
