@@ -2,120 +2,31 @@
 package alerts
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/smtp"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"printmaster/server/storage"
+	"printmaster/server/webhook"
 )
 
-// allowTestWebhooks allows localhost webhook URLs for testing.
-// Set to true in test initialization code.
-var allowTestWebhooks bool
-
 // SetAllowTestWebhooks sets whether localhost URLs are allowed for webhook testing.
-// This should only be called during test initialization.
+// This should only be called during test initialization. The guard itself
+// lives in the shared webhook package so alerts and reports enforce it identically.
 func SetAllowTestWebhooks(allow bool) {
-	allowTestWebhooks = allow
+	webhook.SetAllowPrivateTargets(allow)
 }
 
-// isAllowedWebhookURL validates webhook URLs to prevent SSRF attacks.
-// Only allows http/https schemes and blocks requests to private/internal networks.
-// Returns the validated URL string and nil error if valid, or empty string and error if invalid.
-func isAllowedWebhookURL(rawURL string) (string, error) {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return "", fmt.Errorf("invalid URL: %w", err)
-	}
-
-	// Only allow http and https schemes
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", fmt.Errorf("URL scheme must be http or https, got %q", parsed.Scheme)
-	}
-
-	// Get the hostname
-	hostname := parsed.Hostname()
-	if hostname == "" {
-		return "", fmt.Errorf("URL must have a hostname")
-	}
-
-	// Block localhost and loopback addresses (unless in test mode)
-	if !allowTestWebhooks {
-		if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" {
-			return "", fmt.Errorf("localhost URLs are not allowed for webhooks")
-		}
-
-		// Resolve hostname to check for private IPs
-		ips, err := net.LookupIP(hostname)
-		if err != nil {
-			// If DNS resolution fails, allow it (could be a valid external service)
-			// The HTTP request will fail anyway if unreachable
-			return parsed.String(), nil
-		}
-
-		for _, ip := range ips {
-			if isPrivateIP(ip) {
-				return "", fmt.Errorf("webhook URLs cannot target private/internal networks")
-			}
-		}
-	}
-
-	// Reconstruct URL from validated components to break CodeQL taint chain.
-	// Using url.URL struct literal ensures no tainted data flows through.
-	safeURL := &url.URL{
-		Scheme:   parsed.Scheme,
-		Host:     parsed.Host,
-		Path:     parsed.Path,
-		RawQuery: parsed.RawQuery,
-		Fragment: parsed.Fragment,
-	}
-	return safeURL.String(), nil
-}
-
-// isPrivateIP checks if an IP address is in a private/internal range.
-func isPrivateIP(ip net.IP) bool {
-	// Check for loopback
-	if ip.IsLoopback() {
-		return true
-	}
-
-	// Check for link-local
-	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-		return true
-	}
-
-	// Check for private ranges (RFC 1918 and RFC 4193)
-	privateRanges := []string{
-		"10.0.0.0/8",     // Class A private
-		"172.16.0.0/12",  // Class B private
-		"192.168.0.0/16", // Class C private
-		"fc00::/7",       // IPv6 unique local
-		"fe80::/10",      // IPv6 link-local
-		"169.254.0.0/16", // Link-local (APIPA)
-	}
-
-	for _, cidr := range privateRanges {
-		_, network, err := net.ParseCIDR(cidr)
-		if err != nil {
-			continue
-		}
-		if network.Contains(ip) {
-			return true
-		}
-	}
-
-	return false
+// poster returns the shared retrying HTTP poster configured for this notifier.
+func (n *Notifier) poster() webhook.Poster {
+	return webhook.Poster{Client: n.client, MaxRetries: n.config.MaxRetries, RetryDelay: n.config.RetryDelay}
 }
 
 // sanitizeEmailHeader removes CR and LF characters from email header values
@@ -207,7 +118,7 @@ func NewNotifier(store NotifierStore, config NotifierConfig) *Notifier {
 	}
 	client := config.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+		client = webhook.DefaultClient()
 	}
 	if config.MaxRetries == 0 {
 		config.MaxRetries = 3
@@ -651,51 +562,9 @@ func (n *Notifier) sendPagerDuty(ctx context.Context, config map[string]interfac
 	return n.postJSON(ctx, apiURL, nil, payload)
 }
 
-// postJSON posts a JSON payload to the given URL with retry logic.
+// postJSON posts a JSON payload to the given URL with SSRF validation and retries.
 func (n *Notifier) postJSON(ctx context.Context, url string, headers map[string]string, payload interface{}) error {
-	// Validate URL to prevent SSRF attacks
-	validatedURL, err := isAllowedWebhookURL(url)
-	if err != nil {
-		return fmt.Errorf("webhook URL validation failed: %w", err)
-	}
-
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal payload: %w", err)
-	}
-
-	var lastErr error
-	for i := 0; i < n.config.MaxRetries; i++ {
-		req, err := http.NewRequestWithContext(ctx, "POST", validatedURL, bytes.NewReader(data))
-		if err != nil {
-			return fmt.Errorf("failed to create request: %w", err)
-		}
-
-		req.Header.Set("Content-Type", "application/json")
-		for k, v := range headers {
-			req.Header.Set(k, v)
-		}
-
-		resp, err := n.client.Do(req)
-		if err != nil {
-			lastErr = err
-			time.Sleep(n.config.RetryDelay)
-			continue
-		}
-
-		// Read and discard body
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return nil
-		}
-
-		lastErr = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-		time.Sleep(n.config.RetryDelay)
-	}
-
-	return fmt.Errorf("request failed after %d attempts: %w", n.config.MaxRetries, lastErr)
+	return n.poster().PostJSON(ctx, url, headers, payload)
 }
 
 // Discord notification via webhook
@@ -913,44 +782,7 @@ func basicAuth(user, pass string) string {
 	return base64.StdEncoding.EncodeToString([]byte(auth))
 }
 
-// postText posts plain text to the given URL with retry logic.
+// postText posts plain text to the given URL with SSRF validation and retries.
 func (n *Notifier) postText(ctx context.Context, url string, headers map[string]string, body string) error {
-	// Validate URL to prevent SSRF attacks
-	validatedURL, err := isAllowedWebhookURL(url)
-	if err != nil {
-		return fmt.Errorf("webhook URL validation failed: %w", err)
-	}
-
-	var lastErr error
-	for i := 0; i < n.config.MaxRetries; i++ {
-		req, err := http.NewRequestWithContext(ctx, "POST", validatedURL, strings.NewReader(body))
-		if err != nil {
-			return fmt.Errorf("failed to create request: %w", err)
-		}
-
-		req.Header.Set("Content-Type", "text/plain")
-		for k, v := range headers {
-			req.Header.Set(k, v)
-		}
-
-		resp, err := n.client.Do(req)
-		if err != nil {
-			lastErr = err
-			time.Sleep(n.config.RetryDelay)
-			continue
-		}
-
-		// Read and discard body
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return nil
-		}
-
-		lastErr = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-		time.Sleep(n.config.RetryDelay)
-	}
-
-	return fmt.Errorf("request failed after %d attempts: %w", n.config.MaxRetries, lastErr)
+	return n.poster().Post(ctx, url, "text/plain", headers, []byte(body))
 }

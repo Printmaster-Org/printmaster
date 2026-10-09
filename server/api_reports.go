@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"printmaster/server/reports"
 	"printmaster/server/storage"
 	"strconv"
 	"strings"
@@ -281,19 +280,21 @@ func visibleReportRuns(ctx context.Context, p *Principal, filter storage.ReportR
 	}
 }
 
-func visibleReportSchedules(ctx context.Context, p *Principal) ([]*storage.ReportSchedule, error) {
+// visibleReportSchedules returns the schedules whose parent report p may see,
+// enriched with the report fields the scheduling UI displays.
+func visibleReportSchedules(ctx context.Context, p *Principal) ([]reportScheduleView, error) {
 	schedules, err := serverStore.ListReportSchedules(ctx, 0)
 	if err != nil {
 		return nil, err
 	}
-	visible := make([]*storage.ReportSchedule, 0)
+	visible := make([]reportScheduleView, 0)
 	for _, schedule := range schedules {
 		report, err := serverStore.GetReport(ctx, schedule.ReportID)
 		if err != nil {
 			return nil, err
 		}
 		if reportVisible(p, report, false) {
-			visible = append(visible, schedule)
+			visible = append(visible, newReportScheduleView(schedule, report))
 		}
 	}
 	return visible, nil
@@ -340,7 +341,7 @@ func handleReports(w http.ResponseWriter, r *http.Request) {
 		filter.Limit, filter.Offset = 0, 0
 		reports, err := serverStore.ListReports(ctx, filter)
 		if err != nil {
-			serverLogger.Error("Failed to list reports", "error", err)
+			logError("Failed to list reports", "error", err)
 			http.Error(w, fmt.Sprintf("list reports: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -378,12 +379,16 @@ func handleReports(w http.ResponseWriter, r *http.Request) {
 		report.ID = 0
 		report.IsBuiltIn = false
 		report.CreatedBy = p.User.Username
+		if err := normalizeReportDefinitionFields(&report); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		if !validateReportScope(w, r, &report) {
 			return
 		}
 
 		if err := serverStore.CreateReport(ctx, &report); err != nil {
-			serverLogger.Error("Failed to create report", "name", report.Name, "type", report.Type, "error", err)
+			logError("Failed to create report", "name", report.Name, "type", report.Type, "error", err)
 			http.Error(w, fmt.Sprintf("create report: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -454,12 +459,16 @@ func handleReport(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Report tenant scope is immutable; create a new report", http.StatusBadRequest)
 			return
 		}
+		if err := normalizeReportDefinitionFields(&report); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		if !validateReportScope(w, r, &report) {
 			return
 		}
 
 		if err := serverStore.UpdateReport(ctx, &report); err != nil {
-			serverLogger.Error("Failed to update report", "report_id", report.ID, "error", err)
+			logError("Failed to update report", "report_id", report.ID, "error", err)
 			http.Error(w, fmt.Sprintf("update report: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -469,7 +478,7 @@ func handleReport(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodDelete:
 		if err := serverStore.DeleteReport(ctx, id); err != nil {
-			serverLogger.Error("Failed to delete report", "report_id", id, "error", err)
+			logError("Failed to delete report", "report_id", id, "error", err)
 			http.Error(w, fmt.Sprintf("delete report: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -498,13 +507,9 @@ func handleReportRun(w http.ResponseWriter, r *http.Request, reportID int64) {
 		username = principal.User.Username
 	}
 
-	// Create report store wrapper
-	reportStore := &ReportStore{store: serverStore}
-	scheduler := reports.NewScheduler(reportStore, serverLogger)
-
-	run, err := scheduler.RunNow(ctx, reportID, username)
+	run, err := reportRunner().RunNow(ctx, reportID, username)
 	if err != nil {
-		serverLogger.Error("Report run failed", "report_id", reportID, "username", username, "error", err)
+		logError("Report run failed", "report_id", reportID, "username", username, "error", err)
 		http.Error(w, fmt.Sprintf("run report: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -541,7 +546,7 @@ func handleReportRuns(w http.ResponseWriter, r *http.Request, reportID int64) {
 
 	runs, err := visibleReportRuns(ctx, getPrincipal(r), filter)
 	if err != nil {
-		serverLogger.Error("Failed to list report runs", "report_id", reportID, "error", err)
+		logError("Failed to list report runs", "report_id", reportID, "error", err)
 		http.Error(w, fmt.Sprintf("list runs: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -592,7 +597,7 @@ func handleReportRunsCollection(w http.ResponseWriter, r *http.Request) {
 
 	runs, err := visibleReportRuns(ctx, p, filter)
 	if err != nil {
-		serverLogger.Error("Failed to list all report runs", "error", err)
+		logError("Failed to list all report runs", "error", err)
 		http.Error(w, fmt.Sprintf("list runs: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -615,7 +620,7 @@ func handleReportSchedules(w http.ResponseWriter, r *http.Request, reportID int6
 	case http.MethodGet:
 		schedules, err := serverStore.ListReportSchedules(ctx, reportID)
 		if err != nil {
-			serverLogger.Error("Failed to list report schedules", "report_id", reportID, "error", err)
+			logError("Failed to list report schedules", "report_id", reportID, "error", err)
 			http.Error(w, fmt.Sprintf("list schedules: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -632,15 +637,15 @@ func handleReportSchedules(w http.ResponseWriter, r *http.Request, reportID int6
 			http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
 			return
 		}
+		schedule.ID = 0
 		schedule.ReportID = reportID
-
-		// Calculate initial next_run_at if not set
-		if schedule.NextRunAt.IsZero() {
-			schedule.NextRunAt = calculateInitialNextRun(&schedule)
+		if err := normalizeReportSchedule(&schedule); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
 		}
 
 		if err := serverStore.CreateReportSchedule(ctx, &schedule); err != nil {
-			serverLogger.Error("Failed to create report schedule", "report_id", reportID, "error", err)
+			logError("Failed to create report schedule", "report_id", reportID, "error", err)
 			http.Error(w, fmt.Sprintf("create schedule: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -648,105 +653,6 @@ func handleReportSchedules(w http.ResponseWriter, r *http.Request, reportID int6
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(schedule)
-
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-// handleReportSchedulesCollection handles GET /api/v1/report-schedules (list all schedules)
-func handleReportSchedulesCollection(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	p := reportPrincipal(w, r, false)
-	if p == nil {
-		return
-	}
-	schedules, err := visibleReportSchedules(ctx, p)
-	if err != nil {
-		serverLogger.Error("Failed to list all report schedules", "error", err)
-		http.Error(w, fmt.Sprintf("list schedules: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"schedules": schedules,
-		"count":     len(schedules),
-	})
-}
-
-// handleSchedule handles GET/PUT/DELETE /api/v1/report-schedules/{id}
-func handleSchedule(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	if reportPrincipal(w, r, r.Method != http.MethodGet) == nil {
-		return
-	}
-
-	// Extract ID
-	idStr := strings.TrimPrefix(r.URL.Path, "/api/v1/report-schedules/")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "Invalid schedule ID", http.StatusBadRequest)
-		return
-	}
-	existing, err := serverStore.GetReportSchedule(ctx, id)
-	if err != nil {
-		http.Error(w, "Failed to load schedule", http.StatusInternalServerError)
-		return
-	}
-	if existing == nil {
-		http.NotFound(w, r)
-		return
-	}
-	if reportForRequest(w, r, existing.ReportID, r.Method != http.MethodGet, false) == nil {
-		return
-	}
-
-	switch r.Method {
-	case http.MethodGet:
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(existing)
-
-	case http.MethodPut:
-		var schedule storage.ReportSchedule
-		if err := json.NewDecoder(r.Body).Decode(&schedule); err != nil {
-			http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
-			return
-		}
-		schedule.ID = id
-		if schedule.ReportID != 0 && schedule.ReportID != existing.ReportID {
-			http.Error(w, "Schedule report ownership is immutable", http.StatusBadRequest)
-			return
-		}
-		schedule.ReportID = existing.ReportID
-
-		// Recalculate next run if schedule changed
-		if schedule.NextRunAt.IsZero() {
-			schedule.NextRunAt = calculateInitialNextRun(&schedule)
-		}
-
-		if err := serverStore.UpdateReportSchedule(ctx, &schedule); err != nil {
-			serverLogger.Error("Failed to update report schedule", "schedule_id", id, "error", err)
-			http.Error(w, fmt.Sprintf("update schedule: %v", err), http.StatusInternalServerError)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(schedule)
-
-	case http.MethodDelete:
-		if err := serverStore.DeleteReportSchedule(ctx, id); err != nil {
-			serverLogger.Error("Failed to delete report schedule", "schedule_id", id, "error", err)
-			http.Error(w, fmt.Sprintf("delete schedule: %v", err), http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
 
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -783,7 +689,7 @@ func handleReportRunResult(w http.ResponseWriter, r *http.Request) {
 
 	run, err := serverStore.GetReportRunMetadata(ctx, id)
 	if err != nil {
-		serverLogger.Error("Failed to get report run", "run_id", id, "error", err)
+		logError("Failed to get report run", "run_id", id, "error", err)
 		http.Error(w, fmt.Sprintf("get run: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -804,7 +710,7 @@ func handleReportRunResult(w http.ResponseWriter, r *http.Request) {
 	// Load the body only after checking both current and execution ownership.
 	run, err = serverStore.GetReportRun(ctx, id)
 	if err != nil {
-		serverLogger.Error("Failed to get report run", "run_id", id, "error", err)
+		logError("Failed to get report run", "run_id", id, "error", err)
 		http.Error(w, fmt.Sprintf("get run: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -878,7 +784,7 @@ func handleReportSummary(w http.ResponseWriter, r *http.Request) {
 
 	summary, err := scopedReportSummary(ctx, p)
 	if err != nil {
-		serverLogger.Error("Failed to get report summary", "error", err)
+		logError("Failed to get report summary", "error", err)
 		http.Error(w, fmt.Sprintf("get summary: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -945,48 +851,4 @@ func scopedReportSummary(ctx context.Context, p *Principal) (*storage.ReportSumm
 		summary.AverageRunTimeMS = duration / timedRuns
 	}
 	return summary, nil
-}
-
-// calculateInitialNextRun calculates the first run time for a new schedule.
-func calculateInitialNextRun(schedule *storage.ReportSchedule) time.Time {
-	now := time.Now()
-
-	var hour, min int
-	fmt.Sscanf(schedule.TimeOfDay, "%d:%d", &hour, &min)
-
-	loc := time.UTC
-	if schedule.Timezone != "" {
-		if l, err := time.LoadLocation(schedule.Timezone); err == nil {
-			loc = l
-		}
-	}
-
-	nowLocal := now.In(loc)
-
-	switch schedule.Frequency {
-	case storage.ScheduleFrequencyDaily:
-		next := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), hour, min, 0, 0, loc)
-		if next.Before(now) {
-			next = next.Add(24 * time.Hour)
-		}
-		return next.UTC()
-
-	case storage.ScheduleFrequencyWeekly:
-		next := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), hour, min, 0, 0, loc)
-		daysUntil := (schedule.DayOfWeek - int(next.Weekday()) + 7) % 7
-		if daysUntil == 0 && next.Before(now) {
-			daysUntil = 7
-		}
-		next = next.Add(time.Duration(daysUntil) * 24 * time.Hour)
-		return next.UTC()
-
-	case storage.ScheduleFrequencyMonthly:
-		next := time.Date(nowLocal.Year(), nowLocal.Month(), schedule.DayOfMonth, hour, min, 0, 0, loc)
-		if next.Before(now) {
-			next = next.AddDate(0, 1, 0)
-		}
-		return next.UTC()
-	}
-
-	return now.Add(24 * time.Hour)
 }

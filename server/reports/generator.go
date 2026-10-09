@@ -74,54 +74,57 @@ func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Gener
 		g = NewGenerator(&tenantReportStore{GeneratorStore: g.store, report: report})
 	}
 
-	// Normalize report type: convert dots to underscores for backwards compatibility
-	// (e.g., "usage.summary" -> "usage_summary")
-	reportType := strings.ReplaceAll(report.Type, ".", "_")
-
-	switch reportType {
-	// Inventory reports
-	case storage.ReportTypeDeviceInventory:
-		return g.generateDeviceInventory(ctx, params)
-	case storage.ReportTypeAgentInventory:
-		return g.generateAgentInventory(ctx, params)
-	case storage.ReportTypeSiteInventory:
-		return g.generateSiteInventory(ctx, params)
-
-	// Usage reports
-	case storage.ReportTypeUsageSummary:
-		return g.generateUsageSummary(ctx, params)
-	case storage.ReportTypeUsageByDevice:
-		return g.generateUsageByDevice(ctx, params)
-	case storage.ReportTypeTopPrinters:
-		return g.generateTopPrinters(ctx, params)
-
-	// Supplies reports
-	case storage.ReportTypeSuppliesStatus:
-		return g.generateSuppliesStatus(ctx, params)
-	case storage.ReportTypeSuppliesLow:
-		return g.generateSuppliesLow(ctx, params)
-	case storage.ReportTypeSuppliesCritical:
-		return g.generateSuppliesCritical(ctx, params)
-
-	// Health reports
-	case storage.ReportTypeHealthSummary:
-		return g.generateHealthSummary(ctx, params)
-	case storage.ReportTypeOfflineDevices:
-		return g.generateOfflineDevices(ctx, params)
-	case storage.ReportTypeErrorDevices:
-		return g.generateErrorDevices(ctx, params)
-	case storage.ReportTypeAgentHealth:
-		return g.generateAgentHealth(ctx, params)
-
-	// Alert reports
-	case storage.ReportTypeAlertSummary:
-		return g.generateAlertSummary(ctx, params)
-	case storage.ReportTypeAlertHistory:
-		return g.generateAlertHistory(ctx, params)
-
-	default:
+	gen, ok := generatorFor(report.Type)
+	if !ok {
 		return nil, fmt.Errorf("unsupported report type: %s", report.Type)
 	}
+	return gen(g, ctx, params)
+}
+
+// generatorFunc produces one report type from a (possibly tenant-scoped) Generator.
+type generatorFunc func(*Generator, context.Context, GenerateParams) (*GenerateResult, error)
+
+// generators is the single registry of supported report types. Generate and
+// IsSupportedType both read it, so API validation can never drift from what
+// the generator actually implements.
+var generators = map[string]generatorFunc{
+	// Inventory reports
+	storage.ReportTypeDeviceInventory: (*Generator).generateDeviceInventory,
+	storage.ReportTypeAgentInventory:  (*Generator).generateAgentInventory,
+	storage.ReportTypeSiteInventory:   (*Generator).generateSiteInventory,
+
+	// Usage reports
+	storage.ReportTypeUsageSummary:  (*Generator).generateUsageSummary,
+	storage.ReportTypeUsageByDevice: (*Generator).generateUsageByDevice,
+	storage.ReportTypeTopPrinters:   (*Generator).generateTopPrinters,
+
+	// Supplies reports
+	storage.ReportTypeSuppliesStatus:   (*Generator).generateSuppliesStatus,
+	storage.ReportTypeSuppliesLow:      (*Generator).generateSuppliesLow,
+	storage.ReportTypeSuppliesCritical: (*Generator).generateSuppliesCritical,
+
+	// Health reports
+	storage.ReportTypeHealthSummary:  (*Generator).generateHealthSummary,
+	storage.ReportTypeOfflineDevices: (*Generator).generateOfflineDevices,
+	storage.ReportTypeErrorDevices:   (*Generator).generateErrorDevices,
+	storage.ReportTypeAgentHealth:    (*Generator).generateAgentHealth,
+
+	// Alert reports
+	storage.ReportTypeAlertSummary: (*Generator).generateAlertSummary,
+	storage.ReportTypeAlertHistory: (*Generator).generateAlertHistory,
+}
+
+// generatorFor resolves a report type, accepting the legacy dotted spelling
+// (e.g. "usage.summary") for backwards compatibility.
+func generatorFor(reportType string) (generatorFunc, bool) {
+	gen, ok := generators[strings.ReplaceAll(reportType, ".", "_")]
+	return gen, ok
+}
+
+// IsSupportedType reports whether Generate can produce reportType.
+func IsSupportedType(reportType string) bool {
+	_, ok := generatorFor(reportType)
+	return ok
 }
 
 // ---------- Inventory Reports ----------

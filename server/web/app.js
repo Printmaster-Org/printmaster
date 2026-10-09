@@ -3042,7 +3042,12 @@ async function loadAlertRules() {
                     </div>`;
             } else {
                 schedulesContainer.innerHTML = schedules.map(s => {
-                    const nextRun = s.next_run ? new Date(s.next_run).toLocaleString() : 'Not scheduled';
+                    const nextRun = s.next_run_at ? new Date(s.next_run_at).toLocaleString() : 'Not scheduled';
+                    const recipients = Array.isArray(s.email_recipients) ? s.email_recipients : [];
+                    const deliveryParts = [];
+                    if (recipients.length) deliveryParts.push(`Email: ${recipients.length} recipient${recipients.length === 1 ? '' : 's'}`);
+                    if (s.webhook_url) deliveryParts.push('Webhook');
+                    const delivery = deliveryParts.length ? deliveryParts.join(' + ') : 'No delivery (stored only)';
                     return `
                         <div class="config-item" data-schedule-id="${s.id}">
                             <div class="config-item-header">
@@ -3052,19 +3057,22 @@ async function loadAlertRules() {
                                 <div class="config-item-info">
                                     <div class="config-item-name">
                                         ${escapeHtml(s.name)}
-                                        <span class="badge">${s.frequency}</span>
-                                        <span class="badge">${s.report_type}</span>
+                                        <span class="badge">${escapeHtml(s.frequency || '')}</span>
+                                        <span class="badge">${escapeHtml(s.report_type || '')}</span>
                                         <span class="config-item-status ${s.enabled ? 'enabled' : 'disabled'}">${s.enabled ? 'Enabled' : 'Disabled'}</span>
                                     </div>
                                     <div class="config-item-details">
                                         <span>Next run: ${nextRun}</span>
                                         <span class="config-item-details-divider">•</span>
-                                        <span>Format: ${s.output_format || 'csv'}</span>
+                                        <span>Format: ${escapeHtml(s.output_format || 'csv')}</span>
+                                        <span class="config-item-details-divider">•</span>
+                                        <span>${escapeHtml(delivery)}</span>
                                     </div>
                                 </div>
                             </div>
                             <div class="config-item-actions">
                                 <button class="btn btn-sm btn-outline" onclick="runScheduleNow(${s.id})">Run Now</button>
+                                <button class="btn btn-sm btn-outline" onclick="editReportSchedule(${s.id})">Edit</button>
                                 <button class="btn btn-sm btn-danger" onclick="deleteReportSchedule(${s.id})">Delete</button>
                             </div>
                         </div>
@@ -3286,16 +3294,45 @@ async function deleteReportSchedule(id) {
     }
 }
 
+// Runs a schedule immediately (generation + email/webhook delivery). The
+// server responds with the completed run; delivery problems are reported in
+// run.error_message without failing the run itself.
 async function runScheduleNow(scheduleId) {
     try {
         const resp = await fetch(`/api/v1/report-schedules/${scheduleId}/run`, { method: 'POST' });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        window.__pm_shared.showToast('Report generation started', 'success');
+        if (!resp.ok) throw new Error(await readResponseError(resp));
+        const run = await resp.json().catch(() => ({}));
+        if (run && run.status === 'failed') {
+            window.__pm_shared.showToast(`Report failed: ${run.error_message || 'unknown error'}`, 'error');
+        } else if (run && run.error_message) {
+            window.__pm_shared.showToast(`Report generated, but ${run.error_message}`, 'warning');
+        } else {
+            window.__pm_shared.showToast('Report generated and delivered', 'success');
+        }
         loadRecentReports();
     } catch (err) {
         console.error('Failed to run scheduled report:', err);
-        window.__pm_shared.showToast('Failed to run scheduled report', 'error');
+        window.__pm_shared.showToast(`Failed to run scheduled report: ${err.message}`, 'error');
     }
+}
+
+// Loads a schedule (with its report's delivery settings) and opens the editor.
+async function editReportSchedule(scheduleId) {
+    try {
+        const resp = await fetch(`/api/v1/report-schedules/${scheduleId}`);
+        if (!resp.ok) throw new Error(await readResponseError(resp));
+        showScheduledReportModal(await resp.json());
+    } catch (err) {
+        console.error('Failed to load scheduled report:', err);
+        window.__pm_shared.showToast(`Failed to load scheduled report: ${err.message}`, 'error');
+    }
+}
+
+// Extracts a readable error from a failed fetch response. Server handlers
+// write plain-text errors, so prefer the body over the bare status code.
+async function readResponseError(resp) {
+    const text = (await resp.text().catch(() => '')).trim();
+    return text || `HTTP ${resp.status}`;
 }
 
 function editAlertRule(id) {
@@ -4462,15 +4499,28 @@ function showScheduledReportModal(existingSchedule = null) {
     const typeSelect = form.querySelector('#schedule_report_type');
     const formatSelect = form.querySelector('#schedule_format');
     const frequencySelect = form.querySelector('#schedule_frequency');
+    const daySelect = form.querySelector('#schedule_day');
+    const dayOfMonthInput = form.querySelector('#schedule_day_of_month');
+    const timeInput = form.querySelector('#schedule_time');
     const emailInput = form.querySelector('#schedule_email');
+    const webhookInput = form.querySelector('#schedule_webhook');
     const enabledCheck = form.querySelector('#schedule_enabled');
+    const errorBox = form.querySelector('#schedule_error');
 
     if (nameInput) nameInput.value = existingSchedule?.name || '';
     if (typeSelect) typeSelect.value = existingSchedule?.report_type || 'device_inventory';
     if (formatSelect) formatSelect.value = existingSchedule?.output_format || 'csv';
     if (frequencySelect) frequencySelect.value = existingSchedule?.frequency || 'weekly';
-    if (emailInput) emailInput.value = existingSchedule?.delivery_email || '';
+    if (daySelect) daySelect.value = String(existingSchedule?.day_of_week ?? 1);
+    if (dayOfMonthInput) dayOfMonthInput.value = String(existingSchedule?.day_of_month || 1);
+    if (timeInput) timeInput.value = existingSchedule?.time_of_day || '08:00';
+    if (emailInput) emailInput.value = (existingSchedule?.email_recipients || []).join(', ');
+    if (webhookInput) webhookInput.value = existingSchedule?.webhook_url || '';
     if (enabledCheck) enabledCheck.checked = existingSchedule?.enabled !== false;
+    if (errorBox) { errorBox.textContent = ''; errorBox.style.display = 'none'; }
+    // Keep the timezone the schedule was created with; new schedules use the browser's.
+    modal.dataset.timezone = existingSchedule?.timezone || '';
+    syncScheduleDayFields();
 
     modal.dataset.editId = isEdit ? existingSchedule.id : '';
 
@@ -4480,27 +4530,72 @@ function showScheduledReportModal(existingSchedule = null) {
     modal.style.display = 'flex';
 }
 
+// Shows the weekday picker for weekly schedules and the day-of-month input
+// for monthly schedules.
+function syncScheduleDayFields() {
+    const freq = document.getElementById('schedule_frequency')?.value || 'weekly';
+    const dayField = document.getElementById('schedule_day_field');
+    const dayOfMonthField = document.getElementById('schedule_day_of_month_field');
+    if (dayField) dayField.style.display = freq === 'weekly' ? 'block' : 'none';
+    if (dayOfMonthField) dayOfMonthField.style.display = freq === 'monthly' ? 'block' : 'none';
+}
+
+// Splits the recipients textarea on commas, semicolons and newlines. The
+// server performs the authoritative validation and de-duplication.
+function parseScheduleRecipients(raw) {
+    return String(raw || '')
+        .split(/[,;\n]/)
+        .map(r => r.trim())
+        .filter(Boolean);
+}
+
+function browserTimeZone() {
+    try {
+        return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    } catch (_) {
+        return 'UTC';
+    }
+}
+
+let scheduledReportSaveInFlight = false;
 async function saveScheduledReport() {
     const modal = document.getElementById('scheduled_report_modal');
     if (!modal) return;
+    // Guard against double submission (button may be bound by more than one initializer).
+    if (scheduledReportSaveInFlight) return;
 
     const form = modal.querySelector('form') || modal;
     const editId = modal.dataset.editId;
-
-    const payload = {
-        name: form.querySelector('#schedule_name')?.value || '',
-        report_type: form.querySelector('#schedule_report_type')?.value || 'device_inventory',
-        output_format: form.querySelector('#schedule_format')?.value || 'csv',
-        frequency: form.querySelector('#schedule_frequency')?.value || 'weekly',
-        delivery_email: form.querySelector('#schedule_email')?.value || '',
-        enabled: form.querySelector('#schedule_enabled')?.checked !== false
+    const errorBox = form.querySelector('#schedule_error');
+    const showError = (msg) => {
+        if (errorBox) { errorBox.textContent = msg; errorBox.style.display = 'block'; }
+        window.__pm_shared.showToast(msg, 'error');
     };
 
+    const frequency = form.querySelector('#schedule_frequency')?.value || 'weekly';
+    const payload = {
+        name: (form.querySelector('#schedule_name')?.value || '').trim(),
+        report_type: form.querySelector('#schedule_report_type')?.value || 'device_inventory',
+        output_format: form.querySelector('#schedule_format')?.value || 'csv',
+        frequency,
+        time_of_day: form.querySelector('#schedule_time')?.value || '08:00',
+        timezone: modal.dataset.timezone || browserTimeZone(),
+        email_recipients: parseScheduleRecipients(form.querySelector('#schedule_email')?.value),
+        webhook_url: (form.querySelector('#schedule_webhook')?.value || '').trim(),
+        enabled: form.querySelector('#schedule_enabled')?.checked !== false
+    };
+    if (frequency === 'weekly') {
+        payload.day_of_week = parseInt(form.querySelector('#schedule_day')?.value || '1', 10);
+    } else if (frequency === 'monthly') {
+        payload.day_of_month = parseInt(form.querySelector('#schedule_day_of_month')?.value || '1', 10);
+    }
+
     if (!payload.name) {
-        window.__pm_shared.showToast('Name is required', 'error');
+        showError('Name is required');
         return;
     }
 
+    scheduledReportSaveInFlight = true;
     try {
         const url = editId ? `/api/v1/report-schedules/${editId}` : '/api/v1/report-schedules';
         const method = editId ? 'PUT' : 'POST';
@@ -4509,14 +4604,16 @@ async function saveScheduledReport() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        if (!resp.ok) throw new Error(await readResponseError(resp));
 
         window.__pm_shared.showToast(editId ? 'Schedule updated' : 'Schedule created', 'success');
         modal.style.display = 'none';
         loadAlertRules();
     } catch (err) {
         console.error('Failed to save scheduled report:', err);
-        window.__pm_shared.showToast('Failed to save scheduled report', 'error');
+        showError(`Failed to save scheduled report: ${err.message}`);
+    } finally {
+        scheduledReportSaveInFlight = false;
     }
 }
 
@@ -19284,16 +19381,7 @@ function updateTimeFilter(index) {
 
     // Schedule frequency change handler - show/hide day fields
     const frequencySelect = document.getElementById('schedule_frequency');
-    if (frequencySelect) {
-        frequencySelect.addEventListener('change', () => {
-            const freq = frequencySelect.value;
-            const dayField = document.getElementById('schedule_day_field');
-            const dayOfMonthField = document.getElementById('schedule_day_of_month_field');
-
-            if (dayField) dayField.style.display = freq === 'weekly' ? 'block' : 'none';
-            if (dayOfMonthField) dayOfMonthField.style.display = freq === 'monthly' ? 'block' : 'none';
-        });
-    }
+    if (frequencySelect) frequencySelect.addEventListener('change', syncScheduleDayFields);
 
     // Report Download Modal
     wireModalClose('report_download_modal', 'report_download_close_x', 'report_download_close');

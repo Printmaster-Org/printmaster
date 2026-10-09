@@ -935,6 +935,12 @@ func runServer(ctx context.Context, configFlag string) {
 	defer alertEvaluator.Stop()
 	logInfo("Alert evaluator started", "interval", "60s")
 
+	// Start the report scheduler: runs due schedules and delivers them by
+	// email/webhook. Handlers share this instance via reportRunner.
+	reportScheduler = newReportScheduler()
+	reportScheduler.Start()
+	defer reportScheduler.Stop()
+
 	adminNotifier.StartDailySummaries()
 	defer adminNotifier.StopDailySummaries()
 

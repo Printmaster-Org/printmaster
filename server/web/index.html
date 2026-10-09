@@ -3355,7 +3355,18 @@
                     <select id="schedule_format">
                         <option value="csv">CSV</option>
                         <option value="json">JSON</option>
+                        <option value="html">HTML</option>
                     </select>
+                </label>
+                <label class="field">
+                    <span>Email Recipients</span>
+                    <textarea id="schedule_email" rows="2" placeholder="ops@example.com, manager@example.com"></textarea>
+                    <small class="muted-text">Comma or newline separated, up to 20. Requires SMTP to be configured. Each email includes a summary and the first 100 rows.</small>
+                </label>
+                <label class="field">
+                    <span>Webhook URL</span>
+                    <input id="schedule_webhook" type="url" placeholder="https://hooks.example.com/printmaster" />
+                    <small class="muted-text">Receives a JSON <code>report.completed</code> payload. Private and local addresses are blocked.</small>
                 </label>
                 <label class="field inline-check" style="margin-top:12px;">
                     <input type="checkbox" id="schedule_enabled" checked />
