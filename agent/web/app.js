@@ -558,7 +558,9 @@ function applyAutoUpdateStatusToUI(data) {
 
     if (hint) {
         const prefix = interval > 0 ? ('Automatic checks run every ' + interval + ' day' + (interval === 1 ? '' : 's') + '. ') : '';
-        hint.textContent = prefix + 'Manual actions ignore the schedule but still enforce disk space and integrity checks.';
+        // channel_note explains an install-method constraint (MSI/package installs follow Stable only).
+        const channelNote = data && data.channel_note ? (String(data.channel_note) + ' ') : '';
+        hint.textContent = channelNote + prefix + 'Manual actions ignore the schedule but still enforce disk space and integrity checks.';
     }
 
     setTimeout(() => { try { applyMasonryLayout(); } catch (_) {} }, 60);

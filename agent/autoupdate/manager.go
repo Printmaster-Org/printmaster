@@ -342,6 +342,7 @@ func (m *Manager) Status() ManagerStatus {
 		PolicySource:      policySource,
 		CheckIntervalDays: checkIntervalDays,
 		Channel:           m.operationChannel(context.Background()),
+		ChannelNote:       m.channelNote(context.Background()),
 		Platform:          m.platform,
 		Arch:              m.arch,
 		UsePackageManager: m.usePackageManager,
@@ -375,8 +376,13 @@ type manualUpdateChannelKey struct{}
 // Scheduled policy and the configured channel are not changed by a manual install.
 func (m *Manager) ForceInstallLatestFromChannel(ctx context.Context, reason, channel string) error {
 	channel = strings.ToLower(strings.TrimSpace(channel))
-	if channel != "" && channel != "stable" && channel != "beta" && channel != "dev" {
+	if channel != "" && !isKnownChannel(channel) {
 		return fmt.Errorf("invalid update channel: %s", channel)
+	}
+	if err := m.validateExplicitChannel(channel); err != nil {
+		m.logWarn("Rejected manual update channel", "channel", channel, "error", err)
+		m.reportTelemetry(ctx, StatusFailed, ErrCodeChannelUnsupported, err.Error())
+		return err
 	}
 	if channel != "" {
 		ctx = context.WithValue(ctx, manualUpdateChannelKey{}, channel)
@@ -761,6 +767,7 @@ func (m *Manager) artifactFormat() updatepolicy.ArtifactFormat {
 // artifact format, and rejects a manifest for a different format so an MSI
 // install never tries to apply a raw binary (or the reverse).
 func (m *Manager) fetchManifest(ctx context.Context) (*UpdateManifest, error) {
+	ctx = m.manifestContext(ctx)
 	format := m.artifactFormat()
 	manifest, err := m.client.GetLatestManifest(ctx, "agent", m.platform, m.arch, m.operationChannel(ctx), format.String())
 	if err != nil || manifest == nil {
@@ -801,18 +808,6 @@ func validateManifestFormat(manifest *UpdateManifest, requested updatepolicy.Art
 		return fmt.Errorf("%w: got %q, requested %q", errManifestFormat, manifest.Format, requested)
 	}
 	return nil
-}
-
-func (m *Manager) operationChannel(ctx context.Context) string {
-	if channel, _ := ctx.Value(manualUpdateChannelKey{}).(string); channel != "" {
-		return channel
-	}
-	if m.channelProvider != nil {
-		if channel := m.channelProvider(); channel == "stable" || channel == "beta" || channel == "dev" {
-			return channel
-		}
-	}
-	return m.channel
 }
 
 // executeUpdateViaPackageManager performs an update using apt-get/dnf/yum.
@@ -976,14 +971,12 @@ func (m *Manager) applyUpdate(stagingPath string) error {
 		return fmt.Errorf("binary path not set")
 	}
 
-	// If using package manager (apt/dnf/yum), delegate to package manager
-	// Note: This is a defensive check - normally executeUpdateViaPackageManager handles this
+	// Package-managed installs are applied by executeUpdateViaPackageManager
+	// with an exact version. Refuse to swap their binary here: the package
+	// manager owns those files, and a versionless upgrade could install a
+	// release other than the one the manifest selected.
 	if m.usePackageManager && m.packageName != "" {
-		// Use a no-op progress function since this path shouldn't normally be hit
-		noopProgress := func(percent int, message string) {
-			m.setStatusWithProgress(StatusApplying, percent, message)
-		}
-		return m.applyUpdateViaPackageManager("", noopProgress) // Empty version = generic upgrade
+		return fmt.Errorf("package-managed install must be updated through %s, not by replacing the binary", m.packageManager)
 	}
 
 	// On Windows, we can't replace a running binary directly.
@@ -1052,9 +1045,14 @@ type ProgressFunc func(percent int, message string)
 
 // applyUpdateViaPackageManager uses the appropriate package manager (apt/dnf/yum)
 // to update the package when the binary was installed via a package manager.
-// targetVersion is the specific version to install (e.g., "0.27.4").
+// targetVersion is the exact version to install (e.g., "0.27.4") and is
+// required: installing whatever the repository considers newest could skip
+// policy checks or land on a different release than the manifest selected.
 // progressFn is called with phase progress (0-100) and status message.
 func (m *Manager) applyUpdateViaPackageManager(targetVersion string, progressFn ProgressFunc) error {
+	if strings.TrimSpace(targetVersion) == "" {
+		return fmt.Errorf("package manager update requires a target version")
+	}
 	m.logInfo("Updating via package manager", "package", m.packageName, "manager", m.packageManager, "target_version", targetVersion)
 
 	switch m.packageManager {
@@ -1086,10 +1084,7 @@ func (m *Manager) applyUpdateViaApt(targetVersion string, progressFn ProgressFun
 
 	// Phase 2: Download and install (30-90%)
 	// Format: packagename=version (e.g., printmaster-agent=0.27.4)
-	packageSpec := m.packageName
-	if targetVersion != "" {
-		packageSpec = fmt.Sprintf("%s=%s", m.packageName, targetVersion)
-	}
+	packageSpec := fmt.Sprintf("%s=%s", m.packageName, targetVersion)
 
 	progressFn(35, fmt.Sprintf("Downloading %s...", packageSpec))
 	m.logInfo("Running sudo apt-get install", "package", packageSpec)
@@ -1117,10 +1112,7 @@ func (m *Manager) applyUpdateViaDnf(targetVersion string, progressFn ProgressFun
 
 	// Install the specific version to ensure we get exactly what we want.
 	// Format: packagename-version (e.g., printmaster-agent-0.27.4)
-	packageSpec := m.packageName
-	if targetVersion != "" {
-		packageSpec = fmt.Sprintf("%s-%s", m.packageName, targetVersion)
-	}
+	packageSpec := fmt.Sprintf("%s-%s", m.packageName, targetVersion)
 
 	// Phase 2: Refresh metadata and resolve dependencies (10-30%)
 	progressFn(10, "Refreshing repository metadata...")
@@ -1140,21 +1132,11 @@ func (m *Manager) applyUpdateViaDnf(targetVersion string, progressFn ProgressFun
 		"--allowerasing", // Allow replacing conflicting packages
 		packageSpec)
 	output, err := installCmd.CombinedOutput()
-
 	if err != nil {
-		// If specific version install failed, try without version (fallback to upgrade)
-		progressFn(40, "Specific version not found, trying upgrade...")
-		m.logWarn("Specific version install failed, trying generic upgrade", "error", err, "output", string(output))
-		upgradeCmd := exec.Command("sudo", "dnf",
-			"--setopt=logdir=/tmp",
-			"--refresh",
-			"upgrade",
-			"-y",
-			m.packageName)
-		output, err = upgradeCmd.CombinedOutput()
-		if err != nil {
-			return m.wrapSudoError("dnf install/upgrade", err, output)
-		}
+		// Do not fall back to a versionless upgrade: it could install a
+		// different release than the manifest selected. Fail visibly instead.
+		m.logWarn("dnf install of exact version failed", "package", packageSpec, "error", err, "output", string(output))
+		return m.wrapSudoError("dnf install", err, output)
 	}
 
 	// Phase 4: Install/Verify (60-90%)
@@ -1180,10 +1162,7 @@ func (m *Manager) applyUpdateViaYum(targetVersion string, progressFn ProgressFun
 	progressFn(20, "Cache cleaned")
 
 	// Phase 2: Resolve and download (20-60%)
-	packageSpec := m.packageName
-	if targetVersion != "" {
-		packageSpec = fmt.Sprintf("%s-%s", m.packageName, targetVersion)
-	}
+	packageSpec := fmt.Sprintf("%s-%s", m.packageName, targetVersion)
 
 	progressFn(25, fmt.Sprintf("Resolving dependencies for %s...", packageSpec))
 	progressFn(35, fmt.Sprintf("Downloading %s...", packageSpec))
@@ -1192,14 +1171,9 @@ func (m *Manager) applyUpdateViaYum(targetVersion string, progressFn ProgressFun
 	installCmd := exec.Command("sudo", "yum", "install", "-y", "-q", packageSpec)
 	output, err := installCmd.CombinedOutput()
 	if err != nil {
-		// If specific version install failed, try generic upgrade
-		progressFn(40, "Specific version not found, trying upgrade...")
-		m.logWarn("Specific version install failed, trying generic upgrade", "error", err, "output", string(output))
-		upgradeCmd := exec.Command("sudo", "yum", "upgrade", "-y", "-q", m.packageName)
-		output, err = upgradeCmd.CombinedOutput()
-		if err != nil {
-			return m.wrapSudoError("yum install/upgrade", err, output)
-		}
+		// No versionless fallback; see applyUpdateViaDnf.
+		m.logWarn("yum install of exact version failed", "package", packageSpec, "error", err, "output", string(output))
+		return m.wrapSudoError("yum install", err, output)
 	}
 
 	// Phase 3: Install complete (60-90%)
