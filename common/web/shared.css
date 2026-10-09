@@ -214,6 +214,19 @@ html body.light-mode {
   overflow-wrap: anywhere;
 }
 
+/* Label stacked over the vendor part numbers parsed from the supply name. */
+.consumable-level-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.consumable-part-numbers {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 .consumable-color-swatch {
   flex: 0 0 10px;
   height: 10px;

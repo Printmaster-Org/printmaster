@@ -189,10 +189,17 @@
             const v = Number(value);
             const pct = Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : null;
             const color = getConsumableColor(name, pct);
-            const label = escapeHtmlCards(getSupplyDisplayName(name));
+            const parsed = parseSupplyName(name);
+            const label = escapeHtmlCards(describeSupplyName(name));
+            // Part numbers render as a secondary line so long Epson/HP
+            // cartridge lists do not crowd the supply name.
+            const parts = parsed.partNumbers.length
+                ? '<span class="consumable-part-numbers" title="Vendor part numbers">' + escapeHtmlCards(parsed.partNumbers.join(', ')) + '</span>'
+                : '';
             return '<div class="consumable-level" style="--consumable-color:' + color + '">'
                 + '<div class="consumable-level-header"><span class="consumable-level-name">'
-                + '<span class="consumable-color-swatch" aria-hidden="true"></span>' + label + '</span>'
+                + '<span class="consumable-color-swatch" aria-hidden="true"></span>'
+                + '<span class="consumable-level-text"><span class="consumable-level-label">' + escapeHtmlCards(parsed.label) + '</span>' + parts + '</span></span>'
                 + '<span class="consumable-level-percent">' + (pct === null ? 'n/a' : pct + '%') + '</span></div>'
                 + '<div class="consumable-level-track" role="progressbar" aria-label="' + label
                 + '" aria-valuemin="0" aria-valuemax="100"'
@@ -286,6 +293,45 @@
     function getSupplyDisplayName(name) {
         return String(name || '').replace(/^supply[_\s]+/i, '').replace(/_/g, ' ')
             .replace(/\s+/g, ' ').trim();
+    }
+
+    // A vendor part number is a single upper-case token mixing letters and
+    // digits (optionally hyphenated), e.g. HP "CF410A", Epson "T44H2"/"T6997",
+    // Brother "TN-760", Xerox "106R03480". Requiring upper case and a digit
+    // keeps words such as "Box2" or colour names out of the part list.
+    const PART_NUMBER_TOKEN = /^(?=[A-Z0-9-]*[A-Z])(?=[A-Z0-9-]*\d)[A-Z0-9][A-Z0-9-]{2,15}$/;
+
+    // Split a supply name into a human label and the vendor part numbers the
+    // printer reported after it. Only trailing tokens are treated as part
+    // numbers (optionally wrapped in parentheses and separated by commas,
+    // slashes or spaces), so model-like words inside the label are preserved.
+    // The original key is never modified: identity/dedup logic keeps using
+    // getSupplyIdentity(), and this result is presentation-only.
+    //   "Cyan Ink Cartridge T44H2, T44P2, T44W2" -> { label: "Cyan Ink Cartridge", partNumbers: ["T44H2","T44P2","T44W2"] }
+    //   "Black Cartridge HP CF410A"              -> { label: "Black Cartridge HP", partNumbers: ["CF410A"] }
+    //   "Maintenance Box2 T6997"                 -> { label: "Maintenance Box2", partNumbers: ["T6997"] }
+    function parseSupplyName(name) {
+        const display = getSupplyDisplayName(name);
+        const tokens = display.split(/[\s,/;]+/).filter(Boolean);
+        const partNumbers = [];
+        while (tokens.length > 1) {
+            const candidate = tokens[tokens.length - 1].replace(/^\(|\)$/g, '');
+            if (!PART_NUMBER_TOKEN.test(candidate)) break;
+            partNumbers.unshift(candidate);
+            tokens.pop();
+        }
+        if (partNumbers.length === 0) return { label: display, partNumbers };
+        // Rebuild the label from the original text so its punctuation survives.
+        const firstPart = display.search(new RegExp('[\\s,/;(]+\\(?' + partNumbers[0] + '\\b'));
+        const label = (firstPart > 0 ? display.slice(0, firstPart) : tokens.join(' ')).replace(/[\s,/;(]+$/, '');
+        return { label, partNumbers: [...new Set(partNumbers)] };
+    }
+
+    // Plain-text label with part numbers appended, for tooltips/ARIA where
+    // markup cannot be used.
+    function describeSupplyName(name) {
+        const { label, partNumbers } = parseSupplyName(name);
+        return partNumbers.length ? label + ' (' + partNumbers.join(', ') + ')' : label;
     }
 
     function normalizeSupplyLevels(levels) {
@@ -399,7 +445,7 @@
         if (!tonerData || tonerData.length === 0) return '<span class="muted-text">—</span>';
         const bars = tonerData.map(t => {
             const levelClass = t.level <= 10 ? 'critical' : t.level <= 25 ? 'low' : '';
-            const label = escapeHtmlCards(getSupplyDisplayName(t.name)) + ': ' + t.level + '%';
+            const label = escapeHtmlCards(describeSupplyName(t.name)) + ': ' + t.level + '%';
             return '<div class="toner-bar ' + levelClass + '" role="img" tabindex="0" aria-label="' + label + '" title="' + label + '" style="--toner-color: ' + t.color + '; --toner-level: ' + t.level + '%"></div>';
         }).join('');
         return '<div class="toner-bars">' + bars + '</div>';
@@ -563,21 +609,23 @@
         // Render a compact consumable representation suitable for display on a saved-device card
         // Uses smaller bars and abbreviated labels to keep cards dense.
         function renderMiniConsumable(name, value, isLevel) {
-            const nameShort = escapeHtmlCards(getSupplyDisplayName(name));
+            // Cards are dense: show only the label and keep part numbers in the tooltip.
+            const nameShort = escapeHtmlCards(parseSupplyName(name).label);
+            const nameFull = escapeHtmlCards(describeSupplyName(name));
             if (isLevel) {
                 const v = Number(value);
                 const pct = isNaN(v) ? 0 : Math.max(0, Math.min(100, v));
                 const color = getConsumableColor(name, pct);
 
                 return '<div class="mini-consumable">'
-                    + '<div class="mini-consumable-label">' + nameShort + '</div>'
+                    + '<div class="mini-consumable-label" title="' + nameFull + '">' + nameShort + '</div>'
                     + '<div class="mini-consumable-bar"><div style="width:' + pct + '%;background:' + color + ';height:100%"></div></div>'
                     + '<div class="mini-consumable-pct">' + pct + '%</div>'
                     + '</div>';
             }
             // fallback textual mini entry
             return '<div class="mini-consumable">'
-                + '<div class="mini-consumable-label">' + nameShort + '</div>'
+                + '<div class="mini-consumable-label" title="' + nameFull + '">' + nameShort + '</div>'
                 + '<div class="mini-consumable-pct">' + escapeHtmlCards(value) + '</div>'
                 + '</div>';
         }
@@ -617,6 +665,8 @@
     window.__pm_shared_cards.buildTonerLevels = buildTonerLevels;
     window.__pm_shared_cards.getSupplyDisplayName = getSupplyDisplayName;
     window.__pm_shared_cards.getSupplyIdentity = getSupplyIdentity;
+    window.__pm_shared_cards.parseSupplyName = parseSupplyName;
+    window.__pm_shared_cards.describeSupplyName = describeSupplyName;
     window.__pm_shared_cards.normalizeSupplyLevels = normalizeSupplyLevels;
     window.__pm_shared_cards.getPageCount = getPageCount;
     window.__pm_shared_cards.checkDatabaseRotationWarning = checkDatabaseRotationWarning;

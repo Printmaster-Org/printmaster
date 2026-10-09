@@ -205,7 +205,8 @@ describe('device details', () => {
         expect(levels.supply_light_gray_ink_cartridge_t44h9).toBeUndefined();
         render({ ...device, toner_levels: levels });
         expect(document.querySelector('.consumables-section').textContent).not.toContain('supply_');
-        expect(document.querySelector('.consumables-section').textContent).toContain('Light Gray Ink Cartridge T44H9');
+        expect(document.querySelector('.consumables-section').textContent).toContain('Light Gray Ink Cartridge');
+        expect(document.querySelector('.consumables-section').textContent).toContain('T44H9');
     });
 
     test('saved Epson diagnostic recovers linked cartridge names without inventing missing levels', () => {
@@ -220,7 +221,11 @@ describe('device details', () => {
         render({ ...device, ...epsonSupplies });
         const text = document.querySelector('.consumables-section').textContent;
         expect(text).not.toMatch(/toner|supply_/i);
-        expect(text).toContain('Photo Black Ink Cartridge T44H1, T44P1, T44W1');
+        const photoBlack = [...document.querySelectorAll('.consumable-level')]
+            .find(row => row.querySelector('.consumable-level-label').textContent === 'Photo Black Ink Cartridge');
+        expect(photoBlack.querySelector('.consumable-part-numbers').textContent).toBe('T44H1, T44P1, T44W1');
+        expect(photoBlack.querySelector('[role="progressbar"]').getAttribute('aria-label'))
+            .toBe('Photo Black Ink Cartridge (T44H1, T44P1, T44W1)');
         const bars = window.__pm_shared_cards.getDeviceTonerBarData(epsonSupplies);
         expect(bars).toHaveLength(9);
         expect(window.__pm_shared_cards.renderTonerBars(bars)).not.toMatch(/toner black/i);
@@ -235,6 +240,32 @@ describe('device details', () => {
             ...context, toner_levels: { toner_black: 23, waste_toner: 40 }
         });
         expect(levels).toEqual({ [black]: 23, [waste]: 40 });
+    });
+
+    test.each([
+        ['Cyan Ink Cartridge T44H2, T44P2, T44W2', 'Cyan Ink Cartridge', ['T44H2', 'T44P2', 'T44W2']],
+        ['Maintenance Box2 T6997', 'Maintenance Box2', ['T6997']],
+        ['Black Cartridge HP CF410A', 'Black Cartridge HP', ['CF410A']],
+        ['HP 58A Black Toner (CF258A)', 'HP 58A Black Toner', ['CF258A']],
+        ['Drum Unit DR-730', 'Drum Unit', ['DR-730']],
+        ['Black Toner Cartridge 106R03480/106R03480', 'Black Toner Cartridge', ['106R03480']],
+        ['supply_maintenance_box2_t6997', 'maintenance box2 t6997', []],
+        ['Black Ink', 'Black Ink', []],
+        ['TN-760', 'TN-760', []],
+        ['Waste Ink', 'Waste Ink', []]
+    ])('parses vendor part numbers from %s', (name, label, partNumbers) => {
+        expect(window.__pm_shared_cards.parseSupplyName(name)).toEqual({ label, partNumbers });
+    });
+
+    test('mini cards and toner bars keep part numbers in tooltips', () => {
+        const name = 'Yellow Ink Cartridge T44H4, T44P4, T44W4';
+        const card = document.createElement('div');
+        card.innerHTML = window.__pm_shared_cards.renderSavedCard({ serial: device.serial, printer_info: { ...device, toner_levels: { [name]: 28 } } });
+        const label = card.querySelector('.mini-consumable-label');
+        expect(label.textContent).toBe('Yellow Ink Cartridge');
+        expect(label.title).toBe('Yellow Ink Cartridge (T44H4, T44P4, T44W4)');
+        const bars = window.__pm_shared_cards.getDeviceTonerBarData({ toner_levels: { [name]: 28 } });
+        expect(window.__pm_shared_cards.renderTonerBars(bars)).toContain('title="Yellow Ink Cartridge (T44H4, T44P4, T44W4): 28%"');
     });
 
     test('legacy raw levels use exact descriptions; unlinked cartridge lists do not guess mappings', () => {
