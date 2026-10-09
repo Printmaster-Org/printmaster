@@ -49,6 +49,34 @@ describe('device details', () => {
         expect(document.querySelector('#collect_metrics_btn')).not.toBeNull();
     });
 
+    test.each([
+        [true, 'discovered', false, 'Delete Device'],
+        [false, 'saved', true, 'Save Device']
+    ])('explicit saved flag %s overrides stale caller scope %s', (is_saved, source, discovered, action) => {
+        render({ ...device, is_saved }, source);
+        expect(document.getElementById('printer_details_title').textContent.includes('(Discovered)')).toBe(discovered);
+        expect(document.getElementById('printer_details_actions').textContent).toContain(action);
+    });
+
+    test('Agent upload metadata saved flag is respected even when nested in Server raw data', () => {
+        render({ ...device, raw_data: { is_saved: true } }, 'discovered');
+        expect(document.getElementById('printer_details_title').textContent).not.toContain('(Discovered)');
+        expect(document.getElementById('printer_details_actions').textContent).not.toContain('Save Device');
+    });
+
+    test.each([true, false, undefined])('Server modal uses Server actions, not Agent-local save/delete (%s)', async is_saved => {
+        const deleteDevice = jest.fn();
+        window.__pm_shared_cards.showPrinterDetailsData({ ...device, is_saved, agent_id: 'agent-1' }, 'discovered', null, { server: true, deleteDevice });
+        const actions = document.getElementById('printer_details_actions');
+        expect(actions.textContent).not.toContain('Save Device');
+        expect(document.getElementById('collect_metrics_btn')).toBeNull();
+        expect(document.getElementById('printer_details_title').textContent.includes('(Discovered)')).toBe(is_saved === false);
+        const button = [...actions.querySelectorAll('button')].find(button => button.textContent === 'Delete from Server');
+        button.click();
+        expect(deleteDevice).toHaveBeenCalledWith(device.serial, 'agent-1');
+        if (is_saved === undefined) expect(actions.textContent).toContain('not reported yet');
+    });
+
     test('retains web UI actions and renders field values as text', () => {
         render({ ...device, location: '<b>Reception</b>', web_ui_url: 'http://192.0.2.10/?a=1&b=2' });
         expect(document.querySelector('#field_location_display').textContent).toBe('<b>Reception</b>');

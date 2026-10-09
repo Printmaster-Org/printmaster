@@ -66,6 +66,46 @@ async function open(page, options = {}) {
 const cards = page => page.locator('#devices_cards .device-card-clickable');
 const stageCalls = (calls, stage) => calls.filter(call => call.path.endsWith(stage));
 
+test('Server Details uses uploaded saved state and never invokes Agent-local Save', async ({ page }) => {
+    await open(page, { devices: [
+        { ...devices[0], serial: 'SAVED', is_saved: true },
+        { ...devices[1], serial: 'DISCOVERED', is_saved: false },
+        { ...devices[2], serial: 'LEGACY' }
+    ] });
+    for (const serial of ['SAVED', 'DISCOVERED', 'LEGACY']) {
+        await page.evaluate(serial => window.__pm_shared.showPrinterDetails(serial, 'discovered'), serial);
+        const overlay = page.locator('#printer_details_overlay');
+        await expect(overlay).toBeVisible();
+        await expect(page.locator('#printer_details_title')).toContainText('LaserJet');
+        if (serial === 'DISCOVERED') await expect(page.locator('#printer_details_title')).toContainText('(Discovered)');
+        else await expect(page.locator('#printer_details_title')).not.toContainText('(Discovered)');
+        const actions = page.locator('#printer_details_actions');
+        await expect(actions.getByRole('button', { name: 'Save Device', exact: true })).toHaveCount(0);
+        await expect(actions.getByRole('button', { name: 'Delete from Server', exact: true })).toBeVisible();
+        if (serial === 'LEGACY') await expect(actions).toContainText('not reported yet');
+        if (serial === 'DISCOVERED') await expect(actions).toContainText('Agent UI');
+        await actions.getByRole('button', { name: 'Close', exact: true }).click();
+    }
+    const deletes = [];
+    await page.route('**/api/v1/devices/delete', route => {
+        deletes.push(route.request().postDataJSON());
+        return route.fulfill({ json: { success: true } });
+    });
+    await page.getByRole('button', { name: 'Details for device SAVED', exact: true }).click();
+    await expect(page.locator('#printer_details_overlay')).toBeVisible();
+    await page.getByRole('button', { name: 'Delete from Server', exact: true }).click();
+    let confirmation = page.locator('[id^="delete_device_confirm_"].modal-overlay');
+    await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(page.locator('#printer_details_overlay')).toBeVisible();
+    expect(deletes).toHaveLength(0);
+    await page.getByRole('button', { name: 'Delete from Server', exact: true }).click();
+    confirmation = page.locator('[id^="delete_device_confirm_"].modal-overlay').filter({ visible: true });
+    await confirmation.getByRole('button', { name: 'Delete Device', exact: true }).click();
+    await expect(page.locator('#printer_details_overlay')).not.toBeVisible();
+    expect(deletes).toEqual([{ serial: 'SAVED', agent_id: 'agent-1', delete_metrics: false, delete_from_agent: false }]);
+    expect(await page.locator('body').evaluate(el => el.style.overflow)).toBe('');
+});
+
 test('saved Epson ink diagnostics show linked replacement names without toner wording', async ({ page }) => {
     await open(page, { devices: [] });
     await page.evaluate(fixture => {

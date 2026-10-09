@@ -6753,6 +6753,7 @@ window.top.location.href = '/proxy/%s/';
 		}
 
 		appLogger.Info("Device marked as saved", "serial", req.Serial)
+		scannerUploadWake()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "saved",
@@ -6776,6 +6777,9 @@ window.top.location.href = '/proxy/%s/';
 		}
 
 		appLogger.Info("Marked devices as saved", "count", count)
+		if count > 0 {
+			scannerUploadWake()
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "saved",

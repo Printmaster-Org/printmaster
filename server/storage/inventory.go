@@ -129,6 +129,7 @@ func (s *BaseStore) InventoryRows(ctx context.Context, scope InventoryScope, ser
 		_ = json.Unmarshal([]byte(consumables), &d.Consumables)
 		_ = json.Unmarshal([]byte(status), &d.StatusMessages)
 		_ = json.Unmarshal([]byte(raw), &d.RawData)
+		d.loadSavedState()
 		result = append(result, d)
 	}
 	return result, rows.Err()

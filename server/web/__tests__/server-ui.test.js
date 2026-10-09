@@ -29,6 +29,30 @@ function setup(names, globals = {}) {
     return { context, document: dom.window.document };
 }
 
+describe('Server device details ownership', () => {
+    test('shared Details action uses scoped full rows, latest metrics, and saved state', async () => {
+        const showDetails = jest.fn();
+        const fetchDeviceInventory = jest.fn().mockImplementation(async kind => kind === 'rows'
+            ? [{ serial: 'SAVED', agent_id: 'agent-1', is_saved: true, raw_data: { raw_data: { toner_desc_black: 'Black Ink ABC' } } }]
+            : [{ serial: 'SAVED', toner_levels: { toner_black: 25 } }]);
+        const deleteDevice = jest.fn();
+        const { context } = setup(['showPrinterDetails'], {
+            devicesVM: { items: [{ serial: 'SAVED', ip: '192.0.2.10' }] },
+            devicesLoader: { getGeneration: () => 1 },
+            fetchDeviceInventory, deleteDevice,
+            window: { __pm_shared: { showToast: jest.fn() }, __pm_shared_cards: { showPrinterDetailsData: showDetails } }
+        });
+        expect(context.window.__pm_shared.showPrinterDetails).toBe(context.showPrinterDetails);
+        await context.window.__pm_shared.showPrinterDetails('SAVED', 'discovered');
+        expect(fetchDeviceInventory.mock.calls.map(call => call[0])).toEqual(['rows', 'metrics/query']);
+        const [device, source, debug, options] = showDetails.mock.calls[0];
+        expect(device.is_saved).toBe(true);
+        expect(device.toner_levels).toEqual({ toner_black: 25 });
+        expect(device.raw_data.raw_data.toner_desc_black).toBe('Black Ink ABC');
+        expect(options).toMatchObject({ server: true, deleteDevice });
+    });
+});
+
 describe('alert summary data states', () => {
     test('severity and scope counts are alert counts, not fleet health percentages', async () => {
         const fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({
@@ -38,6 +62,7 @@ describe('alert summary data states', () => {
         const { context, document } = setup(['loadAlertSummary'], {
             fetch, alertSummaryLastUpdated: null, loadRecentAlertsPreview: jest.fn(),
         });
+
         await context.loadAlertSummary();
         expect(document.getElementById('summary_healthy_count').textContent).toBe('3');
         expect(document.getElementById('summary_offline_count').textContent).toBe('4');

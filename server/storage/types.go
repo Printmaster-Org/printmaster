@@ -249,7 +249,14 @@ const (
 type Device struct {
 	commonstorage.Device // Embed common fields
 
-	AgentID string `json:"agent_id"` // Which agent discovered this (server-specific field)
+	AgentID string `json:"agent_id"`           // Which agent discovered this (server-specific field)
+	IsSaved *bool  `json:"is_saved,omitempty"` // nil for Agents that have not reported saved state
+}
+
+func (d *Device) loadSavedState() {
+	if value, ok := d.RawData["is_saved"].(bool); ok {
+		d.IsSaved = &value
+	}
 }
 
 // DeviceWithMetrics extends Device with latest toner/consumable data for UI display

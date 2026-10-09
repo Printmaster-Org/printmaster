@@ -46,6 +46,16 @@ func (s *progressiveReadAuditStore) ListAgents(ctx context.Context) ([]*storage.
 
 func TestProgressiveInventoryHandlers(t *testing.T) {
 	store := tenantInventoryStore(t)
+	for serial, saved := range map[string]bool{"device-a": true, "device-b": false} {
+		device, err := store.GetDevice(context.Background(), serial)
+		if err != nil {
+			t.Fatal(err)
+		}
+		device.IsSaved = &saved
+		if err := store.UpsertDevice(context.Background(), device); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := store.(*storage.SQLiteStore).DB().Exec(`INSERT INTO metrics_history(serial,agent_id,timestamp,page_count,toner_levels) VALUES(?,?,?,?,?)`, "device-a", "agent-b", time.Now().UTC().Add(time.Hour), 9999, `{"black":1}`); err != nil {
 		t.Fatal(err)
 	}
@@ -82,6 +92,14 @@ func TestProgressiveInventoryHandlers(t *testing.T) {
 			}
 			if strings.Contains(tc.path, "list") && !strings.Contains(rr.Body.String(), "toner_levels") {
 				t.Fatal("legacy toner lost")
+			}
+			if strings.Contains(tc.path, "rows") || strings.Contains(tc.path, "list") {
+				if strings.Contains(rr.Body.String(), "device-a") && !strings.Contains(rr.Body.String(), `"is_saved":true`) {
+					t.Fatalf("%s %s: Agent saved state missing: %s", role, tc.path, rr.Body.String())
+				}
+				if role != storage.RoleAdmin && strings.Contains(rr.Body.String(), `"is_saved":false`) {
+					t.Fatal("foreign Agent discovered state leaked")
+				}
 			}
 		}
 	}

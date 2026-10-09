@@ -12226,9 +12226,11 @@ async function deleteDevice(serial, agentId) {
         }
 
         // Close any open device modal
-        const modal = document.getElementById('printer_details_modal');
+        const modal = document.getElementById('printer_details_overlay');
         if (modal && modal.style.display !== 'none') {
             modal.style.display = 'none';
+            document.body.style.overflow = '';
+            delete modal.dataset.currentPrinterIp;
         }
 
     } catch (error) {
@@ -14021,8 +14023,10 @@ async function showPrinterDetails(ipOrSerial, source) {
         return;
     }
     const normalized = device.printer_info ? { ...device.printer_info, serial: device.serial || device.printer_info.serial } : device;
-    window.__pm_shared_cards.showPrinterDetailsData(normalized, source, null);
+    window.__pm_shared_cards.showPrinterDetailsData(normalized, source, null, { server: true, deleteDevice });
 }
+
+window.__pm_shared.showPrinterDetails = showPrinterDetails;
 
 // ====== Utility Functions ======
 function copyToClipboard(text) {

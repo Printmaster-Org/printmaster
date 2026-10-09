@@ -711,6 +711,7 @@ func (w *UploadWorker) uploadDevices() error {
 			"description":      dev.Description,
 			"web_ui_url":       dev.WebUIURL,
 			"raw_data":         dev.RawData,
+			"is_saved":         dev.IsSaved,
 			// Device classification fields (for unified device view)
 			"device_type":         dev.DeviceType,
 			"source_type":         dev.SourceType,

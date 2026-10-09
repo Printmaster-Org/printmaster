@@ -526,7 +526,18 @@ func (s *BaseStore) UpsertDevice(ctx context.Context, device *Device) error {
 	// Serialize JSON fields
 	consumablesJSON, _ := json.Marshal(device.Consumables)
 	statusJSON, _ := json.Marshal(device.StatusMessages)
-	rawDataJSON, _ := json.Marshal(device.RawData)
+	rawData := device.RawData
+	if device.IsSaved != nil {
+		rawData = make(map[string]interface{}, len(device.RawData)+1)
+		for key, value := range device.RawData {
+			rawData[key] = value
+		}
+		rawData["is_saved"] = *device.IsSaved
+	}
+	rawDataJSON, err := json.Marshal(rawData)
+	if err != nil {
+		return fmt.Errorf("encode device inventory metadata: %w", err)
+	}
 
 	now := time.Now().UTC()
 	if device.LastSeen.IsZero() {
@@ -666,6 +677,7 @@ func (s *BaseStore) GetDevice(ctx context.Context, serial string) (*Device, erro
 	if rawDataJSON.Valid {
 		json.Unmarshal([]byte(rawDataJSON.String), &device.RawData)
 	}
+	device.loadSavedState()
 
 	// Set USB/spooler fields
 	if deviceType.Valid {
@@ -858,6 +870,7 @@ func (s *BaseStore) scanDevices(rows *sql.Rows) ([]*Device, error) {
 		if rawDataJSON.Valid {
 			json.Unmarshal([]byte(rawDataJSON.String), &device.RawData)
 		}
+		device.loadSavedState()
 
 		// Set USB/spooler fields
 		if deviceType.Valid {

@@ -655,6 +655,7 @@ func TestDevicesBatchUpload(t *testing.T) {
 			"manufacturer": "HP",
 			"model":        "LaserJet Pro",
 			"hostname":     "printer-01",
+			"is_saved":     true,
 		},
 		{
 			"serial":       "XYZ789",
@@ -662,6 +663,7 @@ func TestDevicesBatchUpload(t *testing.T) {
 			"manufacturer": "Canon",
 			"model":        "PIXMA",
 			"hostname":     "printer-02",
+			"is_saved":     false,
 		},
 	}
 
@@ -702,12 +704,18 @@ func TestDevicesBatchUpload(t *testing.T) {
 	} else if device1.Manufacturer != "HP" {
 		t.Errorf("Expected manufacturer=HP, got %s", device1.Manufacturer)
 	}
+	if device1 != nil && (device1.IsSaved == nil || !*device1.IsSaved) {
+		t.Errorf("saved state missing: %+v", device1.IsSaved)
+	}
 
 	device2, err := store.GetDevice(ctx, "XYZ789")
 	if err != nil {
 		t.Errorf("Failed to retrieve device XYZ789: %v", err)
 	} else if device2.Manufacturer != "Canon" {
 		t.Errorf("Expected manufacturer=Canon, got %s", device2.Manufacturer)
+	}
+	if device2 != nil && (device2.IsSaved == nil || *device2.IsSaved) {
+		t.Errorf("discovered state missing: %+v", device2.IsSaved)
 	}
 }
 

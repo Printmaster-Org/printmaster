@@ -341,6 +341,7 @@ function showPrinterDetails(identifier, source) {
                         if ((!deviceObj.asset_number || deviceObj.asset_number === '') && match.AssetNumber) deviceObj.asset_number = match.AssetNumber;
                         if ((!deviceObj.location || deviceObj.location === '') && match.Location) deviceObj.location = match.Location;
                         if ((!deviceObj.serial || deviceObj.serial === '') && match.Serial) deviceObj.serial = match.Serial;
+                        if (typeof match.is_saved === 'boolean') deviceObj.is_saved = match.is_saved;
 
                         window.__pm_shared_cards.showPrinterDetailsData(deviceObj, source || 'saved', null);
                     } catch (e) { window.__pm_shared.warn('showPrinterDetails render failed', e); }

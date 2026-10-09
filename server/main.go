@@ -6688,6 +6688,9 @@ func handleDevicesBatch(w http.ResponseWriter, r *http.Request) {
 			device.UsbWebUIAvailable = v
 		}
 		device.RawData = deviceMap
+		if value, ok := deviceMap["is_saved"].(bool); ok {
+			device.IsSaved = &value
+		}
 
 		if device.Serial == "" {
 			logWarn("Device missing serial, skipping", "ip", device.IP)

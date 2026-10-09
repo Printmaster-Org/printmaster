@@ -855,9 +855,12 @@
     // small metrics-summary loader used by the modal. Consumers should
     // call `window.__pm_shared_cards.showPrinterDetailsData(p, source, parseDebug)`.
     let detailsGeneration = 0;
-    function showPrinterDetailsData(p, source, parseDebug) {
+    function showPrinterDetailsData(p, source, parseDebug, options = {}) {
         if (!p) return;
-        source = source || 'discovered';
+        const savedState = typeof p.is_saved === 'boolean' ? p.is_saved
+            : typeof p.raw_data?.is_saved === 'boolean' ? p.raw_data.is_saved : null;
+        source = savedState === null ? (source || 'discovered') : savedState ? 'saved' : 'discovered';
+        if (options.server && savedState === null) source = 'server';
         const bodyEl = document.getElementById('printer_details_body');
         const overlay = document.getElementById('printer_details_overlay');
         const titleEl = document.getElementById('printer_details_title');
@@ -871,7 +874,7 @@
             const mfg = p.manufacturer || p.make || '';
             const model = p.model || '';
             const deviceName = (mfg + ' ' + model).trim() || 'Unknown Device';
-            const sourceLabel = (source === 'saved') ? '' : ' (Discovered)';
+            const sourceLabel = source === 'discovered' ? ' (Discovered)' : '';
             titleEl.textContent = deviceName + sourceLabel;
         } catch (e) {
             titleEl.textContent = (source === 'saved') ? 'Device Details' : 'Discovered Device';
@@ -1121,7 +1124,7 @@
         const liveTools = '<div id="action_buttons_area" class="device-live-tools">' +
             '<div class="device-live-actions-row">' +
             '<button id="refresh_data_btn">Scan for Updates</button>' +
-            (source === 'saved' ? '<button id="collect_metrics_btn">Collect Metrics</button>' : '') +
+            (source === 'saved' && !options.server ? '<button id="collect_metrics_btn">Collect Metrics</button>' : '') +
             '<span id="refresh_status" class="device-live-status"></span>' +
             '</div>' +
             '<div style="color:var(--muted);font-size:11px;margin-top:4px">Scans the device via SNMP to check for updated values. Use edit buttons (✏️) to manually correct any field.</div>' +
@@ -1420,7 +1423,7 @@
 
         // Wire up metrics collection button (saved devices only)
         try {
-            if (source === 'saved') {
+            if (source === 'saved' && !options.server) {
                 document.getElementById('collect_metrics_btn')?.addEventListener('click', async function () {
                     const statusEl = document.getElementById('refresh_status');
                     const btn = document.getElementById('collect_metrics_btn');
@@ -1497,7 +1500,21 @@
         // Action buttons (delete/save/close)
         try {
             actionsEl.innerHTML = '';
-            if (source === 'saved') {
+            if (options.server) {
+                if (savedState !== true) {
+                    const status = document.createElement('span');
+                    status.className = 'muted-text';
+                    status.textContent = savedState === false
+                        ? 'Discovered on Agent. Save this device in the Agent UI.'
+                        : 'Agent saved state not reported yet. Manage saved/discovered state in the Agent UI.';
+                    actionsEl.appendChild(status);
+                }
+                const deleteBtn = document.createElement('button');
+                deleteBtn.textContent = 'Delete from Server';
+                deleteBtn.className = 'delete';
+                deleteBtn.onclick = () => options.deleteDevice(p.serial, p.agent_id);
+                actionsEl.appendChild(deleteBtn);
+            } else if (source === 'saved') {
                 const deleteBtn = document.createElement('button');
                 deleteBtn.textContent = 'Delete Device';
                 deleteBtn.className = 'delete';

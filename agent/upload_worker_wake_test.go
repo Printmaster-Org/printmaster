@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -189,6 +190,38 @@ func TestUploadWorkerSustainedWakeDoesNotStarveUpload(t *testing.T) {
 }
 
 type wakeDeviceStore struct{ storage.DeviceStore }
+
+type savedStateDeviceStore struct{ wakeDeviceStore }
+
+func (savedStateDeviceStore) List(context.Context, storage.DeviceFilter) ([]*storage.Device, error) {
+	saved, discovered := &storage.Device{}, &storage.Device{}
+	saved.Serial, saved.IsSaved, saved.Visible = "SAVED", true, true
+	discovered.Serial, discovered.IsSaved, discovered.Visible = "DISCOVERED", false, true
+	return []*storage.Device{saved, discovered}, nil
+}
+
+func TestDeviceUploadIncludesExplicitSavedState(t *testing.T) {
+	t.Parallel()
+	var payload struct {
+		Devices []map[string]interface{} `json:"devices"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer server.Close()
+	worker := NewUploadWorker(agentpkg.NewServerClient(server.URL, "agent", "token"), savedStateDeviceStore{}, stubLogger{}, nil, UploadWorkerConfig{RetryAttempts: 1}, "")
+	if err := worker.uploadDevices(); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Devices) != 2 || payload.Devices[0]["is_saved"] != true || payload.Devices[1]["is_saved"] != false {
+		t.Fatalf("saved state not transferred: %+v", payload)
+	}
+}
 
 func (wakeDeviceStore) List(ctx context.Context, _ storage.DeviceFilter) ([]*storage.Device, error) {
 	if err := ctx.Err(); err != nil {
