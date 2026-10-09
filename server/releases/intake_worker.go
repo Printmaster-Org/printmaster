@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"printmaster/common/logger"
+	"printmaster/common/updatepolicy"
 	"printmaster/server/storage"
 )
 
@@ -100,7 +101,10 @@ type artifactDescriptor struct {
 	version   string
 	platform  string
 	arch      string
-	fileName  string
+	// format distinguishes assets that share a platform/arch, such as the
+	// Windows .exe and .msi, so each gets its own cache entry and manifest.
+	format   updatepolicy.ArtifactFormat
+	fileName string
 }
 
 // NewIntakeWorker wires release intake with sane defaults.
@@ -172,7 +176,7 @@ func NewIntakeWorker(store storage.Store, log *logger.Logger, opts Options) (*In
 // Run starts the periodic release intake loop.
 func (w *IntakeWorker) Run(ctx context.Context) {
 	w.logInfo("release intake worker started", "cache_dir", w.cacheDir, "interval", w.pollInterval.String())
-	if err := w.runOnce(ctx); err != nil {
+	if err := w.RunOnce(ctx); err != nil {
 		w.logWarn("initial release intake failed", "error", err)
 	}
 
@@ -185,16 +189,18 @@ func (w *IntakeWorker) Run(ctx context.Context) {
 			w.logInfo("release intake worker stopping")
 			return
 		case <-ticker.C:
-			if err := w.runOnce(ctx); err != nil {
+			if err := w.RunOnce(ctx); err != nil {
 				w.logWarn("release intake iteration failed", "error", err)
 			}
 		}
 	}
 }
 
-// RunOnce executes a single fetch cycle (exported for tests).
+// RunOnce executes a single fetch cycle without progress reporting. The
+// periodic loop and tests use it; the UI-triggered sync uses
+// RunOnceWithProgress. Both share one implementation.
 func (w *IntakeWorker) RunOnce(ctx context.Context) error {
-	return w.runOnce(ctx)
+	return w.runOnceWithProgress(ctx, nil)
 }
 
 // RunOnceWithProgress executes a single fetch cycle with progress reporting.
@@ -202,12 +208,13 @@ func (w *IntakeWorker) RunOnceWithProgress(ctx context.Context, onProgress Progr
 	return w.runOnceWithProgress(ctx, onProgress)
 }
 
-// artifactPlan represents a single artifact to be downloaded.
+// artifactPlan represents a single release asset selected for the cache.
 type artifactPlan struct {
 	desc      artifactDescriptor
 	rel       ghRelease
 	asset     ghAsset
-	needsWork bool // false if already cached
+	cached    *storage.ReleaseArtifact // existing verified cache entry, if any
+	needsWork bool                     // true when the asset must be downloaded
 }
 
 func (w *IntakeWorker) runOnceWithProgress(ctx context.Context, onProgress ProgressCallback) error {
@@ -239,56 +246,11 @@ func (w *IntakeWorker) runOnceWithProgress(ctx context.Context, onProgress Progr
 		Message: fmt.Sprintf("Analyzing %d releases...", len(releases)),
 	})
 
-	var plans []artifactPlan
-	processed := map[string]int{}
+	plans := w.planArtifacts(ctx, releases)
 
-	for _, rel := range releases {
-		component, version := parseTag(rel.TagName)
-		if component == "" || version == "" {
-			continue
-		}
-		if rel.Draft {
-			continue
-		}
-		if (rel.Prerelease || channelFromVersion(version) != "stable") && !w.includePrerelease {
-			continue
-		}
-		if processed[component] >= w.maxReleases {
-			continue
-		}
-
-		for _, asset := range rel.Assets {
-			if asset.BrowserDownloadURL == "" {
-				continue
-			}
-			desc, ok := buildDescriptor(component, version, asset.Name)
-			if !ok {
-				continue
-			}
-
-			// Check if already cached
-			existing, err := w.store.GetReleaseArtifact(ctx, desc.component, desc.version, desc.platform, desc.arch)
-			needsWork := true
-			if err == nil && existing != nil && fileExists(existing.CachePath) && existing.SHA256 != "" {
-				needsWork = false
-			}
-
-			plans = append(plans, artifactPlan{
-				desc:      desc,
-				rel:       rel,
-				asset:     asset,
-				needsWork: needsWork,
-			})
-		}
-		processed[component]++
-	}
-
-	// Calculate totals
-	var totalFiles, filesToDownload int
-	var totalBytes, bytesToDownload int64
+	var filesToDownload int
+	var bytesToDownload int64
 	for _, p := range plans {
-		totalFiles++
-		totalBytes += p.asset.Size
 		if p.needsWork {
 			filesToDownload++
 			bytesToDownload += p.asset.Size
@@ -296,52 +258,22 @@ func (w *IntakeWorker) runOnceWithProgress(ctx context.Context, onProgress Progr
 	}
 
 	report(SyncProgress{
-		Phase:          "processing",
-		Message:        fmt.Sprintf("Found %d artifacts (%d need downloading)", totalFiles, filesToDownload),
-		TotalFiles:     filesToDownload,
-		TotalBytes:     bytesToDownload,
-		CompletedFiles: 0,
-		CompletedBytes: 0,
+		Phase:      "processing",
+		Message:    fmt.Sprintf("Found %d artifacts (%d need downloading)", len(plans), filesToDownload),
+		TotalFiles: filesToDownload,
+		TotalBytes: bytesToDownload,
 	})
 
-	if filesToDownload == 0 {
-		report(SyncProgress{
-			Phase:           "complete",
-			Message:         "All artifacts up to date",
-			TotalFiles:      0,
-			CompletedFiles:  0,
-			TotalBytes:      0,
-			CompletedBytes:  0,
-			PercentComplete: 100,
-		})
-		// Still need to ensure manifests and prune
-		for _, p := range plans {
-			if !p.needsWork {
-				existing, _ := w.store.GetReleaseArtifact(ctx, p.desc.component, p.desc.version, p.desc.platform, p.desc.arch)
-				if existing != nil {
-					w.ensureManifest(ctx, existing)
-				}
-			}
-		}
-		w.pruneIfConfigured(ctx)
-		return nil
-	}
-
-	// Phase 3: Download artifacts
+	// Phase 3: Refresh cached artifacts and download missing ones
 	var completedFiles int
 	var completedBytes int64
 
 	for _, p := range plans {
 		if !p.needsWork {
-			// Already cached, just ensure manifest
-			existing, _ := w.store.GetReleaseArtifact(ctx, p.desc.component, p.desc.version, p.desc.platform, p.desc.arch)
-			if existing != nil {
-				w.ensureManifest(ctx, existing)
-			}
+			w.refreshCachedArtifact(ctx, p)
 			continue
 		}
 
-		// Report starting this file
 		pct := 0
 		if bytesToDownload > 0 {
 			pct = int((completedBytes * 100) / bytesToDownload)
@@ -358,70 +290,161 @@ func (w *IntakeWorker) runOnceWithProgress(ctx context.Context, onProgress Progr
 			PercentComplete: pct,
 		})
 
-		// Download with progress
-		cachePath, sha, size, err := w.downloadArtifactWithProgress(ctx, p.desc, p.asset.BrowserDownloadURL, p.asset.Size, func(downloaded int64) {
-			pct := 0
-			if bytesToDownload > 0 {
-				pct = int(((completedBytes + downloaded) * 100) / bytesToDownload)
+		var onDownload func(int64)
+		if onProgress != nil {
+			onDownload = func(downloaded int64) {
+				pct := 0
+				if bytesToDownload > 0 {
+					pct = int(((completedBytes + downloaded) * 100) / bytesToDownload)
+				}
+				report(SyncProgress{
+					Phase:           "downloading",
+					Message:         fmt.Sprintf("Downloading %s... (%d%%)", p.asset.Name, pct),
+					TotalFiles:      filesToDownload,
+					CompletedFiles:  completedFiles,
+					TotalBytes:      bytesToDownload,
+					CompletedBytes:  completedBytes + downloaded,
+					CurrentFile:     p.asset.Name,
+					CurrentFileSize: p.asset.Size,
+					PercentComplete: pct,
+				})
 			}
-			report(SyncProgress{
-				Phase:           "downloading",
-				Message:         fmt.Sprintf("Downloading %s... (%d%%)", p.asset.Name, pct),
-				TotalFiles:      filesToDownload,
-				CompletedFiles:  completedFiles,
-				TotalBytes:      bytesToDownload,
-				CompletedBytes:  completedBytes + downloaded,
-				CurrentFile:     p.asset.Name,
-				CurrentFileSize: p.asset.Size,
-				PercentComplete: pct,
-			})
-		})
+		}
 
-		if err != nil {
-			w.logWarn("artifact download failed", "asset", p.asset.Name, "error", err)
+		if err := w.cacheArtifact(ctx, p, onDownload); err != nil {
+			w.logWarn("release artifact caching failed",
+				"asset", p.asset.Name, "component", p.desc.component, "version", p.desc.version, "format", p.desc.format, "error", err)
 			continue
 		}
-
-		// Save to database
-		record := &storage.ReleaseArtifact{
-			Component:    p.desc.component,
-			Version:      p.desc.version,
-			Platform:     p.desc.platform,
-			Arch:         p.desc.arch,
-			Channel:      channelFromVersion(p.desc.version),
-			SourceURL:    p.asset.BrowserDownloadURL,
-			CachePath:    cachePath,
-			SHA256:       sha,
-			SizeBytes:    size,
-			ReleaseNotes: p.rel.Body,
-			PublishedAt:  p.rel.PublishedAt,
-			DownloadedAt: time.Now().UTC(),
-		}
-		if err := w.store.UpsertReleaseArtifact(ctx, record); err != nil {
-			w.logWarn("failed to save artifact", "asset", p.asset.Name, "error", err)
-			continue
-		}
-
-		w.ensureManifest(ctx, record)
 		completedFiles++
 		completedBytes += p.asset.Size
-
-		w.logInfo("cached release artifact", "component", p.desc.component, "version", p.desc.version, "platform", p.desc.platform, "arch", p.desc.arch)
 	}
 
-	// Prune old artifacts
 	w.pruneIfConfigured(ctx)
 
+	message := fmt.Sprintf("Sync complete: %d files downloaded", completedFiles)
+	if filesToDownload == 0 {
+		message = "All artifacts up to date"
+	}
 	report(SyncProgress{
 		Phase:           "complete",
-		Message:         fmt.Sprintf("Sync complete: %d files downloaded", completedFiles),
+		Message:         message,
 		TotalFiles:      filesToDownload,
 		CompletedFiles:  completedFiles,
 		TotalBytes:      bytesToDownload,
 		CompletedBytes:  completedBytes,
 		PercentComplete: 100,
 	})
+	w.logInfo("Release intake complete", "artifacts", len(plans), "downloaded", completedFiles, "pending_failed", filesToDownload-completedFiles)
+	return nil
+}
 
+// planArtifacts selects the release assets the fleet update cache should hold
+// and records whether each is already cached. Every skip is logged with its
+// reason so operators can see why an asset is not offered to Agents.
+func (w *IntakeWorker) planArtifacts(ctx context.Context, releases []ghRelease) []artifactPlan {
+	w.logInfo("Processing releases from GitHub", "count", len(releases), "include_prerelease", w.includePrerelease)
+
+	var plans []artifactPlan
+	processed := map[string]int{}
+	for _, rel := range releases {
+		component, version := parseTag(rel.TagName)
+		switch {
+		case component == "" || version == "":
+			w.logDebug("Skipping release with unparseable tag", "tag", rel.TagName)
+			continue
+		case rel.Draft:
+			w.logDebug("Skipping draft release", "tag", rel.TagName)
+			continue
+		case (rel.Prerelease || channelFromVersion(version) != "stable") && !w.includePrerelease:
+			w.logDebug("Skipping prerelease (include_prerelease disabled)", "tag", rel.TagName)
+			continue
+		case processed[component] >= w.maxReleases:
+			continue
+		}
+		processed[component]++
+
+		for _, asset := range rel.Assets {
+			if asset.BrowserDownloadURL == "" {
+				w.logDebug("Skipping asset without download URL", "asset", asset.Name)
+				continue
+			}
+			desc, ok := buildDescriptor(component, version, asset.Name)
+			if !ok {
+				w.logDebug("Skipping asset that does not match release naming", "asset", asset.Name)
+				continue
+			}
+			if !desc.format.FleetDeliverable() {
+				w.logDebug("Skipping OS package; package repositories deliver it",
+					"asset", asset.Name, "format", desc.format)
+				continue
+			}
+
+			plan := artifactPlan{desc: desc, rel: rel, asset: asset, needsWork: true}
+			existing, err := w.store.GetReleaseArtifact(ctx, desc.component, desc.version, desc.platform, desc.arch, desc.format.String())
+			switch {
+			case err == nil && existing != nil && fileExists(existing.CachePath) && existing.SHA256 != "":
+				plan.cached = existing
+				plan.needsWork = false
+			case err != nil && !errors.Is(err, sql.ErrNoRows):
+				w.logWarn("Release artifact lookup failed; will re-download",
+					"asset", asset.Name, "format", desc.format, "error", err)
+			}
+			plans = append(plans, plan)
+		}
+	}
+	w.logInfo("Release planning complete", "releases_per_component", processed, "artifacts", len(plans))
+	return plans
+}
+
+// refreshCachedArtifact keeps metadata for an already-downloaded artifact in
+// sync with GitHub (notes, URL, size, channel) and ensures its manifest.
+func (w *IntakeWorker) refreshCachedArtifact(ctx context.Context, p artifactPlan) {
+	existing := p.cached
+	channel := channelFromVersion(p.desc.version)
+	if existing.SourceURL != p.asset.BrowserDownloadURL || existing.ReleaseNotes != p.rel.Body ||
+		existing.SizeBytes != p.asset.Size || existing.Channel != channel {
+		existing.Channel = channel
+		existing.SourceURL = p.asset.BrowserDownloadURL
+		existing.ReleaseNotes = p.rel.Body
+		existing.SizeBytes = p.asset.Size
+		existing.PublishedAt = p.rel.PublishedAt
+		if err := w.store.UpsertReleaseArtifact(ctx, existing); err != nil {
+			w.logWarn("release artifact metadata refresh failed",
+				"component", existing.Component, "version", existing.Version, "format", existing.Format, "error", err)
+			return
+		}
+	}
+	w.ensureManifest(ctx, existing)
+}
+
+// cacheArtifact downloads an asset, records it, and signs its manifest.
+func (w *IntakeWorker) cacheArtifact(ctx context.Context, p artifactPlan, onProgress func(int64)) error {
+	cachePath, sha, size, err := w.downloadArtifactWithProgress(ctx, p.desc, p.asset.BrowserDownloadURL, p.asset.Size, onProgress)
+	if err != nil {
+		return err
+	}
+	record := &storage.ReleaseArtifact{
+		Component:    p.desc.component,
+		Version:      p.desc.version,
+		Platform:     p.desc.platform,
+		Arch:         p.desc.arch,
+		Format:       p.desc.format.String(),
+		Channel:      channelFromVersion(p.desc.version),
+		SourceURL:    p.asset.BrowserDownloadURL,
+		CachePath:    cachePath,
+		SHA256:       sha,
+		SizeBytes:    size,
+		ReleaseNotes: p.rel.Body,
+		PublishedAt:  p.rel.PublishedAt,
+		DownloadedAt: time.Now().UTC(),
+	}
+	if err := w.store.UpsertReleaseArtifact(ctx, record); err != nil {
+		return fmt.Errorf("save artifact: %w", err)
+	}
+	w.logInfo("cached release artifact", "component", record.Component, "version", record.Version,
+		"platform", record.Platform, "arch", record.Arch, "format", record.Format, "bytes", size)
+	w.ensureManifest(ctx, record)
 	return nil
 }
 
@@ -435,7 +458,8 @@ func (w *IntakeWorker) pruneIfConfigured(ctx context.Context) {
 	}
 }
 
-// downloadArtifactWithProgress downloads an artifact and reports progress.
+// downloadArtifactWithProgress downloads an artifact into the cache, hashing it
+// as it streams. onProgress may be nil.
 func (w *IntakeWorker) downloadArtifactWithProgress(ctx context.Context, desc artifactDescriptor, downloadURL string, expectedSize int64, onProgress func(downloaded int64)) (string, string, int64, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
@@ -525,54 +549,6 @@ func (w *IntakeWorker) downloadArtifactWithProgress(ctx context.Context, desc ar
 	return finalPath, checksum, written, nil
 }
 
-func (w *IntakeWorker) runOnce(ctx context.Context) error {
-	releases, err := w.fetchReleases(ctx)
-	if err != nil {
-		return err
-	}
-
-	w.logInfo("Processing releases from GitHub", "count", len(releases), "include_prerelease", w.includePrerelease)
-
-	processed := map[string]int{}
-	for _, rel := range releases {
-		component, version := parseTag(rel.TagName)
-		if component == "" || version == "" {
-			w.logInfo("Skipping release with unparseable tag", "tag", rel.TagName)
-			continue
-		}
-		if rel.Draft {
-			w.logInfo("Skipping draft", "tag", rel.TagName)
-			continue
-		}
-		if (rel.Prerelease || channelFromVersion(version) != "stable") && !w.includePrerelease {
-			w.logInfo("Skipping prerelease (include_prerelease disabled)", "tag", rel.TagName)
-			continue
-		}
-		if processed[component] >= w.maxReleases {
-			continue
-		}
-		w.logInfo("Processing release", "component", component, "version", version, "assets", len(rel.Assets), "prerelease", rel.Prerelease)
-		if err := w.processRelease(ctx, component, version, rel); err != nil {
-			w.logWarn("release processing failed", "component", component, "version", version, "error", err)
-			continue
-		}
-		processed[component]++
-	}
-
-	w.logInfo("Release processing complete", "processed", processed)
-
-	// Prune old artifacts if retention is configured
-	if w.retentionVersions > 0 {
-		for _, comp := range []string{"agent", "server"} {
-			if err := w.pruneOldArtifacts(ctx, comp); err != nil {
-				w.logWarn("artifact pruning failed", "component", comp, "error", err)
-			}
-		}
-	}
-
-	return nil
-}
-
 func (w *IntakeWorker) fetchReleases(ctx context.Context) ([]ghRelease, error) {
 	perPage := w.maxReleases * 3
 	if perPage < 10 {
@@ -607,77 +583,6 @@ func (w *IntakeWorker) fetchReleases(ctx context.Context) ([]ghRelease, error) {
 	return releases, nil
 }
 
-func (w *IntakeWorker) processRelease(ctx context.Context, component, version string, rel ghRelease) error {
-	w.logInfo("Processing release assets", "component", component, "version", version, "asset_count", len(rel.Assets))
-	matchedAssets := 0
-	for _, asset := range rel.Assets {
-		if asset.BrowserDownloadURL == "" {
-			w.logInfo("Asset has no download URL", "asset", asset.Name)
-			continue
-		}
-		desc, ok := buildDescriptor(component, version, asset.Name)
-		if !ok {
-			w.logInfo("Asset name didn't match pattern", "asset", asset.Name, "expected_prefix", fmt.Sprintf("printmaster-%s-v%s-", component, version))
-			continue
-		}
-		matchedAssets++
-		w.logInfo("Matched asset", "component", component, "version", version, "asset", asset.Name, "platform", desc.platform, "arch", desc.arch)
-		if err := w.ensureArtifact(ctx, desc, rel, asset); err != nil {
-			w.logWarn("artifact processing failed", "component", component, "version", version, "asset", asset.Name, "error", err)
-		}
-	}
-	w.logInfo("Release processing summary", "component", component, "version", version, "matched_assets", matchedAssets, "total_assets", len(rel.Assets))
-	return nil
-}
-
-func (w *IntakeWorker) ensureArtifact(ctx context.Context, desc artifactDescriptor, rel ghRelease, asset ghAsset) error {
-	existing, err := w.store.GetReleaseArtifact(ctx, desc.component, desc.version, desc.platform, desc.arch)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if err == nil && existing != nil && fileExists(existing.CachePath) && existing.SHA256 != "" {
-		needsMetadataUpdate := existing.SourceURL != asset.BrowserDownloadURL || existing.ReleaseNotes != rel.Body || existing.SizeBytes != asset.Size || existing.Channel != channelFromVersion(desc.version)
-		if needsMetadataUpdate {
-			existing.Channel = channelFromVersion(desc.version)
-			existing.SourceURL = asset.BrowserDownloadURL
-			existing.ReleaseNotes = rel.Body
-			existing.SizeBytes = asset.Size
-			existing.PublishedAt = rel.PublishedAt
-			if err := w.store.UpsertReleaseArtifact(ctx, existing); err != nil {
-				return err
-			}
-		}
-		w.ensureManifest(ctx, existing)
-		return nil
-	}
-
-	cachePath, sha, size, err := w.downloadArtifact(ctx, desc, asset.BrowserDownloadURL)
-	if err != nil {
-		return err
-	}
-
-	record := &storage.ReleaseArtifact{
-		Component:    desc.component,
-		Version:      desc.version,
-		Platform:     desc.platform,
-		Arch:         desc.arch,
-		Channel:      channelFromVersion(desc.version),
-		SourceURL:    asset.BrowserDownloadURL,
-		CachePath:    cachePath,
-		SHA256:       sha,
-		SizeBytes:    size,
-		ReleaseNotes: rel.Body,
-		PublishedAt:  rel.PublishedAt,
-		DownloadedAt: time.Now().UTC(),
-	}
-	if err := w.store.UpsertReleaseArtifact(ctx, record); err != nil {
-		return err
-	}
-	w.logInfo("cached release artifact", "component", desc.component, "version", desc.version, "platform", desc.platform, "arch", desc.arch)
-	w.ensureManifest(ctx, record)
-	return nil
-}
-
 func (w *IntakeWorker) ensureManifest(ctx context.Context, artifact *storage.ReleaseArtifact) {
 	if artifact == nil {
 		return
@@ -696,65 +601,6 @@ func (w *IntakeWorker) ensureManifest(ctx context.Context, artifact *storage.Rel
 	if _, err := w.manifests.EnsureManifestForArtifact(ctx, artifact); err != nil {
 		w.logWarn("manifest generation failed", "component", artifact.Component, "version", artifact.Version, "platform", artifact.Platform, "arch", artifact.Arch, "error", err)
 	}
-}
-
-func (w *IntakeWorker) downloadArtifact(ctx context.Context, desc artifactDescriptor, downloadURL string) (string, string, int64, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
-	if err != nil {
-		return "", "", 0, err
-	}
-	req.Header.Set("User-Agent", w.userAgent)
-	if w.token != "" {
-		req.Header.Set("Authorization", "Bearer "+w.token)
-	}
-
-	resp, err := w.client.Do(req)
-	if err != nil {
-		return "", "", 0, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", "", 0, fmt.Errorf("download failed: %s", resp.Status)
-	}
-
-	componentDir, err := buildCacheDir(w.cacheDir, desc)
-	if err != nil {
-		return "", "", 0, err
-	}
-	if err := os.MkdirAll(componentDir, 0o755); err != nil {
-		return "", "", 0, err
-	}
-
-	tempFile, err := os.CreateTemp(componentDir, "download-*.tmp")
-	if err != nil {
-		return "", "", 0, err
-	}
-	defer func() {
-		tempFile.Close()
-		os.Remove(tempFile.Name())
-	}()
-
-	hasher := sha256.New()
-	writer := io.MultiWriter(tempFile, hasher)
-	written, err := io.Copy(writer, resp.Body)
-	if err != nil {
-		return "", "", 0, err
-	}
-	if err := tempFile.Sync(); err != nil {
-		return "", "", 0, err
-	}
-	if err := tempFile.Close(); err != nil {
-		return "", "", 0, err
-	}
-
-	finalPath := filepath.Join(componentDir, desc.fileName)
-	_ = os.Remove(finalPath)
-	if err := os.Rename(tempFile.Name(), finalPath); err != nil {
-		return "", "", 0, err
-	}
-
-	checksum := hex.EncodeToString(hasher.Sum(nil))
-	return finalPath, checksum, written, nil
 }
 
 func buildCacheDir(root string, desc artifactDescriptor) (string, error) {
@@ -782,7 +628,21 @@ func parseTag(tag string) (string, string) {
 	return component, version
 }
 
+// buildDescriptor identifies the platform, architecture, and artifact format of
+// a release asset. It only parses names; deciding whether the fleet update
+// cache should hold the asset is the caller's job (see FleetDeliverable).
 func buildDescriptor(component, version, assetName string) (artifactDescriptor, bool) {
+	desc, ok := parseAssetName(component, version, assetName)
+	if !ok {
+		return artifactDescriptor{}, false
+	}
+	desc.format = updatepolicy.ArtifactFormatFromFilename(assetName)
+	return desc, true
+}
+
+// parseAssetName matches the three release naming schemes (raw binary/MSI,
+// Debian package, RPM package).
+func parseAssetName(component, version, assetName string) (artifactDescriptor, bool) {
 	// Primary pattern: printmaster-{component}-v{version}-{platform}-{arch}[.ext]
 	// e.g., printmaster-agent-v0.29.1-linux-amd64
 	prefix := fmt.Sprintf("printmaster-%s-v%s-", component, version)
@@ -908,6 +768,12 @@ func (w *IntakeWorker) pruneOldArtifacts(ctx context.Context, component string) 
 func (w *IntakeWorker) logInfo(msg string, kv ...interface{}) {
 	if w.log != nil {
 		w.log.Info(msg, kv...)
+	}
+}
+
+func (w *IntakeWorker) logDebug(msg string, kv ...interface{}) {
+	if w.log != nil {
+		w.log.Debug(msg, kv...)
 	}
 }
 

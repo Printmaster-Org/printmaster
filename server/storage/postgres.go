@@ -563,6 +563,7 @@ func (s *PostgresStore) initSchema() error {
 		version TEXT NOT NULL,
 		platform TEXT NOT NULL,
 		arch TEXT NOT NULL,
+		format TEXT NOT NULL DEFAULT 'binary',
 		channel TEXT NOT NULL DEFAULT 'stable',
 		source_url TEXT NOT NULL,
 		cache_path TEXT,
@@ -572,8 +573,7 @@ func (s *PostgresStore) initSchema() error {
 		published_at TIMESTAMPTZ,
 		downloaded_at TIMESTAMPTZ,
 		created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE(component, version, platform, arch)
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_release_artifacts_component ON release_artifacts(component);
@@ -599,6 +599,7 @@ func (s *PostgresStore) initSchema() error {
 		version TEXT NOT NULL,
 		platform TEXT NOT NULL,
 		arch TEXT NOT NULL,
+		format TEXT NOT NULL DEFAULT 'binary',
 		channel TEXT NOT NULL DEFAULT 'stable',
 		manifest_version TEXT NOT NULL,
 		manifest_json TEXT NOT NULL,
@@ -606,8 +607,7 @@ func (s *PostgresStore) initSchema() error {
 		signing_key_id TEXT NOT NULL,
 		generated_at TIMESTAMPTZ NOT NULL,
 		created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE(component, version, platform, arch)
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_release_manifests_component ON release_manifests(component);
@@ -937,6 +937,38 @@ func (s *PostgresStore) initSchema() error {
 			ALTER TABLE devices ADD COLUMN usb_webui_available BOOLEAN DEFAULT FALSE;
 		END IF;
 	END $$;
+
+	-- Release artifact format identity (binary/msi/deb/rpm). Databases created
+	-- before formats existed have a UNIQUE(component, version, platform, arch)
+	-- constraint that let a release's binary and installer overwrite each other.
+	-- Add the column, drop any unique constraint that lacks it, and enforce the
+	-- five-column identity through named indexes shared by new and upgraded DBs.
+	ALTER TABLE release_artifacts ADD COLUMN IF NOT EXISTS format TEXT NOT NULL DEFAULT 'binary';
+	ALTER TABLE release_manifests ADD COLUMN IF NOT EXISTS format TEXT NOT NULL DEFAULT 'binary';
+	DO $$
+	DECLARE
+		legacy record;
+	BEGIN
+		FOR legacy IN
+			SELECT con.conname, con.conrelid::regclass AS tbl
+			FROM pg_constraint con
+			WHERE con.contype = 'u'
+			  AND con.conrelid IN ('release_artifacts'::regclass, 'release_manifests'::regclass)
+			  AND NOT EXISTS (
+				SELECT 1 FROM pg_attribute att
+				WHERE att.attrelid = con.conrelid
+				  AND att.attnum = ANY(con.conkey)
+				  AND att.attname = 'format'
+			  )
+		LOOP
+			RAISE NOTICE 'dropping legacy release identity constraint % on %', legacy.conname, legacy.tbl;
+			EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', legacy.tbl, legacy.conname);
+		END LOOP;
+	END $$;
+	CREATE UNIQUE INDEX IF NOT EXISTS ux_release_artifacts_identity
+		ON release_artifacts(component, version, platform, arch, format);
+	CREATE UNIQUE INDEX IF NOT EXISTS ux_release_manifests_identity
+		ON release_manifests(component, version, platform, arch, format);
 	`
 
 	if _, err := s.db.Exec(schema); err != nil {
@@ -968,6 +1000,11 @@ func (s *PostgresStore) initSchema() error {
 	// Seed global settings if not present
 	if err := s.ensureGlobalSettingsSeed(); err != nil {
 		return err
+	}
+
+	// Classify release artifacts cached before format identity existed.
+	if err := s.reclassifyLegacyReleaseFormats(context.Background()); err != nil {
+		return fmt.Errorf("release artifact format migration failed: %w", err)
 	}
 
 	// Seed default alert rules on first run

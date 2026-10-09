@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"printmaster/common/logger"
+	"printmaster/common/updatepolicy"
 	"printmaster/server/storage"
 
 	"github.com/Masterminds/semver"
@@ -24,18 +25,21 @@ const defaultManifestVersion = "1.0"
 
 // ManifestPayload describes the signed manifest structure distributed to agents.
 type ManifestPayload struct {
-	ManifestVersion string    `json:"manifest_version"`
-	Component       string    `json:"component"`
-	Version         string    `json:"version"`
-	MinorLine       string    `json:"minor_line"`
-	Platform        string    `json:"platform"`
-	Arch            string    `json:"arch"`
-	Channel         string    `json:"channel"`
-	SHA256          string    `json:"sha256"`
-	SizeBytes       int64     `json:"size_bytes"`
-	SourceURL       string    `json:"source_url"`
-	PublishedAt     time.Time `json:"published_at,omitempty"`
-	GeneratedAt     time.Time `json:"generated_at"`
+	ManifestVersion string `json:"manifest_version"`
+	Component       string `json:"component"`
+	Version         string `json:"version"`
+	MinorLine       string `json:"minor_line"`
+	Platform        string `json:"platform"`
+	Arch            string `json:"arch"`
+	// Format is the artifact packaging (binary or msi). It is part of the
+	// signed payload so a binary manifest cannot be replayed for an MSI.
+	Format      string    `json:"format"`
+	Channel     string    `json:"channel"`
+	SHA256      string    `json:"sha256"`
+	SizeBytes   int64     `json:"size_bytes"`
+	SourceURL   string    `json:"source_url"`
+	PublishedAt time.Time `json:"published_at,omitempty"`
+	GeneratedAt time.Time `json:"generated_at"`
 }
 
 // ManagerOptions tweak manifest manager behavior.
@@ -118,7 +122,7 @@ func (m *Manager) EnsureManifestForArtifact(ctx context.Context, artifact *stora
 	if err != nil {
 		return nil, err
 	}
-	existing, err := m.store.GetReleaseManifest(ctx, artifact.Component, artifact.Version, artifact.Platform, artifact.Arch)
+	existing, err := m.store.GetReleaseManifest(ctx, artifact.Component, artifact.Version, artifact.Platform, artifact.Arch, artifact.Format)
 	if err == nil && existing != nil && existing.SigningKeyID == key.ID && existing.Signature != "" && existing.Channel == artifact.Channel {
 		return existing, nil
 	}
@@ -170,9 +174,10 @@ func (m *Manager) ListManifests(ctx context.Context, component string, limit int
 	return m.store.ListReleaseManifests(ctx, component, limit)
 }
 
-// GetManifest loads a manifest for the given tuple.
-func (m *Manager) GetManifest(ctx context.Context, component, version, platform, arch string) (*storage.ReleaseManifest, error) {
-	return m.store.GetReleaseManifest(ctx, component, version, platform, arch)
+// GetManifest loads a manifest for the given tuple. An empty format means
+// binary.
+func (m *Manager) GetManifest(ctx context.Context, component, version, platform, arch, format string) (*storage.ReleaseManifest, error) {
+	return m.store.GetReleaseManifest(ctx, component, version, platform, arch, format)
 }
 
 // AgentUpdateManifest is the JSON structure returned to agents for update checks.
@@ -183,6 +188,7 @@ type AgentUpdateManifest struct {
 	MinorLine       string    `json:"minor_line"`
 	Platform        string    `json:"platform"`
 	Arch            string    `json:"arch"`
+	Format          string    `json:"format"`
 	Channel         string    `json:"channel"`
 	SHA256          string    `json:"sha256"`
 	SizeBytes       int64     `json:"size_bytes"`
@@ -193,8 +199,12 @@ type AgentUpdateManifest struct {
 	Signature       string    `json:"signature,omitempty"`
 }
 
-// GetLatestManifest returns the latest manifest for the specified component/platform/arch/channel.
-func (m *Manager) GetLatestManifest(ctx context.Context, component, platform, arch, channel string) (*AgentUpdateManifest, error) {
+// GetLatestManifest returns the newest manifest for the component, platform,
+// arch, channel, and artifact format. An empty channel matches every channel;
+// an empty format means binary, which is what Agents that predate formats
+// expect.
+func (m *Manager) GetLatestManifest(ctx context.Context, component, platform, arch, channel, format string) (*AgentUpdateManifest, error) {
+	format = normalizedFormat(format)
 	// Get all manifests for this component and find the latest matching one
 	manifests, err := m.store.ListReleaseManifests(ctx, component, 100)
 	if err != nil {
@@ -206,13 +216,14 @@ func (m *Manager) GetLatestManifest(ctx context.Context, component, platform, ar
 		"platform", platform,
 		"arch", arch,
 		"channel", channel,
+		"format", format,
 		"total_manifests", len(manifests))
 
 	var latest *storage.ReleaseManifest
 	var latestVersion *semver.Version
 	matchCount := 0
 	for _, manifest := range manifests {
-		if manifest.Platform != platform || manifest.Arch != arch {
+		if manifest.Platform != platform || manifest.Arch != arch || normalizedFormat(manifest.Format) != format {
 			continue
 		}
 		if channel != "" && (manifest.Channel != channel || channelFromVersion(manifest.Version) != channel) {
@@ -249,15 +260,15 @@ func (m *Manager) GetLatestManifest(ctx context.Context, component, platform, ar
 
 	if latest == nil {
 		m.logDebug("no matching manifest found", "matched_count", matchCount)
-		return nil, fmt.Errorf("no manifest found for %s/%s-%s/%s", component, platform, arch, channel)
+		return nil, fmt.Errorf("no manifest found for %s/%s-%s/%s (%s)", component, platform, arch, channel, format)
 	}
 
 	m.logDebug("selected latest manifest", "version", latest.Version, "matched_count", matchCount)
 
 	// Get the corresponding artifact for size info
-	artifact, err := m.store.GetReleaseArtifact(ctx, latest.Component, latest.Version, latest.Platform, latest.Arch)
+	artifact, err := m.store.GetReleaseArtifact(ctx, latest.Component, latest.Version, latest.Platform, latest.Arch, format)
 	if err != nil {
-		m.logDebug("No artifact found for manifest", "component", latest.Component, "version", latest.Version)
+		m.logDebug("No artifact found for manifest", "component", latest.Component, "version", latest.Version, "format", format, "error", err)
 	}
 
 	// Parse minor line from version (e.g., "0.9.16" -> "0.9")
@@ -274,6 +285,7 @@ func (m *Manager) GetLatestManifest(ctx context.Context, component, platform, ar
 		MinorLine:       minorLine,
 		Platform:        latest.Platform,
 		Arch:            latest.Arch,
+		Format:          format,
 		Channel:         latest.Channel,
 		Signature:       latest.Signature,
 		GeneratedAt:     latest.GeneratedAt,
@@ -310,6 +322,7 @@ func (m *Manager) signArtifactWithKey(ctx context.Context, artifact *storage.Rel
 		Version:         artifact.Version,
 		Platform:        artifact.Platform,
 		Arch:            artifact.Arch,
+		Format:          payload.Format,
 		Channel:         defaultString(artifact.Channel, "stable"),
 		ManifestVersion: payload.ManifestVersion,
 		ManifestJSON:    string(raw),
@@ -320,9 +333,9 @@ func (m *Manager) signArtifactWithKey(ctx context.Context, artifact *storage.Rel
 	if err := m.store.UpsertReleaseManifest(ctx, record); err != nil {
 		return nil, err
 	}
-	signed, err := m.store.GetReleaseManifest(ctx, artifact.Component, artifact.Version, artifact.Platform, artifact.Arch)
+	signed, err := m.store.GetReleaseManifest(ctx, artifact.Component, artifact.Version, artifact.Platform, artifact.Arch, payload.Format)
 	if err == nil {
-		m.logDebug("signed release manifest", "component", artifact.Component, "version", artifact.Version, "platform", artifact.Platform, "arch", artifact.Arch)
+		m.logDebug("signed release manifest", "component", artifact.Component, "version", artifact.Version, "platform", artifact.Platform, "arch", artifact.Arch, "format", payload.Format)
 	}
 	return signed, err
 }
@@ -338,6 +351,7 @@ func (m *Manager) buildPayload(artifact *storage.ReleaseArtifact) (ManifestPaylo
 		MinorLine:       computeMinorLine(artifact.Version),
 		Platform:        artifact.Platform,
 		Arch:            artifact.Arch,
+		Format:          normalizedFormat(artifact.Format),
 		Channel:         defaultString(artifact.Channel, "stable"),
 		SHA256:          artifact.SHA256,
 		SizeBytes:       artifact.SizeBytes,
@@ -440,7 +454,10 @@ func parseSemverVersion(raw string) *semver.Version {
 }
 
 func artifactFromManifest(manifest *storage.ReleaseManifest) (*storage.ReleaseArtifact, error) {
-	if manifest == nil || manifest.ManifestJSON == "" {
+	if manifest == nil {
+		return nil, fmt.Errorf("manifest required")
+	}
+	if manifest.ManifestJSON == "" {
 		return nil, fmt.Errorf("manifest payload missing for %s/%s", manifest.Component, manifest.Version)
 	}
 	var payload ManifestPayload
@@ -448,10 +465,13 @@ func artifactFromManifest(manifest *storage.ReleaseManifest) (*storage.ReleaseAr
 		return nil, fmt.Errorf("failed to parse manifest json: %w", err)
 	}
 	artifact := &storage.ReleaseArtifact{
-		Component:   manifest.Component,
-		Version:     manifest.Version,
-		Platform:    manifest.Platform,
-		Arch:        manifest.Arch,
+		Component: manifest.Component,
+		Version:   manifest.Version,
+		Platform:  manifest.Platform,
+		Arch:      manifest.Arch,
+		// The row's format is authoritative: payloads signed before formats
+		// existed have no format, and migrations may have reclassified the row.
+		Format:      normalizedFormat(manifest.Format),
 		Channel:     defaultString(payload.Channel, manifest.Channel),
 		SourceURL:   payload.SourceURL,
 		SHA256:      payload.SHA256,
@@ -465,6 +485,16 @@ func artifactFromManifest(manifest *storage.ReleaseManifest) (*storage.ReleaseAr
 		return nil, fmt.Errorf("manifest missing sha256 for %s/%s", artifact.Component, artifact.Version)
 	}
 	return artifact, nil
+}
+
+// normalizedFormat returns the canonical artifact format, treating empty as
+// binary. Unknown values pass through unchanged so storage validation can
+// reject them with a precise error instead of silently becoming binary.
+func normalizedFormat(raw string) string {
+	if format, ok := updatepolicy.ParseArtifactFormat(raw); ok {
+		return format.String()
+	}
+	return strings.TrimSpace(raw)
 }
 
 func (m *Manager) logInfo(msg string, args ...interface{}) {

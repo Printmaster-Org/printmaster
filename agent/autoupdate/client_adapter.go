@@ -2,6 +2,7 @@ package autoupdate
 
 import (
 	"context"
+	"fmt"
 
 	"printmaster/agent/agent"
 )
@@ -17,8 +18,8 @@ func NewClientAdapter(client *agent.ServerClient) *ClientAdapter {
 }
 
 // GetLatestManifest fetches the latest manifest from the server and converts it.
-func (a *ClientAdapter) GetLatestManifest(ctx context.Context, component, platform, arch, channel string) (*UpdateManifest, error) {
-	manifest, err := a.client.GetLatestManifest(ctx, component, platform, arch, channel)
+func (a *ClientAdapter) GetLatestManifest(ctx context.Context, component, platform, arch, channel, format string) (*UpdateManifest, error) {
+	manifest, err := a.client.GetLatestManifest(ctx, component, platform, arch, channel, format)
 	if err != nil {
 		return nil, err
 	}
@@ -32,23 +33,12 @@ func (a *ClientAdapter) DownloadArtifact(ctx context.Context, manifest *UpdateMa
 
 // DownloadArtifactWithProgress downloads the artifact with progress reporting.
 func (a *ClientAdapter) DownloadArtifactWithProgress(ctx context.Context, manifest *UpdateManifest, destPath string, resumeFrom int64, progressCb DownloadProgressCallback) (int64, error) {
-	// Convert back to agent manifest for the download call
-	agentManifest := &agent.UpdateManifest{
-		ManifestVersion: manifest.ManifestVersion,
-		Component:       manifest.Component,
-		Version:         manifest.Version,
-		MinorLine:       manifest.MinorLine,
-		Platform:        manifest.Platform,
-		Arch:            manifest.Arch,
-		Channel:         manifest.Channel,
-		SHA256:          manifest.SHA256,
-		SizeBytes:       manifest.SizeBytes,
-		SourceURL:       manifest.SourceURL,
-		DownloadURL:     manifest.DownloadURL,
-		PublishedAt:     manifest.PublishedAt,
-		GeneratedAt:     manifest.GeneratedAt,
-		Signature:       manifest.Signature,
+	if manifest == nil {
+		return 0, fmt.Errorf("manifest required")
 	}
+	// The two manifest types share an identical field layout, so a direct
+	// conversion keeps them in lockstep without hand-copying each field.
+	agentManifest := agent.UpdateManifest(*manifest)
 
 	// Convert progress callback if provided
 	var agentProgressCb agent.DownloadProgressCallback
@@ -58,7 +48,7 @@ func (a *ClientAdapter) DownloadArtifactWithProgress(ctx context.Context, manife
 		}
 	}
 
-	return a.client.DownloadArtifactWithProgress(ctx, agentManifest, destPath, resumeFrom, agentProgressCb)
+	return a.client.DownloadArtifactWithProgress(ctx, &agentManifest, destPath, resumeFrom, agentProgressCb)
 }
 
 // convertManifest converts from agent.UpdateManifest to autoupdate.UpdateManifest.
@@ -66,20 +56,6 @@ func convertManifest(m *agent.UpdateManifest) *UpdateManifest {
 	if m == nil {
 		return nil
 	}
-	return &UpdateManifest{
-		ManifestVersion: m.ManifestVersion,
-		Component:       m.Component,
-		Version:         m.Version,
-		MinorLine:       m.MinorLine,
-		Platform:        m.Platform,
-		Arch:            m.Arch,
-		Channel:         m.Channel,
-		SHA256:          m.SHA256,
-		SizeBytes:       m.SizeBytes,
-		SourceURL:       m.SourceURL,
-		DownloadURL:     m.DownloadURL,
-		PublishedAt:     m.PublishedAt,
-		GeneratedAt:     m.GeneratedAt,
-		Signature:       m.Signature,
-	}
+	converted := UpdateManifest(*m)
+	return &converted
 }

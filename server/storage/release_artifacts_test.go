@@ -40,7 +40,7 @@ func TestReleaseArtifactsCRUD(t *testing.T) {
 		t.Fatalf("failed to upsert artifact: %v", err)
 	}
 
-	fetched, err := store.GetReleaseArtifact(ctx, "server", "0.9.16", "windows", "amd64")
+	fetched, err := store.GetReleaseArtifact(ctx, "server", "0.9.16", "windows", "amd64", "")
 	if err != nil {
 		t.Fatalf("failed to fetch artifact: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestReleaseArtifactsCRUD(t *testing.T) {
 		t.Fatalf("failed to update artifact: %v", err)
 	}
 
-	updated, err := store.GetReleaseArtifact(ctx, "server", "0.9.16", "windows", "amd64")
+	updated, err := store.GetReleaseArtifact(ctx, "server", "0.9.16", "windows", "amd64", "")
 	if err != nil {
 		t.Fatalf("failed to fetch updated artifact: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestSigningKeysAndManifests(t *testing.T) {
 	if err := store.UpsertReleaseManifest(ctx, manifest); err != nil {
 		t.Fatalf("failed to upsert manifest: %v", err)
 	}
-	fetched, err := store.GetReleaseManifest(ctx, "agent", "0.9.1", "windows", "amd64")
+	fetched, err := store.GetReleaseManifest(ctx, "agent", "0.9.1", "windows", "amd64", "")
 	if err != nil {
 		t.Fatalf("failed to fetch manifest: %v", err)
 	}

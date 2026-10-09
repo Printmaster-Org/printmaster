@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"printmaster/common/config"
 	"printmaster/common/logger"
+	commonupdatepolicy "printmaster/common/updatepolicy"
 	commonutil "printmaster/common/util"
 	sharedweb "printmaster/common/web"
 	wscommon "printmaster/common/ws"
@@ -9693,9 +9694,17 @@ func handleAgentUpdateManifest(w http.ResponseWriter, r *http.Request) {
 		Arch            string `json:"arch"`
 		Channel         string `json:"channel"`
 		ExplicitChannel bool   `json:"explicit_channel"`
+		// Format is the packaging the Agent can install: "binary" (default,
+		// also assumed for Agents that predate formats) or "msi".
+		Format string `json:"format"`
 	}
 	if err := decodeJSONBody(r, &req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	format, err := parseFleetArtifactFormat(req.Format)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -9744,7 +9753,8 @@ func handleAgentUpdateManifest(w http.ResponseWriter, r *http.Request) {
 		"component", req.Component,
 		"platform", req.Platform,
 		"arch", req.Arch,
-		"channel", req.Channel)
+		"channel", req.Channel,
+		"format", format)
 
 	// Fetch matching manifest from release manager
 	if releaseManager == nil {
@@ -9756,9 +9766,10 @@ func handleAgentUpdateManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	manifest, err := releaseManager.GetLatestManifest(r.Context(), req.Component, req.Platform, req.Arch, req.Channel)
+	manifest, err := releaseManager.GetLatestManifest(r.Context(), req.Component, req.Platform, req.Arch, req.Channel, format.String())
 	if err != nil {
-		logWarn("Failed to get agent update manifest", "error", err, "component", req.Component, "platform", req.Platform)
+		logWarn("Failed to get agent update manifest", "error", err, "component", req.Component,
+			"platform", req.Platform, "arch", req.Arch, "channel", req.Channel, "format", format)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
@@ -9771,13 +9782,18 @@ func handleAgentUpdateManifest(w http.ResponseWriter, r *http.Request) {
 	if manifest != nil && manifest.DownloadURL == "" {
 		manifest.DownloadURL = fmt.Sprintf("/api/v1/agents/update/download/%s/%s/%s-%s",
 			manifest.Component, manifest.Version, manifest.Platform, manifest.Arch)
+		// Binary URLs stay unchanged so Agents that predate formats keep working.
+		if format != commonupdatepolicy.ArtifactFormatBinary {
+			manifest.DownloadURL += "?format=" + url.QueryEscape(format.String())
+		}
 	}
 
 	logDebug("Returning update manifest",
 		"agent_id", req.AgentID,
 		"version", manifest.Version,
 		"platform", manifest.Platform,
-		"arch", manifest.Arch)
+		"arch", manifest.Arch,
+		"format", manifest.Format)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -9786,9 +9802,20 @@ func handleAgentUpdateManifest(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// parseFleetArtifactFormat validates an Agent-requested artifact format. Empty
+// means binary. OS packages (deb/rpm) are rejected because package
+// repositories deliver them and the Server never caches them.
+func parseFleetArtifactFormat(raw string) (commonupdatepolicy.ArtifactFormat, error) {
+	format, ok := commonupdatepolicy.ParseArtifactFormat(raw)
+	if !ok || !format.FleetDeliverable() {
+		return "", fmt.Errorf("format must be binary or msi")
+	}
+	return format, nil
+}
+
 // handleAgentUpdateDownload streams the update artifact to the agent.
 // Supports HTTP Range requests for resumable downloads.
-// URL pattern: /api/v1/agents/update/download/{component}/{version}/{platform}-{arch}
+// URL pattern: /api/v1/agents/update/download/{component}/{version}/{platform}-{arch}[?format=msi]
 func handleAgentUpdateDownload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET required", http.StatusMethodNotAllowed)
@@ -9822,9 +9849,15 @@ func handleAgentUpdateDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	artifact, err := serverStore.GetReleaseArtifact(r.Context(), component, version, platform, arch)
+	format, err := parseFleetArtifactFormat(r.URL.Query().Get("format"))
 	if err != nil {
-		logWarn("Agent update artifact not found", "component", component, "version", version, "platform", platform, "arch", arch, "error", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	artifact, err := serverStore.GetReleaseArtifact(r.Context(), component, version, platform, arch, format.String())
+	if err != nil {
+		logWarn("Agent update artifact not found", "component", component, "version", version, "platform", platform, "arch", arch, "format", format, "error", err)
 		http.Error(w, "artifact not found", http.StatusNotFound)
 		return
 	}
@@ -10020,6 +10053,7 @@ func handleReleasesArtifacts(w http.ResponseWriter, r *http.Request) {
 		Version      string    `json:"version"`
 		Platform     string    `json:"platform"`
 		Arch         string    `json:"arch"`
+		Format       string    `json:"format"`
 		Channel      string    `json:"channel"`
 		SHA256       string    `json:"sha256"`
 		SizeBytes    int64     `json:"size_bytes"`
@@ -10036,6 +10070,7 @@ func handleReleasesArtifacts(w http.ResponseWriter, r *http.Request) {
 			Version:      a.Version,
 			Platform:     a.Platform,
 			Arch:         a.Arch,
+			Format:       a.Format,
 			Channel:      a.Channel,
 			SHA256:       a.SHA256,
 			SizeBytes:    a.SizeBytes,

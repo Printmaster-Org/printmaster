@@ -20,7 +20,7 @@ type mockUpdateClient struct {
 	err      error
 }
 
-func (m *mockUpdateClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel string) (*UpdateManifest, error) {
+func (m *mockUpdateClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel, format string) (*UpdateManifest, error) {
 	return m.manifest, m.err
 }
 
@@ -324,7 +324,7 @@ type forceInstallClient struct {
 	payload  []byte
 }
 
-func (m *forceInstallClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel string) (*UpdateManifest, error) {
+func (m *forceInstallClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel, format string) (*UpdateManifest, error) {
 	return m.manifest, nil
 }
 

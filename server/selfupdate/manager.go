@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"printmaster/common/logger"
+	"printmaster/common/updatepolicy"
 	"printmaster/server/storage"
 
 	"github.com/Masterminds/semver"
@@ -416,8 +417,14 @@ func (m *Manager) selectCandidate(ctx context.Context, current *semver.Version) 
 	return best, meta, nil
 }
 
+// matchesArtifact reports whether a cached release can replace this Server.
+// Only raw binaries qualify: the Server swaps its own executable, so installer
+// packages such as MSIs that share the platform/arch are never candidates.
 func (m *Manager) matchesArtifact(artifact *storage.ReleaseArtifact) bool {
 	if artifact == nil {
+		return false
+	}
+	if format, ok := updatepolicy.ParseArtifactFormat(artifact.Format); !ok || format != updatepolicy.ArtifactFormatBinary {
 		return false
 	}
 	if normalizeChannel(artifact.Channel) != m.channel {
@@ -460,7 +467,7 @@ func (m *Manager) stageCandidate(ctx context.Context, run *storage.SelfUpdateRun
 	if strings.TrimSpace(artifact.CachePath) == "" {
 		return fmt.Errorf("artifact cache path missing")
 	}
-	manifest, err := m.store.GetReleaseManifest(ctx, artifact.Component, artifact.Version, artifact.Platform, artifact.Arch)
+	manifest, err := m.store.GetReleaseManifest(ctx, artifact.Component, artifact.Version, artifact.Platform, artifact.Arch, artifact.Format)
 	if err != nil {
 		return fmt.Errorf("load manifest: %w", err)
 	}

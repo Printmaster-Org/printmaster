@@ -806,7 +806,8 @@ type Store interface {
 
 	// Release intake & caching
 	UpsertReleaseArtifact(ctx context.Context, artifact *ReleaseArtifact) error
-	GetReleaseArtifact(ctx context.Context, component, version, platform, arch string) (*ReleaseArtifact, error)
+	// GetReleaseArtifact looks up one artifact; an empty format means binary.
+	GetReleaseArtifact(ctx context.Context, component, version, platform, arch, format string) (*ReleaseArtifact, error)
 	ListReleaseArtifacts(ctx context.Context, component string, limit int) ([]*ReleaseArtifact, error)
 	DeleteReleaseArtifact(ctx context.Context, id int64) error
 	// ListVersionsForPruning returns distinct versions per component ordered by publish date (oldest first)
@@ -820,7 +821,8 @@ type Store interface {
 	ListSigningKeys(ctx context.Context, limit int) ([]*SigningKey, error)
 	SetSigningKeyActive(ctx context.Context, id string) error
 	UpsertReleaseManifest(ctx context.Context, manifest *ReleaseManifest) error
-	GetReleaseManifest(ctx context.Context, component, version, platform, arch string) (*ReleaseManifest, error)
+	// GetReleaseManifest looks up one signed manifest; an empty format means binary.
+	GetReleaseManifest(ctx context.Context, component, version, platform, arch, format string) (*ReleaseManifest, error)
 	ListReleaseManifests(ctx context.Context, component string, limit int) ([]*ReleaseManifest, error)
 
 	// Self-update tracking
@@ -946,12 +948,15 @@ type AgentSettingsRecord struct {
 }
 
 // ReleaseArtifact captures cached release metadata and on-disk artifact state.
+// Identity is component + version + platform + arch + format; see
+// updatepolicy.ArtifactFormat for why the format is part of the key.
 type ReleaseArtifact struct {
 	ID           int64     `json:"id"`
 	Component    string    `json:"component"`
 	Version      string    `json:"version"`
 	Platform     string    `json:"platform"`
 	Arch         string    `json:"arch"`
+	Format       string    `json:"format"`
 	Channel      string    `json:"channel"`
 	SourceURL    string    `json:"source_url"`
 	CachePath    string    `json:"cache_path"`
@@ -977,12 +982,14 @@ type SigningKey struct {
 }
 
 // ReleaseManifest represents the signed manifest payload for a cached artifact.
+// It shares the artifact identity, including Format.
 type ReleaseManifest struct {
 	ID              int64     `json:"id"`
 	Component       string    `json:"component"`
 	Version         string    `json:"version"`
 	Platform        string    `json:"platform"`
 	Arch            string    `json:"arch"`
+	Format          string    `json:"format"`
 	Channel         string    `json:"channel"`
 	ManifestVersion string    `json:"manifest_version"`
 	ManifestJSON    string    `json:"manifest_json"`

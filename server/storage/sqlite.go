@@ -493,6 +493,7 @@ func (s *SQLiteStore) initSchema() error {
 		version TEXT NOT NULL,
 		platform TEXT NOT NULL,
 		arch TEXT NOT NULL,
+		format TEXT NOT NULL DEFAULT 'binary',
 		channel TEXT NOT NULL DEFAULT 'stable',
 		source_url TEXT NOT NULL,
 		cache_path TEXT,
@@ -503,7 +504,7 @@ func (s *SQLiteStore) initSchema() error {
 		downloaded_at DATETIME,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE(component, version, platform, arch)
+		UNIQUE(component, version, platform, arch, format)
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_release_artifacts_component ON release_artifacts(component);
@@ -528,6 +529,7 @@ func (s *SQLiteStore) initSchema() error {
 		version TEXT NOT NULL,
 		platform TEXT NOT NULL,
 		arch TEXT NOT NULL,
+		format TEXT NOT NULL DEFAULT 'binary',
 		channel TEXT NOT NULL DEFAULT 'stable',
 		manifest_version TEXT NOT NULL,
 		manifest_json TEXT NOT NULL,
@@ -536,7 +538,7 @@ func (s *SQLiteStore) initSchema() error {
 		generated_at DATETIME NOT NULL,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE(component, version, platform, arch)
+		UNIQUE(component, version, platform, arch, format)
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_release_manifests_component ON release_manifests(component);
@@ -903,6 +905,12 @@ func (s *SQLiteStore) runMigrations() error {
 	}
 
 	// Data migrations
+	if err := s.migrateSQLiteReleaseFormatIdentity(); err != nil {
+		return fmt.Errorf("release artifact format schema migration failed: %w", err)
+	}
+	if err := s.reclassifyLegacyReleaseFormats(context.Background()); err != nil {
+		return fmt.Errorf("release artifact format migration failed: %w", err)
+	}
 	s.backfillUserTenantMappings()
 	s.migrateLegacyRoles()
 	if err := s.migrateSettingsAgentOverrideFK(); err != nil {

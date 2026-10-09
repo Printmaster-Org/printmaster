@@ -664,24 +664,29 @@ func getGitCommit() string {
 
 // UpdateManifest represents a signed manifest for an available update.
 type UpdateManifest struct {
-	ManifestVersion string    `json:"manifest_version"`
-	Component       string    `json:"component"`
-	Version         string    `json:"version"`
-	MinorLine       string    `json:"minor_line"`
-	Platform        string    `json:"platform"`
-	Arch            string    `json:"arch"`
-	Channel         string    `json:"channel"`
-	SHA256          string    `json:"sha256"`
-	SizeBytes       int64     `json:"size_bytes"`
-	SourceURL       string    `json:"source_url"`
-	DownloadURL     string    `json:"download_url,omitempty"`
-	PublishedAt     time.Time `json:"published_at,omitempty"`
-	GeneratedAt     time.Time `json:"generated_at"`
-	Signature       string    `json:"signature,omitempty"`
+	ManifestVersion string `json:"manifest_version"`
+	Component       string `json:"component"`
+	Version         string `json:"version"`
+	MinorLine       string `json:"minor_line"`
+	Platform        string `json:"platform"`
+	Arch            string `json:"arch"`
+	// Format is the artifact packaging: "binary" or "msi". Servers that
+	// predate formats omit it, which means binary.
+	Format      string    `json:"format,omitempty"`
+	Channel     string    `json:"channel"`
+	SHA256      string    `json:"sha256"`
+	SizeBytes   int64     `json:"size_bytes"`
+	SourceURL   string    `json:"source_url"`
+	DownloadURL string    `json:"download_url,omitempty"`
+	PublishedAt time.Time `json:"published_at,omitempty"`
+	GeneratedAt time.Time `json:"generated_at"`
+	Signature   string    `json:"signature,omitempty"`
 }
 
-// GetLatestManifest fetches the latest update manifest from the server.
-func (c *ServerClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel string) (*UpdateManifest, error) {
+// GetLatestManifest fetches the latest update manifest from the server. format
+// names the artifact packaging this install can apply ("binary" or "msi");
+// empty means binary.
+func (c *ServerClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel, format string) (*UpdateManifest, error) {
 	type ManifestRequest struct {
 		AgentID         string `json:"agent_id"`
 		Component       string `json:"component"`
@@ -689,6 +694,7 @@ func (c *ServerClient) GetLatestManifest(ctx context.Context, component, platfor
 		Arch            string `json:"arch"`
 		Channel         string `json:"channel"`
 		ExplicitChannel bool   `json:"explicit_channel,omitempty"`
+		Format          string `json:"format,omitempty"`
 	}
 
 	type ManifestResponse struct {
@@ -704,6 +710,7 @@ func (c *ServerClient) GetLatestManifest(ctx context.Context, component, platfor
 		Arch:            arch,
 		Channel:         channel,
 		ExplicitChannel: updatepolicy.HasExplicitChannel(ctx),
+		Format:          format,
 	}
 
 	var resp ManifestResponse
@@ -744,6 +751,9 @@ func (c *ServerClient) DownloadArtifactWithProgress(ctx context.Context, manifes
 		// Construct URL from base + version
 		downloadURL = fmt.Sprintf("%s/api/v1/agents/update/download/%s/%s/%s",
 			c.BaseURL, manifest.Component, manifest.Version, manifest.Platform+"-"+manifest.Arch)
+		if format, ok := updatepolicy.ParseArtifactFormat(manifest.Format); ok && format != updatepolicy.ArtifactFormatBinary {
+			downloadURL += "?format=" + url.QueryEscape(format.String())
+		}
 	} else if strings.HasPrefix(downloadURL, "/") {
 		// Server returned a relative URL - prepend the base URL
 		downloadURL = strings.TrimSuffix(c.BaseURL, "/") + downloadURL

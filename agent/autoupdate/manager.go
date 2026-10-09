@@ -82,7 +82,9 @@ type Options struct {
 // UpdateClient abstracts the server communication needed for updates.
 type UpdateClient interface {
 	// GetLatestManifest fetches the signed manifest for the latest available version.
-	GetLatestManifest(ctx context.Context, component, platform, arch, channel string) (*UpdateManifest, error)
+	// GetLatestManifest returns the newest manifest for the channel and
+	// artifact format ("binary" or "msi") this install can apply.
+	GetLatestManifest(ctx context.Context, component, platform, arch, channel, format string) (*UpdateManifest, error)
 	// DownloadArtifact downloads the artifact to the specified path, supporting range requests.
 	DownloadArtifact(ctx context.Context, manifest *UpdateManifest, destPath string, resumeFrom int64) (int64, error)
 	// DownloadArtifactWithProgress downloads with progress reporting callback.
@@ -414,9 +416,9 @@ func (m *Manager) ForceInstallLatestFromChannel(ctx context.Context, reason, cha
 		}
 	}()
 
-	manifest, err := m.client.GetLatestManifest(ctx, "agent", m.platform, m.arch, m.operationChannel(ctx))
+	manifest, err := m.fetchManifest(ctx)
 	if err != nil {
-		m.reportTelemetry(ctx, StatusFailed, ErrCodeServerError, err.Error())
+		m.reportTelemetry(ctx, StatusFailed, manifestErrorCode(err), err.Error())
 		return fmt.Errorf("failed to fetch manifest: %w", err)
 	}
 	if manifest == nil {
@@ -534,9 +536,9 @@ func (m *Manager) performCheck(ctx context.Context) error {
 	}
 
 	// Fetch latest manifest from server
-	manifest, err := m.client.GetLatestManifest(ctx, "agent", m.platform, m.arch, m.operationChannel(ctx))
+	manifest, err := m.fetchManifest(ctx)
 	if err != nil {
-		m.reportTelemetry(ctx, Status(StatusFailed), ErrCodeServerError, err.Error())
+		m.reportTelemetry(ctx, StatusFailed, manifestErrorCode(err), err.Error())
 		return fmt.Errorf("failed to fetch manifest: %w", err)
 	}
 
@@ -742,6 +744,63 @@ func (m *Manager) executeUpdate(ctx context.Context, manifest *UpdateManifest) e
 		return m.restartFn()
 	}
 	return m.restartService()
+}
+
+// artifactFormat is the packaging this install can apply. MSI installs must
+// receive the MSI so Windows Installer keeps owning the files; every other
+// install swaps the raw binary. Package-managed Linux installs also ask for
+// the binary manifest, which they use only for version discovery.
+func (m *Manager) artifactFormat() updatepolicy.ArtifactFormat {
+	if m.useMSI {
+		return updatepolicy.ArtifactFormatMSI
+	}
+	return updatepolicy.ArtifactFormatBinary
+}
+
+// fetchManifest requests the newest manifest for this install's channel and
+// artifact format, and rejects a manifest for a different format so an MSI
+// install never tries to apply a raw binary (or the reverse).
+func (m *Manager) fetchManifest(ctx context.Context) (*UpdateManifest, error) {
+	format := m.artifactFormat()
+	manifest, err := m.client.GetLatestManifest(ctx, "agent", m.platform, m.arch, m.operationChannel(ctx), format.String())
+	if err != nil || manifest == nil {
+		return manifest, err
+	}
+	if err := validateManifestFormat(manifest, format); err != nil {
+		m.logWarn("Rejected update manifest", "requested_format", format, "manifest_format", manifest.Format, "version", manifest.Version, "error", err)
+		return nil, err
+	}
+	return manifest, nil
+}
+
+// errManifestFormat marks a manifest whose artifact format cannot be applied
+// by this install, so telemetry reports MANIFEST_ERROR instead of a Server
+// outage.
+var errManifestFormat = errors.New("update manifest format mismatch")
+
+// manifestErrorCode maps a manifest fetch failure to its telemetry code.
+func manifestErrorCode(err error) string {
+	if errors.Is(err, errManifestFormat) {
+		return ErrCodeManifestError
+	}
+	return ErrCodeServerError
+}
+
+// validateManifestFormat checks a Server's manifest against the requested
+// format. Servers that predate formats omit the field and only ever serve
+// binaries, which is acceptable for binary installs but not for MSI installs.
+func validateManifestFormat(manifest *UpdateManifest, requested updatepolicy.ArtifactFormat) error {
+	if strings.TrimSpace(manifest.Format) == "" {
+		if requested == updatepolicy.ArtifactFormatBinary {
+			return nil
+		}
+		return fmt.Errorf("%w: server did not return a %s artifact; upgrade the PrintMaster Server to deliver %s updates", errManifestFormat, requested, requested)
+	}
+	got, ok := updatepolicy.ParseArtifactFormat(manifest.Format)
+	if !ok || got != requested {
+		return fmt.Errorf("%w: got %q, requested %q", errManifestFormat, manifest.Format, requested)
+	}
+	return nil
 }
 
 func (m *Manager) operationChannel(ctx context.Context) string {

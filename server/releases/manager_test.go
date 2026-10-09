@@ -80,7 +80,7 @@ func TestManagerRotateAndRegenerate(t *testing.T) {
 	if _, err := mgr.EnsureManifestForArtifact(ctx, artifact); err != nil {
 		t.Fatalf("initial manifest failed: %v", err)
 	}
-	before, err := store.GetReleaseManifest(ctx, "server", "0.10.1", "linux", "amd64")
+	before, err := store.GetReleaseManifest(ctx, "server", "0.10.1", "linux", "amd64", "")
 	if err != nil {
 		t.Fatalf("failed to fetch manifest: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestManagerRotateAndRegenerate(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("expected 1 manifest regenerated, got %d", count)
 	}
-	after, err := store.GetReleaseManifest(ctx, "server", "0.10.1", "linux", "amd64")
+	after, err := store.GetReleaseManifest(ctx, "server", "0.10.1", "linux", "amd64", "")
 	if err != nil {
 		t.Fatalf("failed to fetch updated manifest: %v", err)
 	}

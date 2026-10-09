@@ -269,3 +269,15 @@ func (s *stubLauncher) Launch(run *storage.SelfUpdateRun, inst *ApplyInstruction
 	}
 	return s.meta, nil
 }
+
+// TestMatchesArtifactSkipsInstallerPackages ensures the Server never selects
+// an MSI (which shares windows/amd64 with the .exe) as its own replacement.
+func TestMatchesArtifactSkipsInstallerPackages(t *testing.T) {
+	m := &Manager{channel: "stable", platform: "windows", arch: "amd64"}
+	for format, want := range map[string]bool{"": true, "binary": true, "msi": false, "deb": false, "bogus": false} {
+		artifact := &storage.ReleaseArtifact{Channel: "stable", Platform: "windows", Arch: "amd64", Format: format}
+		if got := m.matchesArtifact(artifact); got != want {
+			t.Fatalf("format %q: matches=%v want %v", format, got, want)
+		}
+	}
+}

@@ -61,19 +61,19 @@ func TestSyncRepairsCachedBetaManifestAndExcludesItFromStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest, err := manager.GetLatestManifest(ctx, "agent", "linux", "amd64", "stable"); err == nil || manifest != nil {
+	if manifest, err := manager.GetLatestManifest(ctx, "agent", "linux", "amd64", "stable", ""); err == nil || manifest != nil {
 		t.Fatal("mislabeled beta escaped stable guard")
 	}
 	worker := &IntakeWorker{store: store, manifests: manager}
 	worker.ensureManifest(ctx, artifact)
-	after, err := manager.GetLatestManifest(ctx, "agent", "linux", "amd64", "beta")
+	after, err := manager.GetLatestManifest(ctx, "agent", "linux", "amd64", "beta", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if after.Channel != "beta" || after.Signature == before.Signature {
 		t.Fatal("cached beta channel/signature not repaired")
 	}
-	stored, err := store.GetReleaseArtifact(ctx, "agent", artifact.Version, "linux", "amd64")
+	stored, err := store.GetReleaseArtifact(ctx, "agent", artifact.Version, "linux", "amd64", "")
 	if err != nil || stored.Channel != "beta" {
 		t.Fatalf("artifact channel: %+v %v", stored, err)
 	}

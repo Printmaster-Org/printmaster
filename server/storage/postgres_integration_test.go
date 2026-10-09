@@ -520,7 +520,7 @@ func TestPostgresStore_Integration(t *testing.T) {
 			}
 
 			// Retrieve manifest
-			fetched, err := store.GetReleaseManifest(ctx, "agent", "1.0.0-pg", "linux", "amd64")
+			fetched, err := store.GetReleaseManifest(ctx, "agent", "1.0.0-pg", "linux", "amd64", "")
 			if err != nil {
 				t.Fatalf("GetReleaseManifest: %v", err)
 			}

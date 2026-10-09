@@ -660,11 +660,11 @@ type trackingClient struct {
 	onGetManifest func()
 }
 
-func (c *trackingClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel string) (*UpdateManifest, error) {
+func (c *trackingClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel, format string) (*UpdateManifest, error) {
 	if c.onGetManifest != nil {
 		c.onGetManifest()
 	}
-	return c.inner.GetLatestManifest(ctx, component, platform, arch, channel)
+	return c.inner.GetLatestManifest(ctx, component, platform, arch, channel, format)
 }
 
 func (c *trackingClient) DownloadArtifact(ctx context.Context, manifest *UpdateManifest, destPath string, resumeFrom int64) (int64, error) {
@@ -682,11 +682,11 @@ type blockedManifestClient struct {
 	release chan struct{}
 }
 
-func (c *blockedManifestClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel string) (*UpdateManifest, error) {
+func (c *blockedManifestClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel, format string) (*UpdateManifest, error) {
 	c.entered <- struct{}{}
 	select {
 	case <-c.release:
-		return c.mockUpdateClient.GetLatestManifest(ctx, component, platform, arch, channel)
+		return c.mockUpdateClient.GetLatestManifest(ctx, component, platform, arch, channel, format)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -700,7 +700,7 @@ type delayedClient struct {
 	onEnd    func()
 }
 
-func (c *delayedClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel string) (*UpdateManifest, error) {
+func (c *delayedClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel, format string) (*UpdateManifest, error) {
 	if c.onStart != nil {
 		c.onStart()
 	}
@@ -732,7 +732,7 @@ type downloadClient struct {
 	payload  []byte
 }
 
-func (c *downloadClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel string) (*UpdateManifest, error) {
+func (c *downloadClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel, format string) (*UpdateManifest, error) {
 	return c.manifest, nil
 }
 

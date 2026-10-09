@@ -14,6 +14,7 @@ import (
 	"time"
 
 	pmsettings "printmaster/common/settings"
+	"printmaster/common/updatepolicy"
 )
 
 // ErrOwnershipConflict means a machine write does not match the existing owner.
@@ -3686,7 +3687,23 @@ func (s *BaseStore) ListFleetUpdatePolicies(ctx context.Context) ([]*FleetUpdate
 // Release Artifact Methods
 // ============================================================================
 
-// UpsertReleaseArtifact stores or updates metadata for a cached release artifact
+// releaseArtifactColumns is the canonical SELECT list for scanReleaseArtifact.
+const releaseArtifactColumns = `id, component, version, platform, arch, format, channel, source_url,
+		       cache_path, sha256, size_bytes, release_notes, published_at,
+		       downloaded_at, created_at, updated_at`
+
+// normalizeReleaseFormat maps an artifact format to its stored value. Empty
+// means binary for compatibility with callers that predate formats.
+func normalizeReleaseFormat(raw string) (string, error) {
+	format, ok := updatepolicy.ParseArtifactFormat(raw)
+	if !ok {
+		return "", fmt.Errorf("unsupported release artifact format %q", raw)
+	}
+	return format.String(), nil
+}
+
+// UpsertReleaseArtifact stores or updates metadata for a cached release artifact.
+// The conflict key includes format so a release's raw binary and MSI coexist.
 func (s *BaseStore) UpsertReleaseArtifact(ctx context.Context, artifact *ReleaseArtifact) error {
 	if artifact == nil {
 		return fmt.Errorf("artifact cannot be nil")
@@ -3694,6 +3711,11 @@ func (s *BaseStore) UpsertReleaseArtifact(ctx context.Context, artifact *Release
 	if artifact.Component == "" || artifact.Version == "" || artifact.Platform == "" || artifact.Arch == "" {
 		return fmt.Errorf("artifact missing required identity fields")
 	}
+	format, err := normalizeReleaseFormat(artifact.Format)
+	if err != nil {
+		return err
+	}
+	artifact.Format = format
 	if artifact.Channel == "" {
 		artifact.Channel = "stable"
 	}
@@ -3706,13 +3728,13 @@ func (s *BaseStore) UpsertReleaseArtifact(ctx context.Context, artifact *Release
 		artifact.CreatedAt = artifact.UpdatedAt
 	}
 
-	_, err := s.execContext(ctx, `
+	_, err = s.execContext(ctx, `
 		INSERT INTO release_artifacts (
-			component, version, platform, arch, channel, source_url,
+			component, version, platform, arch, format, channel, source_url,
 			cache_path, sha256, size_bytes, release_notes, published_at,
 			downloaded_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(component, version, platform, arch) DO UPDATE SET
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(component, version, platform, arch, format) DO UPDATE SET
 			channel = excluded.channel,
 			source_url = excluded.source_url,
 			cache_path = excluded.cache_path,
@@ -3723,30 +3745,31 @@ func (s *BaseStore) UpsertReleaseArtifact(ctx context.Context, artifact *Release
 			downloaded_at = excluded.downloaded_at,
 			updated_at = excluded.updated_at
 	`,
-		artifact.Component, artifact.Version, artifact.Platform, artifact.Arch, artifact.Channel, artifact.SourceURL,
+		artifact.Component, artifact.Version, artifact.Platform, artifact.Arch, artifact.Format, artifact.Channel, artifact.SourceURL,
 		nullString(artifact.CachePath), nullString(artifact.SHA256), artifact.SizeBytes, nullString(artifact.ReleaseNotes),
 		nullTime(artifact.PublishedAt), nullTime(artifact.DownloadedAt), artifact.CreatedAt, artifact.UpdatedAt)
 	return err
 }
 
-// GetReleaseArtifact returns the cached artifact metadata for the requested tuple
-func (s *BaseStore) GetReleaseArtifact(ctx context.Context, component, version, platform, arch string) (*ReleaseArtifact, error) {
+// GetReleaseArtifact returns the cached artifact metadata for the requested
+// tuple. An empty format selects the standalone binary.
+func (s *BaseStore) GetReleaseArtifact(ctx context.Context, component, version, platform, arch, format string) (*ReleaseArtifact, error) {
+	normalized, err := normalizeReleaseFormat(format)
+	if err != nil {
+		return nil, err
+	}
 	row := s.queryRowContext(ctx, `
-		SELECT id, component, version, platform, arch, channel, source_url,
-		       cache_path, sha256, size_bytes, release_notes, published_at,
-		       downloaded_at, created_at, updated_at
+		SELECT `+releaseArtifactColumns+`
 		FROM release_artifacts
-		WHERE component = ? AND version = ? AND platform = ? AND arch = ?
-	`, component, version, platform, arch)
-	return s.scanReleaseArtifact(row)
+		WHERE component = ? AND version = ? AND platform = ? AND arch = ? AND format = ?
+	`, component, version, platform, arch, normalized)
+	return scanReleaseArtifact(row)
 }
 
 // ListReleaseArtifacts lists cached artifacts for a component ordered by publish date
 func (s *BaseStore) ListReleaseArtifacts(ctx context.Context, component string, limit int) ([]*ReleaseArtifact, error) {
 	query := `
-		SELECT id, component, version, platform, arch, channel, source_url,
-		       cache_path, sha256, size_bytes, release_notes, published_at,
-		       downloaded_at, created_at, updated_at
+		SELECT ` + releaseArtifactColumns + `
 		FROM release_artifacts
 		WHERE (? = '' OR component = ?)
 		ORDER BY published_at DESC, created_at DESC
@@ -3762,122 +3785,45 @@ func (s *BaseStore) ListReleaseArtifacts(ctx context.Context, component string, 
 		return nil, err
 	}
 	defer rows.Close()
+	return collectReleaseArtifacts(rows)
+}
 
+func scanReleaseArtifact(row rowScanner) (*ReleaseArtifact, error) {
+	var (
+		artifact     ReleaseArtifact
+		cachePath    sql.NullString
+		sha          sql.NullString
+		releaseNotes sql.NullString
+		publishedAt  sql.NullTime
+		downloadedAt sql.NullTime
+	)
+	if err := row.Scan(&artifact.ID, &artifact.Component, &artifact.Version, &artifact.Platform, &artifact.Arch,
+		&artifact.Format, &artifact.Channel, &artifact.SourceURL, &cachePath, &sha, &artifact.SizeBytes,
+		&releaseNotes, &publishedAt, &downloadedAt, &artifact.CreatedAt, &artifact.UpdatedAt); err != nil {
+		return nil, err
+	}
+	artifact.CachePath = cachePath.String
+	artifact.SHA256 = sha.String
+	artifact.ReleaseNotes = releaseNotes.String
+	if publishedAt.Valid {
+		artifact.PublishedAt = publishedAt.Time
+	}
+	if downloadedAt.Valid {
+		artifact.DownloadedAt = downloadedAt.Time
+	}
+	return &artifact, nil
+}
+
+func collectReleaseArtifacts(rows *sql.Rows) ([]*ReleaseArtifact, error) {
 	var artifacts []*ReleaseArtifact
 	for rows.Next() {
-		artifact, serr := s.scanReleaseArtifactRow(rows)
-		if serr != nil {
-			return nil, serr
+		artifact, err := scanReleaseArtifact(rows)
+		if err != nil {
+			return nil, err
 		}
 		artifacts = append(artifacts, artifact)
 	}
 	return artifacts, rows.Err()
-}
-
-func (s *BaseStore) scanReleaseArtifact(row *sql.Row) (*ReleaseArtifact, error) {
-	var (
-		id                   int64
-		component            string
-		version              string
-		platform             string
-		arch                 string
-		channel              string
-		sourceURL            string
-		cachePath            sql.NullString
-		sha                  sql.NullString
-		sizeBytes            int64
-		releaseNotes         sql.NullString
-		publishedAt          sql.NullTime
-		downloadedAt         sql.NullTime
-		createdAt, updatedAt time.Time
-	)
-
-	if err := row.Scan(&id, &component, &version, &platform, &arch, &channel, &sourceURL,
-		&cachePath, &sha, &sizeBytes, &releaseNotes, &publishedAt, &downloadedAt, &createdAt, &updatedAt); err != nil {
-		return nil, err
-	}
-
-	artifact := &ReleaseArtifact{
-		ID:        id,
-		Component: component,
-		Version:   version,
-		Platform:  platform,
-		Arch:      arch,
-		Channel:   channel,
-		SourceURL: sourceURL,
-		SizeBytes: sizeBytes,
-		CreatedAt: createdAt,
-		UpdatedAt: updatedAt,
-	}
-	if cachePath.Valid {
-		artifact.CachePath = cachePath.String
-	}
-	if sha.Valid {
-		artifact.SHA256 = sha.String
-	}
-	if releaseNotes.Valid {
-		artifact.ReleaseNotes = releaseNotes.String
-	}
-	if publishedAt.Valid {
-		artifact.PublishedAt = publishedAt.Time
-	}
-	if downloadedAt.Valid {
-		artifact.DownloadedAt = downloadedAt.Time
-	}
-	return artifact, nil
-}
-
-func (s *BaseStore) scanReleaseArtifactRow(rows *sql.Rows) (*ReleaseArtifact, error) {
-	var (
-		id                   int64
-		component            string
-		version              string
-		platform             string
-		arch                 string
-		channel              string
-		sourceURL            string
-		cachePath            sql.NullString
-		sha                  sql.NullString
-		sizeBytes            int64
-		releaseNotes         sql.NullString
-		publishedAt          sql.NullTime
-		downloadedAt         sql.NullTime
-		createdAt, updatedAt time.Time
-	)
-
-	if err := rows.Scan(&id, &component, &version, &platform, &arch, &channel, &sourceURL,
-		&cachePath, &sha, &sizeBytes, &releaseNotes, &publishedAt, &downloadedAt, &createdAt, &updatedAt); err != nil {
-		return nil, err
-	}
-
-	artifact := &ReleaseArtifact{
-		ID:        id,
-		Component: component,
-		Version:   version,
-		Platform:  platform,
-		Arch:      arch,
-		Channel:   channel,
-		SourceURL: sourceURL,
-		SizeBytes: sizeBytes,
-		CreatedAt: createdAt,
-		UpdatedAt: updatedAt,
-	}
-	if cachePath.Valid {
-		artifact.CachePath = cachePath.String
-	}
-	if sha.Valid {
-		artifact.SHA256 = sha.String
-	}
-	if releaseNotes.Valid {
-		artifact.ReleaseNotes = releaseNotes.String
-	}
-	if publishedAt.Valid {
-		artifact.PublishedAt = publishedAt.Time
-	}
-	if downloadedAt.Valid {
-		artifact.DownloadedAt = downloadedAt.Time
-	}
-	return artifact, nil
 }
 
 // DeleteReleaseArtifact removes an artifact by id
@@ -3894,27 +3840,9 @@ func (s *BaseStore) ListArtifactsForPruning(ctx context.Context, component strin
 		return nil, nil // No pruning when retention is disabled
 	}
 
-	// Strategy: find distinct versions per component ordered by published_at DESC,
-	// skip the first keepVersions, then return all artifacts for remaining versions.
-	// Using a subquery to get versions to keep, then exclude them.
+	// Keep the newest keepVersions distinct versions (by publish, then cache time)
+	// and return every artifact, of any format, that belongs to an older version.
 	query := `
-		WITH versions_to_keep AS (
-			SELECT DISTINCT version
-			FROM release_artifacts
-			WHERE component = ?
-			ORDER BY MAX(published_at) DESC, MAX(created_at) DESC
-			LIMIT ?
-		)
-		SELECT id, component, version, platform, arch, channel, source_url,
-		       cache_path, sha256, size_bytes, release_notes, published_at,
-		       downloaded_at, created_at, updated_at
-		FROM release_artifacts
-		WHERE component = ? AND version NOT IN (SELECT version FROM versions_to_keep)
-		ORDER BY published_at ASC
-	`
-
-	// The CTE with GROUP BY for proper ordering
-	query = `
 		WITH ranked_versions AS (
 			SELECT version, MAX(published_at) as max_pub, MAX(created_at) as max_created
 			FROM release_artifacts
@@ -3923,9 +3851,7 @@ func (s *BaseStore) ListArtifactsForPruning(ctx context.Context, component strin
 			ORDER BY max_pub DESC, max_created DESC
 			LIMIT ?
 		)
-		SELECT id, component, version, platform, arch, channel, source_url,
-		       cache_path, sha256, size_bytes, release_notes, published_at,
-		       downloaded_at, created_at, updated_at
+		SELECT ` + releaseArtifactColumns + `
 		FROM release_artifacts
 		WHERE component = ? AND version NOT IN (SELECT version FROM ranked_versions)
 		ORDER BY published_at ASC
@@ -3936,16 +3862,7 @@ func (s *BaseStore) ListArtifactsForPruning(ctx context.Context, component strin
 		return nil, err
 	}
 	defer rows.Close()
-
-	var artifacts []*ReleaseArtifact
-	for rows.Next() {
-		artifact, serr := s.scanReleaseArtifactRow(rows)
-		if serr != nil {
-			return nil, serr
-		}
-		artifacts = append(artifacts, artifact)
-	}
-	return artifacts, rows.Err()
+	return collectReleaseArtifacts(rows)
 }
 
 // ============================================================================
@@ -4120,7 +4037,13 @@ func (s *BaseStore) scanSigningKeyRow(rows *sql.Rows) (*SigningKey, error) {
 // Release Manifest Methods
 // ============================================================================
 
-// UpsertReleaseManifest stores the signed manifest for an artifact tuple
+// releaseManifestColumns is the canonical SELECT list for scanReleaseManifest.
+const releaseManifestColumns = `id, component, version, platform, arch, format, channel,
+		       manifest_version, manifest_json, signature, signing_key_id,
+		       generated_at, created_at, updated_at`
+
+// UpsertReleaseManifest stores the signed manifest for an artifact tuple,
+// keyed like release_artifacts (including format).
 func (s *BaseStore) UpsertReleaseManifest(ctx context.Context, manifest *ReleaseManifest) error {
 	if manifest == nil {
 		return fmt.Errorf("manifest cannot be nil")
@@ -4128,6 +4051,11 @@ func (s *BaseStore) UpsertReleaseManifest(ctx context.Context, manifest *Release
 	if manifest.Component == "" || manifest.Version == "" || manifest.Platform == "" || manifest.Arch == "" {
 		return fmt.Errorf("manifest identity incomplete")
 	}
+	format, err := normalizeReleaseFormat(manifest.Format)
+	if err != nil {
+		return err
+	}
+	manifest.Format = format
 	if manifest.Channel == "" {
 		manifest.Channel = "stable"
 	}
@@ -4146,13 +4074,13 @@ func (s *BaseStore) UpsertReleaseManifest(ctx context.Context, manifest *Release
 		manifest.GeneratedAt = manifest.UpdatedAt
 	}
 
-	_, err := s.execContext(ctx, `
+	_, err = s.execContext(ctx, `
 		INSERT INTO release_manifests (
-			component, version, platform, arch, channel,
+			component, version, platform, arch, format, channel,
 			manifest_version, manifest_json, signature, signing_key_id,
 			generated_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(component, version, platform, arch) DO UPDATE SET
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(component, version, platform, arch, format) DO UPDATE SET
 			channel = excluded.channel,
 			manifest_version = excluded.manifest_version,
 			manifest_json = excluded.manifest_json,
@@ -4161,30 +4089,31 @@ func (s *BaseStore) UpsertReleaseManifest(ctx context.Context, manifest *Release
 			generated_at = excluded.generated_at,
 			updated_at = excluded.updated_at
 	`,
-		manifest.Component, manifest.Version, manifest.Platform, manifest.Arch, manifest.Channel,
+		manifest.Component, manifest.Version, manifest.Platform, manifest.Arch, manifest.Format, manifest.Channel,
 		manifest.ManifestVersion, manifest.ManifestJSON, manifest.Signature, manifest.SigningKeyID,
 		manifest.GeneratedAt, manifest.CreatedAt, manifest.UpdatedAt)
 	return err
 }
 
-// GetReleaseManifest fetches the manifest envelope for the given artifact tuple
-func (s *BaseStore) GetReleaseManifest(ctx context.Context, component, version, platform, arch string) (*ReleaseManifest, error) {
+// GetReleaseManifest fetches the manifest envelope for the given artifact
+// tuple. An empty format selects the standalone binary.
+func (s *BaseStore) GetReleaseManifest(ctx context.Context, component, version, platform, arch, format string) (*ReleaseManifest, error) {
+	normalized, err := normalizeReleaseFormat(format)
+	if err != nil {
+		return nil, err
+	}
 	row := s.queryRowContext(ctx, `
-		SELECT id, component, version, platform, arch, channel,
-		       manifest_version, manifest_json, signature, signing_key_id,
-		       generated_at, created_at, updated_at
+		SELECT `+releaseManifestColumns+`
 		FROM release_manifests
-		WHERE component = ? AND version = ? AND platform = ? AND arch = ?
-	`, component, version, platform, arch)
-	return s.scanReleaseManifest(row)
+		WHERE component = ? AND version = ? AND platform = ? AND arch = ? AND format = ?
+	`, component, version, platform, arch, normalized)
+	return scanReleaseManifest(row)
 }
 
 // ListReleaseManifests enumerates manifests optionally filtered by component
 func (s *BaseStore) ListReleaseManifests(ctx context.Context, component string, limit int) ([]*ReleaseManifest, error) {
 	query := `
-		SELECT id, component, version, platform, arch, channel,
-		       manifest_version, manifest_json, signature, signing_key_id,
-		       generated_at, created_at, updated_at
+		SELECT ` + releaseManifestColumns + `
 		FROM release_manifests
 		WHERE (? = '' OR component = ?)
 		ORDER BY generated_at DESC, version DESC
@@ -4203,7 +4132,7 @@ func (s *BaseStore) ListReleaseManifests(ctx context.Context, component string, 
 
 	var manifests []*ReleaseManifest
 	for rows.Next() {
-		manifest, serr := s.scanReleaseManifestRow(rows)
+		manifest, serr := scanReleaseManifest(rows)
 		if serr != nil {
 			return nil, serr
 		}
@@ -4212,80 +4141,15 @@ func (s *BaseStore) ListReleaseManifests(ctx context.Context, component string, 
 	return manifests, rows.Err()
 }
 
-func (s *BaseStore) scanReleaseManifest(row *sql.Row) (*ReleaseManifest, error) {
-	var (
-		id              int64
-		component       string
-		version         string
-		platform        string
-		arch            string
-		channel         string
-		manifestVersion string
-		manifestJSON    string
-		signature       string
-		signingKeyID    string
-		generatedAt     time.Time
-		createdAt       time.Time
-		updatedAt       time.Time
-	)
-	if err := row.Scan(&id, &component, &version, &platform, &arch, &channel,
-		&manifestVersion, &manifestJSON, &signature, &signingKeyID,
-		&generatedAt, &createdAt, &updatedAt); err != nil {
+func scanReleaseManifest(row rowScanner) (*ReleaseManifest, error) {
+	var manifest ReleaseManifest
+	if err := row.Scan(&manifest.ID, &manifest.Component, &manifest.Version, &manifest.Platform, &manifest.Arch,
+		&manifest.Format, &manifest.Channel, &manifest.ManifestVersion, &manifest.ManifestJSON,
+		&manifest.Signature, &manifest.SigningKeyID, &manifest.GeneratedAt, &manifest.CreatedAt,
+		&manifest.UpdatedAt); err != nil {
 		return nil, err
 	}
-	return &ReleaseManifest{
-		ID:              id,
-		Component:       component,
-		Version:         version,
-		Platform:        platform,
-		Arch:            arch,
-		Channel:         channel,
-		ManifestVersion: manifestVersion,
-		ManifestJSON:    manifestJSON,
-		Signature:       signature,
-		SigningKeyID:    signingKeyID,
-		GeneratedAt:     generatedAt,
-		CreatedAt:       createdAt,
-		UpdatedAt:       updatedAt,
-	}, nil
-}
-
-func (s *BaseStore) scanReleaseManifestRow(rows *sql.Rows) (*ReleaseManifest, error) {
-	var (
-		id              int64
-		component       string
-		version         string
-		platform        string
-		arch            string
-		channel         string
-		manifestVersion string
-		manifestJSON    string
-		signature       string
-		signingKeyID    string
-		generatedAt     time.Time
-		createdAt       time.Time
-		updatedAt       time.Time
-	)
-	if err := rows.Scan(&id, &component, &version, &platform, &arch, &channel,
-		&manifestVersion, &manifestJSON, &signature, &signingKeyID,
-		&generatedAt, &createdAt, &updatedAt); err != nil {
-		return nil, err
-	}
-	return &ReleaseManifest{
-		ID:              id,
-		Component:       component,
-		Version:         version,
-		Platform:        platform,
-		Arch:            arch,
-		Channel:         channel,
-		ManifestVersion: manifestVersion,
-		ManifestJSON:    manifestJSON,
-		Signature:       signature,
-		SigningKeyID:    signingKeyID,
-		GeneratedAt:     generatedAt,
-		CreatedAt:       createdAt,
-		UpdatedAt:       updatedAt,
-	}, nil
+	return &manifest, nil
 }
 
 // ============================================================================

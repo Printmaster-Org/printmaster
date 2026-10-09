@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"printmaster/common/updatepolicy"
 	authz "printmaster/server/authz"
 	"printmaster/server/storage"
 )
@@ -26,7 +27,7 @@ type manifestService interface {
 	RotateSigningKey(ctx context.Context, notes string) (*storage.SigningKey, error)
 	RegenerateManifests(ctx context.Context) (int, error)
 	ListManifests(ctx context.Context, component string, limit int) ([]*storage.ReleaseManifest, error)
-	GetManifest(ctx context.Context, component, version, platform, arch string) (*storage.ReleaseManifest, error)
+	GetManifest(ctx context.Context, component, version, platform, arch, format string) (*storage.ReleaseManifest, error)
 }
 
 // API exposes administrative release/signing endpoints.
@@ -148,9 +149,15 @@ func (api *API) handleManifests(w http.ResponseWriter, r *http.Request) {
 	version := strings.TrimSpace(q.Get("version"))
 	platform := strings.TrimSpace(q.Get("platform"))
 	arch := strings.TrimSpace(q.Get("arch"))
+	// format selects binary (default) or msi when both exist for a platform.
+	format, ok := updatepolicy.ParseArtifactFormat(q.Get("format"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, "unsupported artifact format")
+		return
+	}
 
 	if component != "" && version != "" && platform != "" && arch != "" {
-		manifest, err := api.manager.GetManifest(r.Context(), component, version, platform, arch)
+		manifest, err := api.manager.GetManifest(r.Context(), component, version, platform, arch, format.String())
 		if err != nil {
 			status := http.StatusInternalServerError
 			if errors.Is(err, sql.ErrNoRows) {
@@ -217,6 +224,7 @@ type manifestResponse struct {
 	Version      string          `json:"version"`
 	Platform     string          `json:"platform"`
 	Arch         string          `json:"arch"`
+	Format       string          `json:"format"`
 	Channel      string          `json:"channel"`
 	Manifest     json.RawMessage `json:"manifest"`
 	Signature    string          `json:"signature"`
@@ -247,6 +255,7 @@ func manifestResponseFrom(manifest *storage.ReleaseManifest) manifestResponse {
 		Version:      manifest.Version,
 		Platform:     manifest.Platform,
 		Arch:         manifest.Arch,
+		Format:       manifest.Format,
 		Channel:      manifest.Channel,
 		Manifest:     payload,
 		Signature:    manifest.Signature,

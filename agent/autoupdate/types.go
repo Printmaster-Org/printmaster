@@ -67,20 +67,23 @@ type ManagerStatus struct {
 
 // UpdateManifest mirrors the server's signed manifest payload.
 type UpdateManifest struct {
-	ManifestVersion string    `json:"manifest_version"`
-	Component       string    `json:"component"`
-	Version         string    `json:"version"`
-	MinorLine       string    `json:"minor_line"`
-	Platform        string    `json:"platform"`
-	Arch            string    `json:"arch"`
-	Channel         string    `json:"channel"`
-	SHA256          string    `json:"sha256"`
-	SizeBytes       int64     `json:"size_bytes"`
-	SourceURL       string    `json:"source_url"`
-	DownloadURL     string    `json:"download_url,omitempty"`
-	PublishedAt     time.Time `json:"published_at,omitempty"`
-	GeneratedAt     time.Time `json:"generated_at"`
-	Signature       string    `json:"signature,omitempty"`
+	ManifestVersion string `json:"manifest_version"`
+	Component       string `json:"component"`
+	Version         string `json:"version"`
+	MinorLine       string `json:"minor_line"`
+	Platform        string `json:"platform"`
+	Arch            string `json:"arch"`
+	// Format is the artifact packaging: "binary" or "msi". Servers that
+	// predate formats omit it, which means binary.
+	Format      string    `json:"format,omitempty"`
+	Channel     string    `json:"channel"`
+	SHA256      string    `json:"sha256"`
+	SizeBytes   int64     `json:"size_bytes"`
+	SourceURL   string    `json:"source_url"`
+	DownloadURL string    `json:"download_url,omitempty"`
+	PublishedAt time.Time `json:"published_at,omitempty"`
+	GeneratedAt time.Time `json:"generated_at"`
+	Signature   string    `json:"signature,omitempty"`
 }
 
 // CheckResult captures the outcome of an update availability check.

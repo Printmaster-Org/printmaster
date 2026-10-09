@@ -6571,16 +6571,19 @@ function renderReleaseArtifacts(container, artifacts, isContainer = false) {
         return `<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;background:${color}20;color:${color};">${component}</span>`;
     };
 
-    const platformArchBadge = (platform, arch, cached) => {
+    // Windows releases cache both the raw .exe and the .msi for the same
+    // platform/arch, so non-binary formats get a suffix to tell them apart.
+    const platformArchBadge = (platform, arch, cached, format) => {
         const platformAbbr = {
             'windows': 'Win',
             'linux': 'Linux',
             'darwin': 'macOS'
         };
         const label = platformAbbr[platform] || platform;
+        const formatSuffix = format && format !== 'binary' ? ` ${String(format).toUpperCase()}` : '';
         const cachedStyle = cached ? 'color:var(--text);' : 'color:var(--muted);opacity:0.6;';
-        const title = cached ? `${platform}/${arch} - Cached` : `${platform}/${arch} - Not cached`;
-        return `<span style="display:inline-block;padding:2px 6px;border-radius:4px;font-size:11px;margin-right:4px;background:var(--bg-secondary);${cachedStyle}" title="${title}">${label}/${arch}</span>`;
+        const title = `${platform}/${arch}${formatSuffix ? ` (${format})` : ''} - ${cached ? 'Cached' : 'Not cached'}`;
+        return `<span style="display:inline-block;padding:2px 6px;border-radius:4px;font-size:11px;margin-right:4px;background:var(--bg-secondary);${cachedStyle}" title="${escapeHtml(title)}">${escapeHtml(`${label}/${arch}${formatSuffix}`)}</span>`;
     };
 
     // Group artifacts by component, version, and channel
@@ -6599,6 +6602,7 @@ function renderReleaseArtifacts(container, artifacts, isContainer = false) {
         grouped[key].platforms.push({
             platform: a.platform,
             arch: a.arch,
+            format: a.format || 'binary',
             cached: a.cached,
             size_bytes: a.size_bytes
         });
@@ -6634,10 +6638,11 @@ function renderReleaseArtifacts(container, artifacts, isContainer = false) {
             if (pA !== pB) return pA - pB;
             const aA = archOrder.indexOf(a.arch);
             const aB = archOrder.indexOf(b.arch);
-            return aA - aB;
+            if (aA !== aB) return aA - aB;
+            return a.format.localeCompare(b.format);
         });
 
-        const platformBadges = sortedPlatforms.map(p => platformArchBadge(p.platform, p.arch, p.cached)).join('');
+        const platformBadges = sortedPlatforms.map(p => platformArchBadge(p.platform, p.arch, p.cached, p.format)).join('');
 
         return `
             <tr>

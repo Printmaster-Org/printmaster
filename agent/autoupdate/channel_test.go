@@ -11,7 +11,7 @@ type channelTestClient struct {
 	channel string
 }
 
-func (c *channelTestClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel string) (*UpdateManifest, error) {
+func (c *channelTestClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel, format string) (*UpdateManifest, error) {
 	c.channel = channel
 	return c.manifest, c.err
 }
