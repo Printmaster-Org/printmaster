@@ -19,7 +19,7 @@ func GetPlatformInfo() string {
 // GetOSVersionDetailed returns the detailed OS version string.
 // This is what goes in the os_version field.
 func GetOSVersionDetailed() string {
-	return getPlatformDetailed()
+	return getOSVersionDetailed()
 }
 
 // normalizePlatformName converts runtime.GOOS to a human-friendly display name.

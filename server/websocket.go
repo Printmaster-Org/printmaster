@@ -394,6 +394,12 @@ func handleWSHeartbeat(conn *wscommon.Conn, agent *storage.Agent, msg wscommon.M
 		GitCommit:       wsStringField(msg.Data, "git_commit"),
 		DeviceCount:     deviceCount,
 	}
+	if value, ok := msg.Data["num_cpu"].(float64); ok {
+		hbData.NumCPU = int(value)
+	}
+	if value, ok := msg.Data["total_memory_mb"].(float64); ok {
+		hbData.TotalMemoryMB = int64(value)
+	}
 
 	// Use timeout context to prevent database operations from hanging indefinitely
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

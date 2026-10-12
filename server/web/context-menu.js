@@ -205,7 +205,8 @@
 
             // Handle click (skip for disabled items)
             if (!isDisabled) {
-                menuItem.addEventListener('click', () => {
+                menuItem.addEventListener('click', event => {
+                    event.stopPropagation();
                     handleMenuAction(item.action, context);
                     closeContextMenu();
                 });
@@ -306,7 +307,7 @@
 
             case 'update-agent':
                 if (shared.updateAgent) {
-                    shared.updateAgent(context.agentId);
+                    shared.updateAgent(context.agentId, { chooseChannel: true });
                 }
                 break;
 

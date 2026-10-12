@@ -124,6 +124,56 @@ func TestAgentLifecycle(t *testing.T) {
 	}
 }
 
+func TestAgentHeartbeatPreservesOmittedMetadata(t *testing.T) {
+	t.Parallel()
+	s, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	original := &Agent{
+		AgentID: "partial-heartbeat", Token: "partial-heartbeat-token", Name: "Custom name", Hostname: "PC",
+		IP: "192.0.2.10", Platform: "Windows 11 (24H2)", OSVersion: "Windows 11 (24H2) (build 26100)",
+		Version: "0.32.0-beta.2", ProtocolVersion: "1", GoVersion: "go1.27.0",
+		Architecture: "amd64", NumCPU: 8, TotalMemoryMB: 16384,
+		BuildType: "beta", GitCommit: "abc123", Status: "active",
+	}
+	if err := s.RegisterAgent(ctx, original); err != nil {
+		t.Fatal(err)
+	}
+	update := (&HeartbeatData{Status: "active", Version: "0.32.0-beta.3"}).BuildAgentUpdate(original.AgentID)
+	if err := s.UpdateAgentInfo(ctx, update); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetAgent(ctx, original.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Version != "0.32.0-beta.3" || got.OSVersion != original.OSVersion ||
+		got.Platform != original.Platform || got.IP != original.IP || got.Hostname != original.Hostname ||
+		got.Architecture != original.Architecture || got.GoVersion != original.GoVersion ||
+		got.NumCPU != original.NumCPU || got.TotalMemoryMB != original.TotalMemoryMB ||
+		got.BuildType != original.BuildType || got.GitCommit != original.GitCommit ||
+		got.Name != original.Name || got.ProtocolVersion != original.ProtocolVersion {
+		t.Fatalf("partial heartbeat erased metadata: %+v", got)
+	}
+	update = (&HeartbeatData{NumCPU: 12, TotalMemoryMB: 32768}).BuildAgentUpdate(original.AgentID)
+	if update == nil {
+		t.Fatal("hardware-only heartbeat should update metadata")
+	}
+	if err := s.UpdateAgentInfo(ctx, update); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.GetAgent(ctx, original.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.NumCPU != 12 || got.TotalMemoryMB != 32768 || got.OSVersion != original.OSVersion {
+		t.Fatalf("hardware update failed: %+v", got)
+	}
+}
+
 func TestAgentNotFound(t *testing.T) {
 	t.Parallel()
 	s, err := NewSQLiteStore(":memory:")

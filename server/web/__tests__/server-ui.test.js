@@ -21,7 +21,7 @@ function setup(names, globals = {}) {
     const context = vm.createContext({
         document: dom.window.document,
         window: { __pm_shared: { error: jest.fn() } },
-        console: { error: jest.fn() },
+        console: { error: jest.fn(), warn: jest.fn() },
         TypeError,
         ...globals,
     });
@@ -50,6 +50,77 @@ describe('Server device details ownership', () => {
         expect(device.toner_levels).toEqual({ toner_black: 25 });
         expect(device.raw_data.raw_data.toner_desc_black).toBe('Black Ink ABC');
         expect(options).toMatchObject({ server: true, deleteDevice });
+    });
+});
+
+describe('Agent details and update entry points', () => {
+    const escapeHtml = value => String(value).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+
+    test('details show reported Windows build, safe text, enrollment age, and collapsed diagnostics', () => {
+        const attachName = jest.fn();
+        const attachUpdate = jest.fn();
+        const { context, document } = setup(['getAgentPlatformLabel', 'renderAgentDetailsModal'], {
+            escapeHtml, getAgentDisplayName: agent => agent.name,
+            _attachAgentDetailsNameEditor: attachName, _attachAgentUpdateHandler: attachUpdate,
+        });
+        const agent = {
+            agent_id: 'agent-1', name: '<img src=x onerror=alert(1)>', hostname: 'PC',
+            platform: 'windows', os_version: 'Windows 11 (24H2) (build 26100)',
+            status: 'active', connection_type: 'ws', version: '0.32.0-beta.2',
+            registered_at: new Date(Date.now() - 3 * 86400000).toISOString(),
+        };
+        context.renderAgentDetailsModal(agent);
+        const body = document.getElementById('agent_details_body');
+        expect(body.textContent).toContain('Windows 11 (24H2) (build 26100)');
+        expect(body.textContent).toContain(agent.name);
+        expect(body.querySelector('img')).toBeNull();
+        expect(body.textContent).toContain('Enrolled');
+        expect(body.textContent).not.toContain('Uptime');
+        expect(body.querySelector('details').open).toBe(false);
+        expect(body.querySelector('.agent-details-overview #agent_check_update_btn').disabled).toBe(false);
+        expect(attachName).toHaveBeenCalledWith(agent);
+        expect(attachUpdate).toHaveBeenCalledWith(agent);
+    });
+
+    test('offline agents have disabled commands and missing metadata is explicit', () => {
+        const { context, document } = setup(['getAgentPlatformLabel', 'renderAgentDetailsModal'], {
+            escapeHtml, getAgentDisplayName: () => 'Offline PC',
+            _attachAgentDetailsNameEditor: jest.fn(), _attachAgentUpdateHandler: jest.fn(),
+        });
+        context.renderAgentDetailsModal({ agent_id: 'agent-1', platform: 'windows', status: 'offline' });
+        expect(document.getElementById('agent_details_body').textContent).toContain('Not reported by agent');
+        expect(document.getElementById('agent_check_update_btn').disabled).toBe(true);
+        expect(document.getElementById('agent_force_update_btn').disabled).toBe(true);
+    });
+
+    test('inline update respects policy without a picker; context update asks once and sends selection', async () => {
+        const showAgentUpdateChannelConfirm = jest.fn().mockResolvedValue('beta');
+        const fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
+        const { context } = setup(['updateAgent'], {
+            showAgentUpdateChannelConfirm, fetch, agentsVM: { updateState: {}, latestVersion: '0.32.0' },
+            refreshAgentVersionCell: jest.fn(), startUpdateProgressAnimation: jest.fn(),
+        });
+        await context.updateAgent('agent-1');
+        expect(showAgentUpdateChannelConfirm).not.toHaveBeenCalled();
+        expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ command: 'check_update' });
+        await context.updateAgent('agent-1', { chooseChannel: true });
+        expect(showAgentUpdateChannelConfirm).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({
+            command: 'install_channel', data: { channel: 'beta', reason: 'server_ui_channel_install' },
+        });
+        showAgentUpdateChannelConfirm.mockResolvedValueOnce(null);
+        await context.updateAgent('agent-1', { chooseChannel: true });
+        expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
+    test('update picker focuses its select and Escape cancels without dispatch', async () => {
+        const { context, document } = setup(['showAgentUpdateChannelConfirm']);
+        const pending = context.showAgentUpdateChannelConfirm();
+        expect(document.activeElement.id).toBe('agent_update_channel');
+        const event = new document.defaultView.KeyboardEvent('keydown', { key: 'Escape', bubbles: true });
+        document.activeElement.dispatchEvent(event);
+        expect(await pending).toBeNull();
+        expect(document.getElementById('agent_update_channel')).toBeNull();
     });
 });
 

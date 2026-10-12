@@ -363,6 +363,7 @@ func (c *ServerClient) HeartbeatWithVersion(ctx context.Context, settingsVersion
 		OSVersion       string `json:"os_version,omitempty"`
 		GoVersion       string `json:"go_version,omitempty"`
 		Architecture    string `json:"architecture,omitempty"`
+		NumCPU          int    `json:"num_cpu,omitempty"`
 		BuildType       string `json:"build_type,omitempty"`
 		GitCommit       string `json:"git_commit,omitempty"`
 	}
@@ -374,6 +375,7 @@ func (c *ServerClient) HeartbeatWithVersion(ctx context.Context, settingsVersion
 	}
 
 	hostname, _ := os.Hostname()
+	localIP, _ := getLocalIP()
 
 	req := HeartbeatRequest{
 		AgentID:         c.AgentID,
@@ -381,9 +383,12 @@ func (c *ServerClient) HeartbeatWithVersion(ctx context.Context, settingsVersion
 		Status:          "active",
 		SettingsVersion: settingsVersion,
 		Hostname:        hostname,
-		Platform:        runtime.GOOS,
+		IP:              localIP,
+		Platform:        GetPlatformInfo(),
+		OSVersion:       GetOSVersionDetailed(),
 		Architecture:    runtime.GOARCH,
 		GoVersion:       runtime.Version(),
+		NumCPU:          runtime.NumCPU(),
 	}
 
 	// Include version info if provided

@@ -10788,7 +10788,7 @@ function renderAgentTable(agents) {
                 </td>
                 <td>${escapeHtml(tenantLabel)}</td>
                 <td>${renderAgentStatusBadge(meta)}</td>
-                <td>${escapeHtml(agent.platform || 'Unknown')}</td>
+                <td>${escapeHtml(getAgentPlatformLabel(agent))}</td>
                 <td>${renderAgentVersionCell(agent, true)}</td>
                 <td title="${escapeHtml(meta.lastSeenTooltip || 'Never')}">${escapeHtml(meta.lastSeenRelative || 'Never')}</td>
             </tr>
@@ -10827,7 +10827,7 @@ function renderAgentCard(agent) {
                 </div>
                 <div class="device-card-row">
                     <span class="device-card-label">Platform</span>
-                    <span class="device-card-value">${escapeHtml(agent.platform || 'Unknown')}</span>
+                    <span class="device-card-value">${escapeHtml(getAgentPlatformLabel(agent))}</span>
                 </div>
                 <div class="device-card-row">
                     <span class="device-card-label">Tenant</span>
@@ -11052,7 +11052,7 @@ function enrichSingleAgent(agent) {
             statusKey,
             statusLabel,
             versionLabel: agent.version || 'Unknown',
-            platformLabel: agent.platform || 'Unknown',
+            platformLabel: getAgentPlatformLabel(agent),
             lastSeenRelative: lastSeenDate ? formatRelativeTime(lastSeenDate) : 'Never',
             lastSeenTooltip: lastSeenDate ? lastSeenDate.toLocaleString() : 'Never',
             lastSeenMs: lastSeenDate ? lastSeenDate.getTime() : 0,
@@ -11336,6 +11336,13 @@ async function viewAgentDetails(agentId) {
     }
 }
 
+function getAgentPlatformLabel(agent) {
+    const platform = agent.platform || '';
+    return /^(windows|linux|darwin|macos|freebsd)$/i.test(platform)
+        ? (agent.os_version || platform)
+        : (platform || agent.os_version || 'Unknown');
+}
+
 function renderAgentDetailsModal(agent) {
     const title = document.getElementById('agent_details_title');
     const body = document.getElementById('agent_details_body');
@@ -11354,13 +11361,10 @@ function renderAgentDetailsModal(agent) {
         ? 'Commands are delivered instantly over the active WebSocket tunnel.'
         : 'Agent must be connected via WebSocket to receive remote commands.';
 
-    // Calculate uptime
-    let uptimeText = 'N/A';
-    if (registeredDate && lastSeenDate) {
-        const uptimeMs = lastSeenDate - registeredDate;
-        const days = Math.floor(uptimeMs / (1000 * 60 * 60 * 24));
-        const hours = Math.floor((uptimeMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-        uptimeText = `${days}d ${hours}h`;
+    let enrollmentText = 'Not reported';
+    if (registeredDate && Number.isFinite(registeredDate.getTime())) {
+        const days = Math.max(0, Math.floor((Date.now() - registeredDate.getTime()) / 86400000));
+        enrollmentText = days === 0 ? 'Today' : `${days} days ago`;
     }
 
     const statusColors = {
@@ -11369,8 +11373,27 @@ function renderAgentDetailsModal(agent) {
         'offline': 'var(--error)'
     };
     const statusColor = statusColors[agent.status] || 'var(--muted)';
+    const rawAgent = agent;
+    agent = Object.fromEntries(Object.entries(agent).map(([key, value]) =>
+        [key, typeof value === 'string' ? escapeHtml(value) : value]));
 
     body.innerHTML = `
+        <div class="agent-details-overview">
+            <div>
+                <span class="agent-details-status" style="color:${statusColor}">${agent.status || 'unknown'}</span>
+                <strong>${escapeHtml(getAgentPlatformLabel(rawAgent))}</strong>
+                <span class="muted-text">${agent.architecture || 'Architecture not reported'} &middot; Agent ${agent.version || 'version not reported'}</span>
+            </div>
+            <div class="agent-details-actions">
+                <button id="agent_check_update_btn" data-agent-id="${agent.agent_id}" ${commandDisabledAttr}>Check for Update</button>
+                <button id="agent_force_update_btn" data-agent-id="${agent.agent_id}" ${commandDisabledAttr}>Force Reinstall</button>
+                <button data-action="open-agent" data-agent-id="${agent.agent_id}" ${commandDisabledAttr}>Open Agent UI</button>
+            </div>
+            <div class="agent-update-feedback">
+                <div id="agent_update_hint" class="agent-update-hint${commandEnabled ? '' : ' error'}">${escapeHtml(commandHint)}</div>
+                <div id="agent_update_status" class="agent-update-status" role="status" aria-live="polite"></div>
+            </div>
+        </div>
         <div class="agent-details-grid">
             <!-- Basic Info -->
             <div class="panel">
@@ -11396,7 +11419,7 @@ function renderAgentDetailsModal(agent) {
                     <div class="device-card-row">
                         <span class="device-card-label">IP Address</span>
                         <span class="device-card-value copyable" data-copy="${agent.ip || ''}" title="Click to copy">
-                            ${agent.ip || 'N/A'}
+                            ${agent.ip || 'Not reported'}
                         </span>
                     </div>
                     <div class="device-card-row">
@@ -11414,14 +11437,14 @@ function renderAgentDetailsModal(agent) {
                 <div style="display:flex;flex-direction:column;gap:8px;font-size:13px;">
                     <div class="device-card-row">
                         <span class="device-card-label">Platform</span>
-                        <span class="device-card-value">${agent.platform || 'Unknown'}</span>
+                        <span class="device-card-value">${escapeHtml(getAgentPlatformLabel(rawAgent))}</span>
                     </div>
                     ${agent.os_version ? `
                     <div class="device-card-row">
                         <span class="device-card-label">OS Version</span>
                         <span class="device-card-value">${agent.os_version}</span>
                     </div>
-                    ` : ''}
+                    ` : `<div class="device-card-row"><span class="device-card-label">OS Version</span><span class="device-card-value muted-text">Not reported by agent</span></div>`}
                     ${agent.architecture ? `
                     <div class="device-card-row">
                         <span class="device-card-label">Architecture</span>
@@ -11507,8 +11530,8 @@ function renderAgentDetailsModal(agent) {
                     </div>
                     ` : ''}
                     <div class="device-card-row">
-                        <span class="device-card-label">Uptime</span>
-                        <span class="device-card-value">${uptimeText}</span>
+                        <span class="device-card-label">Enrolled</span>
+                        <span class="device-card-value">${enrollmentText}</span>
                     </div>
                 </div>
             </div>
@@ -11552,10 +11575,13 @@ function renderAgentDetailsModal(agent) {
         </div>
         
         <!-- WS Diagnostics -->
-        <div style="margin-top:16px;">
-            <div class="panel">
-                <h4 style="margin-top:0;color:var(--highlight);font-size:14px;">WebSocket Diagnostics</h4>
+        <details class="agent-details-diagnostics">
+                <summary>Connection diagnostics</summary>
                 <div style="display:flex;flex-direction:column;gap:8px;font-size:13px;">
+                    <div class="device-card-row">
+                        <span class="device-card-label">Transport</span>
+                        <span class="device-card-value">${connectionType === 'ws' ? 'WebSocket' : escapeHtml(connectionType || 'Not connected')}</span>
+                    </div>
                     <div class="device-card-row">
                         <span class="device-card-label">Ping Failures</span>
                         <span class="device-card-value">${agent.ws_ping_failures || 0}</span>
@@ -11566,29 +11592,12 @@ function renderAgentDetailsModal(agent) {
                     </div>
                     <div style="color:var(--muted);font-size:12px;">These counts are diagnostics from the server's WebSocket subsystem. They help indicate flaky connections or network issues.</div>
                 </div>
-            </div>
-        </div>
-        <!-- Action Buttons -->
-        <div style="margin-top: 20px; display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap;">
-            <button id="agent_check_update_btn" data-agent-id="${agent.agent_id}" ${commandDisabledAttr}>
-                Check for Update
-            </button>
-            <button id="agent_force_update_btn" data-agent-id="${agent.agent_id}" ${commandDisabledAttr}>
-                Force Reinstall
-            </button>
-            <button data-action="open-agent" data-agent-id="${agent.agent_id}" ${commandDisabledAttr}>
-                Open Agent UI
-            </button>
-        </div>
-        <div class="agent-update-feedback">
-            <div id="agent_update_hint" class="agent-update-hint${commandEnabled ? '' : ' error'}">${escapeHtml(commandHint)}</div>
-            <div id="agent_update_status" class="agent-update-status" role="status" aria-live="polite"></div>
-        </div>
+        </details>
     `;
     // Attach inline editor handlers now that DOM nodes are present
-    try { _attachAgentDetailsNameEditor(agent); } catch (e) { window.__pm_shared && window.__pm_shared.warn && window.__pm_shared.warn('attach editor failed', e); }
+    try { _attachAgentDetailsNameEditor(rawAgent); } catch (e) { window.__pm_shared && window.__pm_shared.warn && window.__pm_shared.warn('attach editor failed', e); }
     // Attach check for update handler
-    try { _attachAgentUpdateHandler(agent); } catch (e) { window.__pm_shared && window.__pm_shared.warn && window.__pm_shared.warn('attach update handler failed', e); }
+    try { _attachAgentUpdateHandler(rawAgent); } catch (e) { window.__pm_shared && window.__pm_shared.warn && window.__pm_shared.warn('attach update handler failed', e); }
 }
 
 // After rendering the agent details modal we attach a small inline handler
@@ -11606,7 +11615,7 @@ function _attachAgentDetailsNameEditor(agent) {
             // Create edit UI with proper mobile-friendly input styling
             // Use flex-start to prevent mobile cursor position bugs with flex-end
             displayEl.innerHTML = `<span style="display:flex;align-items:center;gap:6px;justify-content:flex-start;width:100%;">
-                <input id="agent_details_name_input" value="${(agent.name || '').replace(/"/g, '&quot;')}" 
+                <input id="agent_details_name_input" value="${escapeHtml(agent.name || '')}" aria-label="Agent name"
                     style="flex:1;min-width:120px;max-width:200px;text-align:left;direction:ltr;font-size:14px;padding:4px 8px;" 
                     autocomplete="off" data-1p-ignore data-lpignore="true" />
                 <button id="agent_details_save_name">Save</button>
@@ -12034,13 +12043,13 @@ async function cancelAgentUpdate(agentId) {
     }
 }
 
-async function updateAgent(agentId) {
+async function updateAgent(agentId, { chooseChannel = false } = {}) {
     if (!agentId) {
         window.__pm_shared.showToast('No agent ID provided', 'error');
         return;
     }
 
-    const channel = await showAgentUpdateChannelConfirm();
+    const channel = chooseChannel ? await showAgentUpdateChannelConfirm() : '';
     if (channel === null) return;
 
     // Set initial updating state
@@ -12114,31 +12123,67 @@ async function updateAgent(agentId) {
 
 function showAgentUpdateChannelConfirm() {
     return new Promise(resolve => {
+        const previousFocus = document.activeElement;
         const overlay = document.createElement('div');
         overlay.className = 'modal-overlay';
         overlay.style.display = 'flex';
         overlay.innerHTML = `
             <div class="modal-content" style="max-width:540px;" role="dialog" aria-modal="true" aria-labelledby="agent_update_channel_title">
-                <div class="modal-header"><h3 id="agent_update_channel_title">Update Agent</h3><button class="modal-close-x" title="Close">&times;</button></div>
+                <div class="modal-header"><h3 id="agent_update_channel_title">Update Agent</h3><button class="modal-close-x" title="Close" aria-label="Close update dialog">&times;</button></div>
                 <div class="modal-body">
-                    <label class="field"><span>Release channel</span><select id="agent_update_channel">
+                    <label class="field"><span>Release channel</span><select id="agent_update_channel" aria-describedby="agent_update_channel_hint">
                         <option value="">Configured channel (respect update policy)</option>
                         <option value="fleet">Force install Fleet channel (supports older Agents)</option>
                         <option value="stable">Stable</option>
                         <option value="beta">Beta</option>
                         <option value="dev">Dev</option>
                     </select></label>
-                    <p class="muted-text">An explicit channel installs its latest cached release for this Agent platform, even if this means reinstalling or downgrading. Maintenance windows and version pins are bypassed; scheduled channel settings stay unchanged.</p>
-                    <p class="muted-text">Set persistent Agent Update Channel under Fleet Settings → Agent Updates at global, customer, or Agent scope. To bootstrap older Agents (including 0.31.1), save Dev there, then choose Force install Fleet channel. Beta/Dev requires prerelease intake and cached artifacts. Explicit Stable/Beta/Dev choices still require an updated Agent.</p>
+                    <p id="agent_update_channel_hint" class="muted-text">Check for an update using this agent's configured channel and update policy.</p>
+                    <details><summary>Advanced channel installation</summary>
+                        <p class="muted-text">Explicit channel installs can reinstall or downgrade the agent and bypass maintenance windows and version pins. Scheduled settings stay unchanged. Beta/Dev requires prerelease intake and cached artifacts.</p>
+                        <p class="muted-text">Set the persistent channel in Fleet Settings &rarr; Agent Updates. For older agents (including 0.31.1), save the channel there and choose Force install Fleet channel. Explicit Stable/Beta/Dev choices require an updated agent.</p>
+                    </details>
                 </div>
-                <div class="modal-footer"><button class="modal-button modal-button-secondary" data-action="cancel">Cancel</button><button class="modal-button modal-button-danger" data-action="confirm">Update Agent</button></div>
+                <div class="modal-footer"><button class="modal-button modal-button-secondary" data-action="cancel">Cancel</button><button class="modal-button modal-button-primary" data-action="confirm">Check for Update</button></div>
             </div>`;
         document.body.appendChild(overlay);
-        const finish = value => { overlay.remove(); resolve(value); };
-        overlay.querySelector('[data-action="confirm"]').addEventListener('click', () => finish(overlay.querySelector('select').value));
+        const select = overlay.querySelector('select');
+        const confirm = overlay.querySelector('[data-action="confirm"]');
+        select.addEventListener('change', () => {
+            const explicit = select.value !== '';
+            confirm.textContent = explicit ? 'Install Channel' : 'Check for Update';
+            confirm.className = `modal-button ${explicit ? 'modal-button-danger' : 'modal-button-primary'}`;
+            overlay.querySelector('#agent_update_channel_hint').textContent = explicit
+                ? 'Force install the latest cached release for this channel. This may downgrade or reinstall the agent and will bypass maintenance windows and version pins.'
+                : "Check for an update using this agent's configured channel and update policy.";
+        });
+        const finish = value => {
+            overlay.remove();
+            previousFocus?.focus();
+            resolve(value);
+        };
+        overlay.querySelector('[data-action="confirm"]').addEventListener('click', () => finish(select.value));
         overlay.querySelector('[data-action="cancel"]').addEventListener('click', () => finish(null));
         overlay.querySelector('.modal-close-x').addEventListener('click', () => finish(null));
         overlay.addEventListener('click', event => { if (event.target === overlay) finish(null); });
+        overlay.addEventListener('keydown', event => {
+            if (event.key === 'Escape') {
+                event.stopPropagation();
+                finish(null);
+            } else if (event.key === 'Tab') {
+                const focusable = [...overlay.querySelectorAll('button, select, summary')];
+                const first = focusable[0];
+                const last = focusable[focusable.length - 1];
+                if (event.shiftKey && document.activeElement === first) {
+                    event.preventDefault();
+                    last.focus();
+                } else if (!event.shiftKey && document.activeElement === last) {
+                    event.preventDefault();
+                    first.focus();
+                }
+            }
+        });
+        select.focus();
     });
 }
 

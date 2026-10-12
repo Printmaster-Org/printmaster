@@ -188,6 +188,14 @@ func getWindowsDisplayVersion(build uint32) string {
 	return ""
 }
 
+func getOSVersionDetailed() string {
+	version := getPlatformDetailed()
+	if build := GetWindowsBuildNumber(); build != 0 {
+		return fmt.Sprintf("%s (build %d)", version, build)
+	}
+	return version
+}
+
 // GetWindowsBuildNumber returns the Windows build number for diagnostics
 func GetWindowsBuildNumber() uint32 {
 	info := rtlOSVersionInfoExW{}

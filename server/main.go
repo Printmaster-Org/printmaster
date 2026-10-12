@@ -4204,6 +4204,8 @@ func handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		OSVersion       string `json:"os_version,omitempty"`
 		GoVersion       string `json:"go_version,omitempty"`
 		Architecture    string `json:"architecture,omitempty"`
+		NumCPU          int    `json:"num_cpu,omitempty"`
+		TotalMemoryMB   int64  `json:"total_memory_mb,omitempty"`
 		BuildType       string `json:"build_type,omitempty"`
 		GitCommit       string `json:"git_commit,omitempty"`
 	}
@@ -4237,6 +4239,8 @@ func handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		OSVersion:       req.OSVersion,
 		GoVersion:       req.GoVersion,
 		Architecture:    req.Architecture,
+		NumCPU:          req.NumCPU,
+		TotalMemoryMB:   req.TotalMemoryMB,
 		BuildType:       req.BuildType,
 		GitCommit:       req.GitCommit,
 	}

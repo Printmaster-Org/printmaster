@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -80,6 +82,22 @@ func TestServerClient_Heartbeat(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/agents/heartbeat" {
 			t.Errorf("Expected path /api/v1/agents/heartbeat, got %s", r.URL.Path)
+		}
+		var metadata map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&metadata); err != nil {
+			t.Errorf("decode heartbeat: %v", err)
+		}
+		for field, expected := range map[string]interface{}{
+			"platform": GetPlatformInfo(), "os_version": GetOSVersionDetailed(),
+			"architecture": runtime.GOARCH, "go_version": runtime.Version(),
+			"num_cpu": float64(runtime.NumCPU()),
+		} {
+			if metadata[field] != expected {
+				t.Errorf("%s = %v, want %v", field, metadata[field], expected)
+			}
+		}
+		if runtime.GOOS == "windows" && !strings.Contains(GetOSVersionDetailed(), "(build ") {
+			t.Error("Windows OS metadata should include the build number")
 		}
 
 		// Verify Bearer token

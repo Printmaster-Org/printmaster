@@ -1948,8 +1948,8 @@
 
     <!-- Agent Details Modal with Overlay -->
     <div id="agent_details_overlay" class="modal" style="display:none;">
-        <div id="agent_details_modal" class="agent-details-dialog">
-            <button class="modal-close-x" id="agent_details_close_x" title="Close">&times;</button>
+        <div id="agent_details_modal" class="agent-details-dialog" role="dialog" aria-modal="true" aria-labelledby="agent_details_title">
+            <button class="modal-close-x" id="agent_details_close_x" title="Close" aria-label="Close agent details">&times;</button>
             <h3 id="agent_details_title">Agent Details</h3>
             <div id="agent_details_body"></div>
             <div id="agent_details_actions">

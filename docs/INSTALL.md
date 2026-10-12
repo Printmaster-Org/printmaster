@@ -341,6 +341,19 @@ docker run -d \
 
 > **Note**: `--network host` is required for SNMP discovery to work properly.
 
+### Managing Agents from the Server
+
+Open an agent's details to see its reported OS version (including the Windows
+build number), hardware, release version, and recent activity. The enrollment
+age is not process uptime. Connection diagnostics are available in a collapsed
+section. Remote commands require an active WebSocket connection.
+
+The inline pending-update button and **Check for Update** use the configured
+channel and respect the agent's update policy without asking for a channel.
+Right-click **Update Agent** opens a channel picker for an explicit installation.
+Explicit channel installs may downgrade or reinstall the agent and bypass
+maintenance windows and version pins; they do not change its scheduled policy.
+
 ---
 
 ## First-Time Setup

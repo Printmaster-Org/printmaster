@@ -470,21 +470,22 @@ func (s *BaseStore) UpdateAgentHeartbeat(ctx context.Context, agentID string, st
 // UpdateAgentInfo updates agent metadata (version, platform, etc.) typically on heartbeat.
 // Note: This does NOT update the 'name' field - that's managed separately via UpdateAgentName
 // to preserve user-set display names from being overwritten by agent heartbeats.
+// Omitted metadata must not erase details supplied by registration or another transport.
 func (s *BaseStore) UpdateAgentInfo(ctx context.Context, agent *Agent) error {
 	query := `
 		UPDATE agents SET
-			hostname = ?,
-			ip = ?,
-			platform = ?,
-			version = ?,
-			protocol_version = ?,
-			os_version = ?,
-			go_version = ?,
-			architecture = ?,
-			num_cpu = ?,
-			total_memory_mb = ?,
-			build_type = ?,
-			git_commit = ?,
+			hostname = COALESCE(NULLIF(?, ''), hostname),
+			ip = COALESCE(NULLIF(?, ''), ip),
+			platform = COALESCE(NULLIF(?, ''), platform),
+			version = COALESCE(NULLIF(?, ''), version),
+			protocol_version = COALESCE(NULLIF(?, ''), protocol_version),
+			os_version = COALESCE(NULLIF(?, ''), os_version),
+			go_version = COALESCE(NULLIF(?, ''), go_version),
+			architecture = COALESCE(NULLIF(?, ''), architecture),
+			num_cpu = COALESCE(NULLIF(?, 0), num_cpu),
+			total_memory_mb = COALESCE(NULLIF(?, 0), total_memory_mb),
+			build_type = COALESCE(NULLIF(?, ''), build_type),
+			git_commit = COALESCE(NULLIF(?, ''), git_commit),
 			device_count = ?,
 			last_seen = ?,
 			last_heartbeat = ?,

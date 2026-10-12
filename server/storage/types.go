@@ -174,6 +174,8 @@ type HeartbeatData struct {
 	OSVersion       string
 	GoVersion       string
 	Architecture    string
+	NumCPU          int
+	TotalMemoryMB   int64
 	BuildType       string
 	GitCommit       string
 	DeviceCount     int
@@ -186,7 +188,7 @@ func (h *HeartbeatData) BuildAgentUpdate(agentID string) *Agent {
 	// Check if any metadata fields are present (beyond just status)
 	hasMetadata := h.Version != "" || h.ProtocolVersion != "" || h.Hostname != "" ||
 		h.IP != "" || h.Platform != "" || h.OSVersion != "" || h.GoVersion != "" ||
-		h.Architecture != "" || h.BuildType != "" || h.GitCommit != ""
+		h.Architecture != "" || h.NumCPU > 0 || h.TotalMemoryMB > 0 || h.BuildType != "" || h.GitCommit != ""
 
 	if !hasMetadata {
 		return nil
@@ -209,6 +211,8 @@ func (h *HeartbeatData) BuildAgentUpdate(agentID string) *Agent {
 		OSVersion:       h.OSVersion,
 		GoVersion:       h.GoVersion,
 		Architecture:    h.Architecture,
+		NumCPU:          h.NumCPU,
+		TotalMemoryMB:   h.TotalMemoryMB,
 		BuildType:       h.BuildType,
 		GitCommit:       h.GitCommit,
 		DeviceCount:     h.DeviceCount,

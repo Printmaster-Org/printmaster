@@ -141,7 +141,7 @@ test('Agent update channel modal dispatches exact selection and cancels without 
     });
     const channels = ['beta', 'dev', 'stable', '', 'fleet'];
     for (const channel of channels) {
-        await page.evaluate(() => { window.__pm_shared.updateAgent('agent-1'); });
+        await page.evaluate(() => { window.__pm_shared.updateAgent('agent-1', { chooseChannel: true }); });
         await expect(page.locator('#agent_update_channel')).toBeVisible();
         await expect(page.locator('#agent_update_channel option[value="stable"]')).toHaveText('Stable');
         await expect(page.locator('#agent_update_channel option[value="beta"]')).toHaveText('Beta');
@@ -151,11 +151,72 @@ test('Agent update channel modal dispatches exact selection and cancels without 
         await expect.poll(() => commands.length).toBe(channels.indexOf(channel) + 1);
         expect(commands.at(-1)).toEqual(channel === 'fleet' ? { command: 'force_update', data: { reason: 'server_ui_force_fleet_channel' } } : channel ? { command: 'install_channel', data: { channel, reason: 'server_ui_channel_install' } } : { command: 'check_update' });
     }
-    await page.evaluate(() => { window.__pm_shared.updateAgent('agent-1'); });
+    await page.evaluate(() => { window.__pm_shared.updateAgent('agent-1', { chooseChannel: true }); });
     await page.locator('.modal-overlay [data-action="cancel"]').click();
     expect(commands).toHaveLength(5);
     expect(await page.locator('#agent_update_policy_root').count()).toBe(0);
     expect(await page.evaluate(() => typeof saveAgentUpdatePolicyFromUpdatesTab)).toBe('undefined');
+});
+
+test('right-click Agent update opens one picker; inline pending update sends policy check directly', async ({ page }) => {
+    await open(page, { devices: [] });
+    const commands = [];
+    await page.route('**/api/v1/agents/command/**', route => {
+        commands.push(route.request().postDataJSON());
+        return route.fulfill({ json: { success: true } });
+    });
+    await page.evaluate(() => {
+        agentsVM.items = [{ agent_id: 'agent-1', name: 'Test PC', connection_type: 'ws' }];
+        const container = document.createElement('div');
+        container.id = 'agent-action-fixture';
+        container.style.cssText = 'position:fixed;top:120px;left:20px;z-index:100;';
+        container.innerHTML = '<div data-agent-id="agent-1">Test PC <button data-agent-id="agent-1" data-action="update-agent">Pending update</button></div>';
+        document.body.append(container);
+        window.PMContextMenu.initAgentContextMenu(container);
+    });
+    await page.locator('#agent-action-fixture').getByText('Test PC', { exact: false }).click({ button: 'right' });
+    await page.locator('.pm-context-menu-item[data-action="update-agent"]').click();
+    await expect(page.locator('#agent_update_channel')).toHaveCount(1);
+    await page.locator('#agent_update_channel').selectOption('beta');
+    await page.locator('.modal-overlay [data-action="confirm"]').click();
+    await expect.poll(() => commands.length).toBe(1);
+    await expect(page.locator('#agent_update_channel')).toHaveCount(0);
+    expect(commands[0].command).toBe('install_channel');
+    await page.locator('#agent-action-fixture button').click();
+    await expect.poll(() => commands.length).toBe(2);
+    expect(commands[1]).toEqual({ command: 'check_update' });
+    await expect(page.locator('#agent_update_channel')).toHaveCount(0);
+});
+
+test('Agent details are readable, responsive, and preserve name editing and command gating', async ({ page }, testInfo) => {
+    await open(page, { devices: [] });
+    await page.evaluate(() => {
+        renderAgentDetailsModal({
+            agent_id: '92a95307-1fc2-a6fe-f5e1-a7e2799e77bf', name: 'P3 Print Station 01',
+            hostname: 'P3-ROBOTS-01', ip: '192.0.2.10', status: 'active', connection_type: 'ws',
+            platform: 'Windows 11 (24H2)', os_version: 'Windows 11 (24H2) (build 26100)',
+            architecture: 'amd64', version: '0.32.0-beta.2', protocol_version: '1',
+            num_cpu: 8, total_memory_mb: 16384, go_version: 'go1.27.0', device_count: 12,
+            build_type: 'beta', git_commit: 'abcdef123', registered_at: '2026-10-01T12:00:00Z',
+            last_seen: '2026-10-12T19:00:00Z', last_heartbeat: '2026-10-12T19:00:00Z',
+        });
+        document.getElementById('agent_details_overlay').style.display = 'flex';
+    });
+    const dialog = page.locator('#agent_details_modal');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText('build 26100');
+    await expect(dialog).toContainText('16.00 GB');
+    await expect(dialog).not.toContainText('Uptime');
+    await expect(page.locator('#agent_check_update_btn')).toBeEnabled();
+    expect(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+    expect(await page.locator('#agent_details_body').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath('agent-details.png') });
+    await page.locator('#agent_details_edit_name_btn').click();
+    await expect(page.locator('#agent_details_name_input')).toHaveValue('P3 Print Station 01');
+    await page.locator('#agent_details_cancel_name').click();
+    await expect(page.locator('#agent_details_name_display')).toHaveText('P3 Print Station 01');
+    await page.getByRole('button', { name: 'Close agent details', exact: true }).click();
+    await expect(dialog).not.toBeVisible();
 });
 
 test('Fleet has one policy editor; cadence edits preserve maintenance and rollout', async ({ page }) => {
