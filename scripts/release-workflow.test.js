@@ -50,8 +50,25 @@ describe('Agent dev asset staging', () => {
             fs.writeFileSync(path.join(folder, `printmaster-agent-v${version}-${platform}${platform.startsWith('windows') ? '.exe' : ''}`), 'binary');
         }
     }
+    // On Windows, `bash` on PATH is often the WSL launcher stub (no distro),
+    // so prefer the bash that ships with Git for Windows.
+    function findBash() {
+        if (process.platform !== 'win32') return { command: 'bash', posix: value => value };
+        const candidates = [];
+        for (const base of [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs')]) {
+            if (base) candidates.push(path.join(base, 'Git', 'bin', 'bash.exe'));
+        }
+        const git = spawnSync('where', ['git'], { encoding: 'utf8' });
+        for (const line of (git.stdout || '').split(/\r?\n/).filter(Boolean)) {
+            candidates.push(path.join(path.dirname(line), '..', 'bin', 'bash.exe'));
+        }
+        const command = candidates.find(candidate => fs.existsSync(candidate)) || 'bash';
+        return { command, posix: value => value.replace(/\\/g, '/') };
+    }
+    const bash = findBash();
     function prepare() {
-        return spawnSync('bash', [path.join(root, 'scripts/prepare-agent-dev-release.sh'), directory, version], { encoding: 'utf8' });
+        const args = [path.join(root, 'scripts/prepare-agent-dev-release.sh'), directory, version].map(bash.posix);
+        return spawnSync(bash.command, args, { encoding: 'utf8' });
     }
     test('stages all binaries and multiple package assets, ignoring digests', () => {
         seed();
@@ -73,6 +90,8 @@ describe('Agent dev asset staging', () => {
     test('empty matrix binary blocks publication', () => {
         seed();
         fs.writeFileSync(path.join(directory, 'agent-binary-linux-amd64', `printmaster-agent-v${version}-linux-amd64`), '');
-        expect(prepare().status).not.toBe(0);
+        const result = prepare();
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain('Missing or empty Agent dev binary');
     });
 });
