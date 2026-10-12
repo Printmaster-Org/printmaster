@@ -37,6 +37,16 @@ test('dev publication pins built SHA and rejects missing uploads', () => {
     expect(dev).toContain('bash scripts/prepare-agent-dev-release.sh artifacts "$DEV_VERSION"');
 });
 
+test('Fedora RPM job trusts only the checkout before reading Git version metadata', () => {
+    const rpm = job('build-rpm');
+    expect(rpm).toContain('container:\n      image: fedora:latest');
+    const trust = rpm.indexOf('git config --global --add safe.directory "$GITHUB_WORKSPACE"');
+    const version = rpm.indexOf('bash scripts/release-version.sh');
+    expect(trust).toBeGreaterThan(-1);
+    expect(version).toBeGreaterThan(trust);
+    expect(rpm).not.toMatch(/safe\.directory\s+['"]?\*/);
+});
+
 test('CI tests main and pull requests without rerunning for release tags', () => {
     const ci = fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
     const triggers = ci.slice(ci.indexOf('\non:'), ci.indexOf('\nconcurrency:'));

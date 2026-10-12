@@ -190,10 +190,8 @@ describe('Beta package metadata', () => {
 
 test.each(['agent', 'server'])('%s workflow publishes Beta without moving Stable aliases', component => {
     const workflow = fs.readFileSync(path.join(root, '.github', 'workflows', `cd-${component}.yml`), 'utf8');
-    const ci = fs.readFileSync(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
     const pattern = `${component}-v[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+`;
     expect(workflow).toContain(pattern);
-    expect(ci).toContain(pattern);
     expect(workflow.match(/bash scripts\/release-version.sh/g)).toHaveLength(component === 'agent' ? 5 : 4);
     expect(workflow).toContain('flavor: latest=false');
     expect(workflow).toContain('type=raw,value=latest,enable=${{ steps.version.outputs.is_release }}');

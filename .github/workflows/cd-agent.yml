@@ -377,6 +377,9 @@ jobs:
         name: agent-binary-linux-${{ matrix.arch }}
         path: agent/
 
+    - name: Trust checkout in Fedora container
+      run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
     - name: Get version
       id: version
       run: |
