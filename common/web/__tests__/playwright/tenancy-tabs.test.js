@@ -112,17 +112,17 @@ async function loadApp(page, user) {
     };
   });
   await mockApi(page, user);
-  await page.goto(`${global.__PM_BASE_URL__}/app`, { waitUntil: 'networkidle' });
-  // Wait for auth API to be called and RBAC to be applied
-  await page.waitForLoadState('networkidle');
-  // Wait for auth to complete and dynamic tabs to be rendered
-  // Use responsive selector based on viewport
+  await page.goto(`${global.__PM_BASE_URL__}/app`, { waitUntil: 'domcontentloaded' });
+  await expect.poll(
+    () => page.evaluate(() => window.__pm_auth?.currentUser?.role),
+    { message: 'The mocked user must authenticate before checking role-gated tabs', timeout: 10000 }
+  ).toBe(user.role);
   const agentsSelector = getTabSelector(page, 'agents');
-  await page.waitForSelector(agentsSelector, { timeout: 10000 });
+  await expect(page.locator(agentsSelector)).toBeVisible({ timeout: 10000 });
   // For admin and operator users, wait specifically for the admin tab to appear
   if (user && (user.role === 'admin' || user.role === 'operator')) {
     const adminSelector = getTabSelector(page, 'admin');
-    await page.waitForSelector(adminSelector, { timeout: 10000 });
+    await expect(page.locator(adminSelector)).toBeVisible({ timeout: 10000 });
   }
 }
 
@@ -202,20 +202,33 @@ function getTabSelector(page, tabId) {
   return `#desktop_tabs .tab[data-target="${tabId}"]`;
 }
 
-test('admin sees tenants in admin tab', async ({ page }) => {
-  await loadApp(page, adminUser);
-  // Wait for dynamic tabs to be created after auth
-  await page.waitForLoadState('networkidle');
-  // Navigate to Admin tab (use responsive selector)
-  const adminTab = page.locator(getTabSelector(page, 'admin')).first();
-  await expect(adminTab).toBeVisible({ timeout: 10000 });
-  await adminTab.click();
-  // Switch to Tenants sub-view
-  const tenantsSubtab = page.locator('.admin-subtab[data-adminview="tenants"]');
-  await expect(tenantsSubtab).toBeVisible();
-  await tenantsSubtab.click();
-  // New tenant button should be visible
-  await expect(page.locator('#new_tenant_btn')).toBeVisible();
+test.describe('Admin navigation', () => {
+  test.beforeEach(async ({ context }) => {
+    await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
+  });
+  test.afterEach(async ({ context }, testInfo) => {
+    if (testInfo.status !== testInfo.expectedStatus) {
+      const trace = testInfo.outputPath('trace.zip');
+      await context.tracing.stop({ path: trace });
+      await testInfo.attach('trace', { path: trace, contentType: 'application/zip' });
+    } else {
+      await context.tracing.stop();
+    }
+  });
+
+  test('admin sees tenants in admin tab', async ({ page }) => {
+    await loadApp(page, adminUser);
+    // Navigate to Admin tab (use responsive selector)
+    const adminTab = page.locator(getTabSelector(page, 'admin')).first();
+    await expect(adminTab).toBeVisible({ timeout: 10000 });
+    await adminTab.click();
+    // Switch to Tenants sub-view
+    const tenantsSubtab = page.locator('.admin-subtab[data-adminview="tenants"]');
+    await expect(tenantsSubtab).toBeVisible();
+    await tenantsSubtab.click();
+    // New tenant button should be visible
+    await expect(page.locator('#new_tenant_btn')).toBeVisible();
+  });
 });
 
 test('mobile admin navigation fits without horizontal scrolling', async ({ page }) => {

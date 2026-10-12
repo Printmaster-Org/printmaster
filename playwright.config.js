@@ -73,6 +73,7 @@ module.exports = {
   workers,
   use: {
     headless: true,
+    screenshot: 'only-on-failure',
   },
   projects: runAllBrowsers
     ? [...chromiumProjects, ...nonChromiumProjects]
