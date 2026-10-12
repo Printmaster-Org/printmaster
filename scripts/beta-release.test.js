@@ -196,6 +196,8 @@ test.each(['agent', 'server'])('%s workflow publishes Beta without moving Stable
     expect(workflow).toContain('flavor: latest=false');
     expect(workflow).toContain('type=raw,value=latest,enable=${{ steps.version.outputs.is_release }}');
     expect(workflow).toContain('type=raw,value=beta,enable=${{ steps.version.outputs.is_beta }}');
+    expect(workflow).toContain("type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}");
+    expect(workflow).toContain(`type=raw,value=\${{ steps.version.outputs.version }},enable=\${{ startsWith(github.ref, 'refs/tags/${component}-v') }}`);
     expect(workflow).toContain("prerelease: ${{ steps.version.outputs.is_beta == 'true' }}");
     expect(workflow).toContain("make_latest: ${{ steps.version.outputs.is_beta != 'true' }}");
     if (component === 'agent') {

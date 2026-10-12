@@ -59,6 +59,30 @@ Docker is the recommended deployment method for the server.
 - Docker Engine 20.10 or later
 - Docker Compose (optional but recommended)
 
+#### Container Release Channels
+
+Both `ghcr.io/printmaster-org/printmaster-server` and
+`ghcr.io/printmaster-org/printmaster-agent` publish these tags:
+
+| Tag | Tracks |
+|-----|--------|
+| `latest` | Most recently published Stable build |
+| `beta` | Most recently published Beta build |
+| `main` | Most recently published development build from `main` |
+| Version, e.g. `0.32.0-beta.2` | A specific release |
+
+For Beta testing, replace `:latest` with `:beta` in the Docker commands or Compose
+image setting below. Beta releases move `:beta`, not `:latest`; development
+builds move `:main`, not `:beta`. These floating tags do not update running
+containers automatically. Pull and recreate the container to pick up a new build:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Beta builds are intended for testing, not production fleets.
+
 #### Using Docker Run
 
 ```bash
