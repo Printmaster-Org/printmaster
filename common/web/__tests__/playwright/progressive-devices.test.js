@@ -113,8 +113,14 @@ test('saved Epson ink diagnostics show linked replacement names without toner wo
     }, epsonSupplies);
     const supplies = page.locator('#printer_consumables_card_actual');
     await expect(supplies).toBeVisible();
-    await expect(supplies).toContainText('Photo Black Ink Cartridge T44H1, T44P1, T44W1');
-    await expect(supplies).toContainText('Vivid Light Magenta Ink Cartridge T44H6, T44P6, T44W6');
+    for (const [label, parts] of [
+        ['Photo Black Ink Cartridge', 'T44H1, T44P1, T44W1'],
+        ['Vivid Light Magenta Ink Cartridge', 'T44H6, T44P6, T44W6']
+    ]) {
+        const row = supplies.locator('.consumable-level').filter({ has: page.locator('.consumable-level-label', { hasText: new RegExp(`^${label}$`) }) });
+        await expect(row.locator('.consumable-part-numbers')).toHaveText(parts);
+        await expect(row.locator('[role="progressbar"]')).toHaveAttribute('aria-label', `${label} (${parts})`);
+    }
     await expect(supplies).toContainText('Waste Ink');
     await expect(supplies).not.toContainText(/toner|supply_/i);
     await expect(supplies.locator('[role="progressbar"]')).toHaveCount(10);
