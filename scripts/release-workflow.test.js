@@ -37,6 +37,33 @@ test('dev publication pins built SHA and rejects missing uploads', () => {
     expect(dev).toContain('bash scripts/prepare-agent-dev-release.sh artifacts "$DEV_VERSION"');
 });
 
+test('CI tests main and pull requests without rerunning for release tags', () => {
+    const ci = fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
+    const triggers = ci.slice(ci.indexOf('\non:'), ci.indexOf('\nconcurrency:'));
+    expect(triggers).toMatch(/push:\n\s+branches: \[main\]/);
+    expect(triggers).toMatch(/pull_request:\n\s+branches: \[main\]/);
+    expect(triggers).toContain('workflow_dispatch:');
+    expect(triggers).not.toMatch(/^\s+tags:/m);
+    expect(ci).toContain('name: CI Passed');
+});
+
+test.each(['agent', 'server'])('%s CD reuses successful CI for the exact SHA and rejects untested commits', component => {
+    const cd = fs.readFileSync(path.join(root, `.github/workflows/cd-${component}.yml`), 'utf8');
+    const gate = cd.slice(cd.indexOf('\n  wait-for-ci:'), cd.indexOf(`\n  build-${component}:`));
+    expect(gate).toContain('check-name: CI Passed');
+    expect(gate).toContain('ref: ${{ github.sha }}');
+    expect(gate).toContain('allowed-conclusions: success');
+    expect(gate).toContain("fail-on-no-checks: 'true'");
+    expect(gate).toContain('timeout-minutes: 15');
+    expect(gate).toContain('checks-discovery-timeout: 900');
+    expect(cd).toMatch(/tags:\n\s+- '.*-v/);
+    for (const build of [`build-${component}`, 'build-docker']) {
+        const match = cd.match(new RegExp(`^  ${build}:\\n([\\s\\S]*?)(?=^  [a-z][a-z-]*:|$(?![\\s\\S]))`, 'm'));
+        expect(match).not.toBeNull();
+        expect(match[1]).toContain('needs: [wait-for-ci]');
+    }
+});
+
 describe('Agent dev asset staging', () => {
     const version = '0.31.1-dev.test123';
     let directory;

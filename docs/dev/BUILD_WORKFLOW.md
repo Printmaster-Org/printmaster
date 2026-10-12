@@ -107,6 +107,14 @@ Start-Process 'http://localhost:8080'
 
 ### Release Flags
 
+GitHub CI runs on pushes to `main` and pull requests, not release tags.
+Agent and Server tag workflows reuse the successful `CI Passed` check for
+the exact commit SHA. They wait up to 15 minutes and fail if that commit
+has no successful CI check; push the commit to `main` and let CI finish
+before publishing tags. CI can also be run manually for an untested ref.
+Dev and Beta/Stable builds remain separate because they embed different
+versions and build types.
+
 PowerShell flags use **one dash**. Use `-Beta`, not `--beta`; messages
 starting with `-` are rejected to prevent mistyped flags from creating a stable release.
 
