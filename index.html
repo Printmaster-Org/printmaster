@@ -28,10 +28,10 @@
 
   <h2>Fedora/RHEL (DNF)</h2>
   
-  <h3>Quick Install (One-liner)</h3>
-  <pre><code># Add repository and install
-sudo dnf config-manager addrepo --from-repofile=https://packages.printmaster.work/printmaster.repo
-sudo dnf install printmaster-agent</code></pre>
+  <h3>Quick Install (GPG signature verification enabled)</h3>
+  <pre><code>curl -fsSL https://packages.printmaster.work/install.sh | sudo bash</code></pre>
+
+  <p>The same installer supports APT, DNF, YUM, and Zypper on x86_64 and ARM64. It verifies the signing-key fingerprint before configuring the repository. Unsupported systems are directed to manual downloads; it does not fall back silently to a binary installation.</p>
 
   <h3>With GPG Verification (Recommended)</h3>
   <pre><code># Import GPG key first
