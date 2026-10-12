@@ -251,6 +251,18 @@ sudo systemctl start PrintMasterAgent
 
 #### DNF Repository (Recommended)
 
+The installer detects APT, DNF, YUM, or Zypper and verifies the repository
+signing-key fingerprint before configuring the appropriate repository. It
+supports x86_64 and ARM64; unsupported systems receive a manual-download link
+rather than an automatic binary fallback. Arch/pacman is not yet supported.
+
+```bash
+curl -fsSL https://packages.printmaster.work/install.sh | sudo bash
+sudo systemctl enable --now printmaster-agent
+```
+
+#### Manual DNF Repository Setup
+
 ```bash
 # Import GPG key (recommended)
 sudo rpm --import https://packages.printmaster.work/gpg.key
