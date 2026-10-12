@@ -35,6 +35,33 @@ if (-not (Test-Path $LogDir)) {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 }
 
+# Runs an external command and streams its output to the console and build log
+# line-by-line as it is produced, instead of buffering until the command exits.
+# Returns the command's exit code.
+function Invoke-StreamedCommand {
+    param(
+        [Parameter(Mandatory=$true)][string]$Label,
+        [Parameter(Mandatory=$true)][scriptblock]$Command
+    )
+
+    Write-BuildLog "Executing: $Label" "INFO"
+    # UTF-8 so jest/Playwright symbols (checkmarks, bullets, arrows) are not garbled
+    $prevOutputEncoding = [Console]::OutputEncoding
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
+    $global:LASTEXITCODE = 0
+    try {
+        & $Command 2>&1 | ForEach-Object { Write-BuildLog "$_" "INFO" }
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        [Console]::OutputEncoding = $prevOutputEncoding
+    }
+    $level = if ($exitCode -eq 0) { "INFO" } else { "ERROR" }
+    Write-BuildLog ("{0} finished in {1:hh\:mm\:ss} (exit code {2})" -f $Label, $timer.Elapsed, $exitCode) $level
+    return $exitCode
+}
+
 function Invoke-JSUnitTests {
     # Skip if already passed this session
     if ($script:JSUnitTestsPassed) {
@@ -51,16 +78,11 @@ function Invoke-JSUnitTests {
 
     Push-Location $ProjectRoot
     try {
-        $cmd = "npm run test:js"
-        Write-BuildLog "Executing: $cmd" "INFO"
-        $testOutput = & npm run test:js 2>&1
-        $testExit = $LASTEXITCODE
+        $testExit = Invoke-StreamedCommand "npm run test:js" { npm run test:js }
         if ($testExit -ne 0) {
-            $testOutput | ForEach-Object { Write-BuildLog $_ "ERROR" }
             Write-BuildLog "JS unit tests failed" "ERROR"
             return $false
         }
-        $testOutput | ForEach-Object { Write-BuildLog $_ "INFO" }
         Write-BuildLog "JS unit tests passed" "INFO"
         $script:JSUnitTestsPassed = $true
         $env:PRINTMASTER_JS_TESTS_PASSED = '1'
@@ -131,27 +153,19 @@ function Invoke-PlaywrightTests {
 
     Push-Location $ProjectRoot
     try {
-        # Ensure playwright browsers are installed when running CI locally
-        Write-BuildLog "Ensuring Playwright browsers are installed (npx playwright install)" "INFO"
-        & npx playwright install > $null 2>&1
-
-        $cmd = "npm run test:playwright"
-        Write-BuildLog "Executing: $cmd" "INFO"
-        
-        # Set UTF-8 encoding for proper Playwright Unicode output (checkmarks, arrows)
-        $prevOutputEncoding = [Console]::OutputEncoding
-        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-        
-        # Stream output live instead of capturing all at once
-        $testExit = 0
-        & npm run test:playwright 2>&1 | ForEach-Object {
-            Write-BuildLog $_ "INFO"
+        # Ensure the browsers playwright.config.js will use are installed. Local
+        # runs only use Chromium; CI / PW_ALL_BROWSERS=1 also need Firefox+WebKit.
+        $allBrowsers = ($env:CI -eq 'true') -or ($env:PW_ALL_BROWSERS -eq '1')
+        if ($allBrowsers) {
+            $installExit = Invoke-StreamedCommand "npx playwright install" { npx playwright install }
+        } else {
+            $installExit = Invoke-StreamedCommand "npx playwright install chromium" { npx playwright install chromium }
         }
-        $testExit = $LASTEXITCODE
-        
-        # Restore previous encoding
-        [Console]::OutputEncoding = $prevOutputEncoding
-        
+        if ($installExit -ne 0) {
+            Write-BuildLog "Playwright browser install reported a failure; continuing with existing browsers" "WARN"
+        }
+
+        $testExit = Invoke-StreamedCommand "npm run test:playwright" { npm run test:playwright }
         if ($testExit -ne 0) {
             Write-BuildLog "Playwright smoke tests failed" "ERROR"
             return $false
@@ -294,14 +308,8 @@ function Invoke-Linters {
     Push-Location $componentDir
     
     try {
-        # Run go vet (capture output so we can log it in full)
         Write-BuildLog "Running go vet..." "INFO"
-        $vetOutput = & go vet ./... 2>&1
-        $vetExit = $LASTEXITCODE
-        if ($vetOutput) {
-            # Write each line of vet output into the build log (INFO level)
-            $vetOutput | ForEach-Object { Write-BuildLog $_ "INFO" }
-        }
+        $vetExit = Invoke-StreamedCommand "go vet ./..." { go vet ./... }
         if ($vetExit -ne 0) {
             $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"
             Write-BuildLog "$Component failed go vet checks (see above output)" "ERROR"
@@ -313,14 +321,8 @@ function Invoke-Linters {
         Write-BuildLog "$Component passed go vet checks" "INFO"
         Add-Content -Path $script:LogFile -Value "[$timestamp] [INFO] PASS: $Component passed go vet checks"
 
-        # Run staticcheck (capture output so we can log it in full)
         Write-BuildLog "Running staticcheck..." "INFO"
-        $scOutput = & staticcheck ./... 2>&1
-        $scExit = $LASTEXITCODE
-        if ($scOutput) {
-            # Write each line of staticcheck output into the build log (INFO level)
-            $scOutput | ForEach-Object { Write-BuildLog $_ "INFO" }
-        }
+        $scExit = Invoke-StreamedCommand "staticcheck ./..." { staticcheck ./... }
         if ($scExit -ne 0) {
             $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"
             Write-BuildLog "$Component failed staticcheck (see above output)" "ERROR"
@@ -364,15 +366,9 @@ function Invoke-Tests {
     Push-Location $componentDir
     
     try {
-        # Run tests with verbose output
-        $testOutput = & go test ./... -v 2>&1
-        $testExitCode = $LASTEXITCODE
+        $testExitCode = Invoke-StreamedCommand "go test ./... -v ($Component)" { go test ./... -v }
         
         if ($testExitCode -ne 0) {
-            # Show test output on failure
-            Write-Host ""
-            $testOutput | ForEach-Object { Write-Host $_ -ForegroundColor Red }
-            Write-Host ""
             # Colorize FAIL
             $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"
             Write-Host "${ColorDim}${timestamp}${ColorReset} ${ColorRed}[ERROR]${ColorReset} ${ColorRed}FAIL:${ColorReset} $Component failed tests"
@@ -415,13 +411,9 @@ function Invoke-E2ETests {
 
     try {
         # Run E2E tests (mock-based, no Docker required)
-        $testOutput = & go test -v -count=1 ./... 2>&1
-        $testExitCode = $LASTEXITCODE
+        $testExitCode = Invoke-StreamedCommand "go test -v -count=1 ./... (e2e)" { go test -v -count=1 ./... }
 
         if ($testExitCode -ne 0) {
-            Write-Host ""
-            $testOutput | ForEach-Object { Write-Host $_ -ForegroundColor Red }
-            Write-Host ""
             $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"
             Write-Host "${ColorDim}${timestamp}${ColorReset} ${ColorRed}[ERROR]${ColorReset} ${ColorRed}FAIL:${ColorReset} E2E tests failed"
             Add-Content -Path $script:LogFile -Value "[$timestamp] [ERROR] FAIL: E2E tests failed"

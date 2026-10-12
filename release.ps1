@@ -201,11 +201,22 @@ function Invoke-Tests {
     
     Push-Location (Join-Path $ProjectRoot $Component)
     try {
-        $testOutput = go test ./... -v 2>&1
-        $testExitCode = $LASTEXITCODE
+        # Stream test output live; ErrorActionPreference=Stop would otherwise
+        # turn Go's stderr lines into terminating errors.
+        $prevOutputEncoding = [Console]::OutputEncoding
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $prevErrorAction = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            go test ./... -v 2>&1 | ForEach-Object { Write-Host "$_" }
+            $testExitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $prevErrorAction
+            [Console]::OutputEncoding = $prevOutputEncoding
+        }
         
         if ($testExitCode -ne 0) {
-            Write-Host $testOutput
             throw "Tests failed for $Component"
         }
         
