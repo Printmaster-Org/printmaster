@@ -773,6 +773,10 @@ Write-Host ""
 try {
     # Pre-flight checks
     Write-Status "Running pre-flight checks..." "STEP"
+
+    if ($Message.TrimStart().StartsWith('-')) {
+        throw "Release message '$Message' looks like a mistyped flag. PowerShell flags use one dash (for example -Beta, not --beta)."
+    }
     
     # Check if we're in a git repository
     git rev-parse --is-inside-work-tree | Out-Null

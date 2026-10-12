@@ -107,7 +107,13 @@ Start-Process 'http://localhost:8080'
 
 ### Release Flags
 
+PowerShell flags use **one dash**. Use `-Beta`, not `--beta`; messages
+starting with `-` are rejected to prevent mistyped flags from creating a stable release.
+
 ```powershell
+# Start a beta cycle for both components
+.\release.ps1 both minor -Beta
+
 # Dry run (see what would happen without doing it)
 .\release.ps1 agent patch -DryRun
 

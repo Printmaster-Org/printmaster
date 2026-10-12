@@ -112,6 +112,30 @@ describe.each(availableShells)('%s Beta release lifecycle', shell => {
         expect(read('agent')).toBe('personal edit');
     });
 
+    if (shell === 'powershell') {
+        test.each(['--beta', '--skip-tests', '-betaa'])('rejects mistyped flag %s before changing versions or tags', flag => {
+            const head = git('rev-parse', 'HEAD');
+            const tags = git('tag');
+            // -File normalizes --beta differently from an interactive invocation.
+            const script = path.join(directory, 'release.ps1').replace(/'/g, "''");
+            const result = execute(pwsh, ['-NoProfile', '-Command',
+                `& '${script}' both minor -SkipTests -SkipPush ${flag}`], directory);
+            expect(result.status).not.toBe(0);
+            expect(result.stdout + result.stderr).toMatch(/PowerShell flags use one dash|parameter cannot be found/i);
+            expect(read('agent')).toBe('0.31.1');
+            expect(read('server')).toBe('0.31.1');
+            expect(git('rev-parse', 'HEAD')).toBe(head);
+            expect(git('tag')).toBe(tags);
+            expect(git('status', '--porcelain')).toBe('');
+        });
+
+        test('accepts a normal positional release message', () => {
+            successful('agent', 'minor', ['Beta candidate', '-Beta']);
+            expect(read('agent')).toBe('0.32.0-beta.1');
+            expect(git('log', '-1', '--format=%s')).toContain('Beta candidate');
+        });
+    }
+
     test('duplicate tag and second-component failure leave versions unchanged', () => {
         git('tag', 'server-v0.32.0-beta.1');
         expect(release('both', 'minor', [shell === 'bash' ? '--beta' : '-Beta']).status).not.toBe(0);
