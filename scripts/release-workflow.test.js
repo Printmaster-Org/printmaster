@@ -57,6 +57,15 @@ test('CI tests main and pull requests without rerunning for release tags', () =>
     expect(ci).toContain('name: CI Passed');
 });
 
+test('Playwright caches its default browser directory and installs system dependencies on every runner', () => {
+    const ci = fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
+    const javascript = ci.slice(ci.indexOf('\n  javascript:'), ci.indexOf('\n  e2e:'));
+    expect(javascript).not.toContain('PLAYWRIGHT_BROWSERS_PATH:');
+    expect(javascript).toContain('path: ~/.cache/ms-playwright');
+    expect(javascript).toContain("key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}");
+    expect(javascript).toMatch(/- name: Ensure Playwright browsers and system dependencies\n\s+run: npx playwright install --with-deps chromium firefox webkit/);
+});
+
 test.each(['agent', 'server'])('%s CD reuses successful CI for the exact SHA and rejects untested commits', component => {
     const cd = fs.readFileSync(path.join(root, `.github/workflows/cd-${component}.yml`), 'utf8');
     const gate = cd.slice(cd.indexOf('\n  wait-for-ci:'), cd.indexOf(`\n  build-${component}:`));
