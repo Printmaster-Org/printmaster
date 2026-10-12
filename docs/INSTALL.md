@@ -354,6 +354,25 @@ Right-click **Update Agent** opens a channel picker for an explicit installation
 Explicit channel installs may downgrade or reinstall the agent and bypass
 maintenance windows and version pins; they do not change its scheduled policy.
 
+### Device Selection and Copying
+
+On the Server, click a device row or card to select it, Ctrl/Cmd-click to toggle
+individual selections, or Shift-click to select a range. Double-click or press
+Enter on a focused device to open its details; right-click opens actions.
+Space selects a focused device. Selection and details do not occupy a separate
+table column.
+
+Small copy buttons beside device and agent identifiers copy the raw value
+without selecting the row or opening its details. These controls are shared by
+the Agent and Server interfaces. Clipboard access requires HTTPS or localhost.
+Interface text is not selectable by default, but inputs, textareas, details
+values, logs, and code blocks remain selectable. Additional content can opt in
+with the shared `text-selectable` class.
+
+Device upload notifications refresh authorized inventory in the background.
+Unchanged visible rows/cards remain in place; failed background refreshes show
+a stale-data notice with an explicit retry instead of repeatedly clearing the view.
+
 ---
 
 ## First-Time Setup

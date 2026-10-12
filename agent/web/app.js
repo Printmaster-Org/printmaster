@@ -1156,10 +1156,12 @@ function updateSavedDevicesTable(devices) {
         
         html += '<tr class="device-row-clickable" data-serial="' + serial + '" data-ip="' + (p.ip || '') + '">';
         html += '<td><div class="table-device-info"><span class="table-device-name">' + escapeHtml(p.manufacturer || 'Unknown') + ' ' + escapeHtml(p.model || '') + '</span>';
-        html += '<span class="table-device-serial">' + escapeHtml(serial) + '</span></div></td>';
+        html += '<span class="table-device-serial">' + window.__pm_shared.renderCopyableValue(serial, 'serial number') + '</span></div></td>';
         html += '<td>' + consumablesHtml + '</td>';
-        html += '<td><span style="font-family:monospace;font-size:12px">' + escapeHtml(p.ip || 'N/A') + '</span></td>';
-        html += '<td>' + escapeHtml(item.location || '—') + '</td>';
+        html += '<td><span style="font-family:monospace;font-size:12px">' + window.__pm_shared.renderCopyableValue(p.ip, 'IP address', 'N/A') + '</span>' +
+            (p.hostname ? '<div>' + window.__pm_shared.renderCopyableValue(p.hostname, 'hostname') + '</div>' : '') +
+            (p.mac ? '<div>' + window.__pm_shared.renderCopyableValue(p.mac, 'MAC address') + '</div>' : '') + '</td>';
+        html += '<td>' + window.__pm_shared.renderCopyableValue(item.location, 'location', '—') + '</td>';
         html += '<td style="text-align:right;font-family:monospace">' + (lifeCount || 0).toLocaleString() + '</td>';
         html += '<td class="actions-col"><div class="table-actions">';
         if (webUIUrl) {
@@ -1649,6 +1651,8 @@ async function editField(serial, fieldName, currentValue, element) {
 
         // Update the display
         element.textContent = newValue;
+        const copy = element.parentElement.querySelector('.pm-copy-button');
+        if (copy) copy.dataset.copy = newValue;
         element.onclick = function () { editField(serial, fieldName, newValue, element); };
         window.__pm_shared.showToast(`${displayName} updated successfully`, 'success');
 

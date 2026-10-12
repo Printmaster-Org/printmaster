@@ -913,7 +913,10 @@ function copyToClipboard(text, callback, successMessage) {
         if (typeof callback === 'function') callback(false);
         return Promise.resolve(false);
     }
-    return navigator.clipboard.writeText(text).then(() => {
+    return Promise.resolve().then(() => {
+        if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable; use HTTPS or localhost.');
+        return navigator.clipboard.writeText(text);
+    }).then(() => {
         try { showToast(successMessage || 'Copied to clipboard', 'success', 1500); } catch (e) {}
         if (typeof callback === 'function') callback(true);
         return true;
@@ -924,6 +927,34 @@ function copyToClipboard(text, callback, successMessage) {
         return false;
     });
 }
+
+function renderCopyButton(value, label = 'value') {
+    if (value === undefined || value === null || value === '') return '';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'pm-copy-button';
+    button.dataset.copy = String(value);
+    button.setAttribute('aria-label', `Copy ${label}`);
+    button.title = `Copy ${label}`;
+    button.innerHTML = makeClipboardIcon();
+    return button.outerHTML;
+}
+
+function renderCopyableValue(value, label = 'value', placeholder = 'Not reported') {
+    const text = document.createElement('span');
+    const missing = value === undefined || value === null || value === '';
+    text.textContent = missing ? placeholder : String(value);
+    if (missing) return text.outerHTML;
+    return `<span class="pm-copy-value">${text.outerHTML}${renderCopyButton(value, label)}</span>`;
+}
+
+document.addEventListener('click', event => {
+    const button = event.target.closest?.('.pm-copy-button');
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    copyToClipboard(button.dataset.copy, null, 'Copied to clipboard');
+});
 
 // ============================================================================
 // DATE/TIME FORMATTING
@@ -1204,6 +1235,8 @@ window.applyMasonryLayout = window.applyMasonryLayout || applyMasonryLayout;
 window.showDeviceMetricsModal = window.showDeviceMetricsModal || showDeviceMetricsModal;
 
 window.__pm_shared.makeClipboardIcon = window.__pm_shared.makeClipboardIcon || makeClipboardIcon;
+window.__pm_shared.renderCopyButton = renderCopyButton;
+window.__pm_shared.renderCopyableValue = renderCopyableValue;
 window.__pm_shared.showWebUIModal = window.__pm_shared.showWebUIModal || showWebUIModal;
 window.__pm_shared.showPrinterDetails = window.__pm_shared.showPrinterDetails || showPrinterDetails;
 window.__pm_shared.deleteSavedDevice = window.__pm_shared.deleteSavedDevice || deleteSavedDevice;

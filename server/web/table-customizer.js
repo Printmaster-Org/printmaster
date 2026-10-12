@@ -18,6 +18,7 @@
 
     // Storage keys
     const STORAGE_PREFIX = 'pm_table_config_';
+    const copyValue = (value, label, placeholder = '—') => window.__pm_shared.renderCopyableValue(value, label, placeholder);
 
     /**
      * Default column definitions for the devices table
@@ -35,8 +36,8 @@
             filterable: true,
             filterType: 'text',
             render: (device, meta) => {
-                const manufacturer = escapeHtml((device.manufacturer || 'Unknown') + ' ' + (device.model || ''));
-                const serial = escapeHtml(device.serial || '—');
+                const manufacturer = copyValue((device.manufacturer || 'Unknown') + ' ' + (device.model || ''), 'device model');
+                const serial = copyValue(device.serial, 'serial number');
                 return `
                     <div class="table-primary">${manufacturer}</div>
                     <div class="muted-text">Serial ${serial}</div>
@@ -93,7 +94,7 @@
             resizable: true,
             filterable: true,
             filterType: 'text',
-            render: (device, meta) => escapeHtml(meta.agentName || 'Unassigned')
+            render: (device, meta) => copyValue(meta.agentName, 'agent name', 'Unassigned')
         },
         {
             id: 'tenant',
@@ -109,7 +110,7 @@
             render: (device, meta) => {
                 const tenantLabel = window.formatTenantDisplay?.(meta.tenantId || device.tenant_id || '') || 
                     (meta.tenantId || device.tenant_id || '—');
-                return escapeHtml(tenantLabel);
+                return copyValue(tenantLabel, 'tenant');
             }
         },
         {
@@ -124,8 +125,8 @@
             filterable: true,
             filterType: 'text',
             render: (device, meta) => {
-                const ip = escapeHtml(device.ip || 'N/A');
-                const hostname = device.hostname ? `<div class="muted-text">${escapeHtml(device.hostname)}</div>` : '';
+                const ip = copyValue(device.ip, 'IP address', 'N/A');
+                const hostname = device.hostname ? `<div class="muted-text">${copyValue(device.hostname, 'hostname')}</div>` : '';
                 return `<div class="table-primary">${ip}</div>${hostname}`;
             }
         },
@@ -141,7 +142,7 @@
             filterable: true,
             filterType: 'text',
             defaultHidden: true,
-            render: (device, meta) => escapeHtml(device.mac || '—')
+            render: (device, meta) => copyValue(device.mac, 'MAC address')
         },
         {
             id: 'location',
@@ -154,7 +155,7 @@
             resizable: true,
             filterable: true,
             filterType: 'text',
-            render: (device, meta) => escapeHtml(meta.location || '—')
+            render: (device, meta) => copyValue(meta.location, 'location')
         },
         {
             id: 'page_count',
@@ -354,8 +355,8 @@
             filterable: true,
             filterType: 'text',
             render: (agent, meta) => {
-                const displayName = escapeHtml(window.getAgentDisplayName?.(agent) || agent.name || agent.hostname || 'Unknown');
-                const hostname = escapeHtml(agent.hostname || '');
+                const displayName = copyValue(window.getAgentDisplayName?.(agent) || agent.name || agent.hostname || 'Unknown', 'agent name');
+                const hostname = copyValue(agent.hostname, 'hostname', '');
                 return `
                     <div class="table-primary">${displayName}</div>
                     <div class="muted-text">${hostname}</div>
@@ -376,7 +377,7 @@
             render: (agent, meta) => {
                 const tenantLabel = window.formatTenantDisplay?.(agent.tenant_id || meta.tenantId || '') || 
                     (agent.tenant_id || meta.tenantId || '—');
-                return escapeHtml(tenantLabel);
+                return copyValue(tenantLabel, 'tenant');
             }
         },
         {
@@ -436,7 +437,7 @@
             filterable: true,
             filterType: 'text',
             defaultHidden: true,
-            render: (agent, meta) => escapeHtml(agent.ip || 'N/A')
+            render: (agent, meta) => copyValue(agent.ip, 'IP address', 'N/A')
         },
         {
             id: 'agent_id',
@@ -450,7 +451,7 @@
             filterable: true,
             filterType: 'text',
             defaultHidden: true,
-            render: (agent, meta) => `<span class="muted-text copyable" data-copy="${escapeHtml(agent.agent_id || '')}" title="Click to copy">${escapeHtml(agent.agent_id || '—')}</span>`
+            render: (agent, meta) => copyValue(agent.agent_id, 'agent ID')
         },
         {
             id: 'devices_count',

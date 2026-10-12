@@ -131,6 +131,84 @@ test('malformed index errors; empty index is ready, not error', async () => {
     await loader.load(); expect(loader.getIndexState().status).toBe('ready');
 });
 
+test('background refresh retains unchanged hydration, invalidates changed keys, and removes unauthorized devices', async () => {
+    const { loader, options } = fixture({
+        fetchIndex: jest.fn().mockResolvedValueOnce(items(3)).mockResolvedValueOnce(items(2)),
+    });
+
+    await loader.load();
+    loader.setDemand(['0', '1', '2']); await tick();
+    loader.markRendered(['0', '1', '2']); await tick();
+    const retained = loader.getRow('0');
+    const metrics = loader.getMetrics('0');
+    options.onChange.mockClear(); options.fetchRows.mockClear(); options.fetchMetrics.mockClear();
+    await loader.refresh(['1']); await tick();
+    expect(loader.getRow('0')).toBe(retained);
+    expect(loader.getMetrics('0')).toBe(metrics);
+    expect(loader.getIndex()).toEqual(items(2));
+    expect(loader.getRow('2')).toBeUndefined();
+    expect(options.onChange.mock.calls.some(([event]) => event.type === 'reset')).toBe(false);
+    expect(options.fetchRows.mock.calls[0][0]).toEqual(['1']);
+    loader.markRendered(['1']); await tick();
+    expect(options.fetchMetrics.mock.calls[0][0]).toEqual(['1']);
+});
+
+test('background refresh keeps slow unchanged requests alive without duplicate hydration', async () => {
+    const gate = deferred();
+    const { loader, options } = fixture({ fetchRows: jest.fn(() => gate.promise) });
+    await loader.load(); loader.setDemand(['1']); await tick();
+    const signal = options.fetchRows.mock.calls[0][1].signal;
+    await loader.refresh(); await loader.refresh();
+    expect(signal.aborted).toBe(false);
+    expect(options.fetchRows).toHaveBeenCalledTimes(1);
+    gate.resolve([{ serial: '1', model: 'Slow response' }]); await tick();
+    expect(loader.getRow('1').model).toBe('Slow response');
+});
+
+test('background refresh rejects changed and revoked rows from obsolete requests', async () => {
+    const gate = deferred();
+    const { loader } = fixture({
+        concurrency: 1,
+        fetchIndex: jest.fn().mockResolvedValueOnce(items(3)).mockResolvedValueOnce(items(2)),
+        fetchRows: jest.fn().mockImplementationOnce(() => gate.promise)
+            .mockImplementation(async keys => keys.map(serial => ({ serial, model: 'Fresh' }))),
+    });
+    await loader.load(); loader.setDemand(['0', '1', '2']); await tick();
+    await loader.refresh(['1']);
+    gate.resolve(items(3).map(item => ({ ...item, model: 'Obsolete' }))); await tick();
+    expect(loader.getRow('0').model).toBe('Obsolete');
+    expect(loader.getRow('1').model).toBe('Fresh');
+    expect(loader.getRow('2')).toBeUndefined();
+});
+
+test('refresh failure retains last inventory and reports explicit stale error', async () => {
+    const { loader, options } = fixture({
+        fetchIndex: jest.fn().mockResolvedValueOnce(items(2)).mockRejectedValueOnce(new Error('offline')),
+    });
+    await loader.load(); loader.setDemand(['0']); await tick();
+    const row = loader.getRow('0');
+    await loader.refresh();
+    expect(loader.getIndex()).toEqual(items(2));
+    expect(loader.getRow('0')).toBe(row);
+    expect(loader.getIndexState().error.message).toBe('offline');
+    expect(options.onChange).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'refresh-error' }));
+});
+
+test('refresh cannot revive inventory after reset and ignores in-flight obsolete hydration', async () => {
+    const index = deferred(), rows = deferred();
+    const { loader, options } = fixture({
+        fetchIndex: jest.fn().mockResolvedValueOnce(items(2)).mockImplementationOnce(() => index.promise).mockResolvedValueOnce([]),
+        fetchRows: jest.fn(() => rows.promise),
+    });
+    await loader.load(); loader.setDemand(['0']); await tick();
+    const refresh = loader.refresh();
+    await tick();
+    await loader.load();
+    index.resolve(items(2)); rows.resolve([{ serial: '0' }]); await refresh; await tick();
+    expect(loader.getIndex()).toEqual([]);
+    expect(loader.getRow('0')).toBeUndefined();
+});
+
 test('viewport helper owns overscan, demand, more and disconnect', () => {
     let callback, config;
     const observe = jest.fn(), disconnect = jest.fn();

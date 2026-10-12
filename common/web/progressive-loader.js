@@ -20,6 +20,7 @@
         let caches = { rows: new Map(), metrics: new Map() };
         let queues = { rows: new Set(), metrics: new Set() };
         let authorized = new Set();
+        let refreshPromise = null;
         const emit = (type, keys = []) => options.onChange?.({ type, keys, generation });
         const state = (kind, key) => states[kind].get(key) || { status: 'idle', attempts: 0 };
         function read(kind, key) {
@@ -47,26 +48,29 @@
                 const epoch = generation, signal = abort.signal;
                 const localStates = states[kind], localCache = caches[kind];
                 keys.forEach(key => localStates.set(key, { status: 'loading', attempts: state(kind, key).attempts + 1 }));
+                const loadingStates = new Map(keys.map(key => [key, localStates.get(key)]));
                 active++;
                 emit(kind, keys);
                 Promise.resolve().then(() => options[kind === 'rows' ? 'fetchRows' : 'fetchMetrics'](keys, { signal, generation: epoch }))
                     .then(result => {
                         if (epoch !== generation || signal.aborted) return;
                         if (!Array.isArray(result)) throw new Error('Expected an array');
-                        const requested = new Set(keys), found = new Set();
+                        const currentKeys = keys.filter(key => authorized.has(key) && localStates.get(key) === loadingStates.get(key));
+                        const requested = new Set(currentKeys), found = new Set();
                         result.forEach(item => {
                             const key = keyOf(item);
                             if (!requested.has(key)) return;
                             localCache.set(key, item);
                             found.add(key);
                         });
-                        keys.forEach(key => localStates.set(key, { ...localStates.get(key), status: found.has(key) ? 'ready' : 'missing' }));
+                        currentKeys.forEach(key => localStates.set(key, { ...localStates.get(key), status: found.has(key) ? 'ready' : 'missing' }));
                         while (localCache.size > cacheLimit) localCache.delete(localCache.keys().next().value);
-                        emit(kind, keys);
+                        emit(kind, currentKeys);
                     }).catch(error => {
                         if (epoch !== generation || signal.aborted) return;
-                        keys.forEach(key => localStates.set(key, { ...localStates.get(key), status: 'error', error }));
-                        emit(kind, keys);
+                        const currentKeys = keys.filter(key => authorized.has(key) && localStates.get(key) === loadingStates.get(key));
+                        currentKeys.forEach(key => localStates.set(key, { ...localStates.get(key), status: 'error', error }));
+                        emit(kind, currentKeys);
                     }).finally(() => {
                         if (epoch !== generation) return;
                         active--;
@@ -105,8 +109,55 @@
                 indexState = 'error'; indexError = error; emit('index');
             }
         }
+        function refresh(keys = []) {
+            if (refreshPromise) return refreshPromise;
+            const epoch = generation, signal = abort.signal;
+            refreshPromise = Promise.resolve().then(() => options.fetchIndex({ signal, generation: epoch }))
+                .then(result => {
+                    if (epoch !== generation || signal.aborted) return;
+                    if (!Array.isArray(result)) throw new Error('Expected an array');
+                    const nextAuthorized = new Set();
+                    const nextIndex = result.filter(item => {
+                        const key = keyOf(item);
+                        if (!key || nextAuthorized.has(key)) return false;
+                        nextAuthorized.add(key);
+                        return true;
+                    });
+                    const previous = new Map(index.map(item => [keyOf(item), item]));
+                    const changed = new Set(keys.filter(key => nextAuthorized.has(key)));
+                    nextIndex.forEach(item => {
+                        const key = keyOf(item);
+                        if (JSON.stringify(previous.get(key)) !== JSON.stringify(item)) changed.add(key);
+                    });
+                    // Invalidated state identities prevent obsolete requests from repopulating caches.
+                    queues = {
+                        rows: new Set([...queues.rows].filter(key => nextAuthorized.has(key))),
+                        metrics: new Set([...queues.metrics].filter(key => nextAuthorized.has(key))),
+                    };
+                    for (const kind of ['rows', 'metrics']) {
+                        for (const key of states[kind].keys()) {
+                            if (!nextAuthorized.has(key) || changed.has(key)) {
+                                states[kind].delete(key);
+                                caches[kind].delete(key);
+                                rendered.delete(key);
+                            }
+                        }
+                    }
+                    authorized = nextAuthorized;
+                    index = nextIndex; indexState = 'ready'; indexError = null;
+                    demanded = new Set([...demanded].filter(key => authorized.has(key)));
+                    emit('index', [...changed]);
+                    enqueue('rows', demanded);
+                    enqueue('metrics', [...demanded].filter(key => rendered.has(key)));
+                }).catch(error => {
+                    if (epoch !== generation || signal.aborted) return;
+                    indexError = error;
+                    emit('refresh-error');
+                }).finally(() => { refreshPromise = null; });
+            return refreshPromise;
+        }
         return {
-            load, reset,
+            load, reset, refresh,
             getIndex: () => index,
             getIndexState: () => ({ status: indexState, error: indexError }),
             getState: state,

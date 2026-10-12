@@ -62,6 +62,7 @@ describe('Agent details and update entry points', () => {
         const { context, document } = setup(['getAgentPlatformLabel', 'renderAgentDetailsModal'], {
             escapeHtml, getAgentDisplayName: agent => agent.name,
             _attachAgentDetailsNameEditor: attachName, _attachAgentUpdateHandler: attachUpdate,
+            window: { __pm_shared: { renderCopyButton: () => '' } },
         });
         const agent = {
             agent_id: 'agent-1', name: '<img src=x onerror=alert(1)>', hostname: 'PC',
@@ -86,6 +87,7 @@ describe('Agent details and update entry points', () => {
         const { context, document } = setup(['getAgentPlatformLabel', 'renderAgentDetailsModal'], {
             escapeHtml, getAgentDisplayName: () => 'Offline PC',
             _attachAgentDetailsNameEditor: jest.fn(), _attachAgentUpdateHandler: jest.fn(),
+            window: { __pm_shared: { renderCopyButton: () => '' } },
         });
         context.renderAgentDetailsModal({ agent_id: 'agent-1', platform: 'windows', status: 'offline' });
         expect(document.getElementById('agent_details_body').textContent).toContain('Not reported by agent');
@@ -182,7 +184,7 @@ describe('server settings recovery', () => {
             function deviceSetup(extraNames = [], globals = {}) {
                 return setup([
                     'updateDeviceSelectionUI', 'handleDeviceSelection', 'reconcileDeviceSelection',
-                    'renderDeviceControls', 'bindDeviceControls', ...extraNames,
+                    ...extraNames,
                 ], {
                     devicesVM: {
                         selection: { selectedIds: new Set(), lastSelected: null },
@@ -194,26 +196,23 @@ describe('server settings recovery', () => {
                 });
             }
 
-            test('explicit checkbox toggles multi-selection without modifiers; Details is a native button', () => {
+            test('click, Ctrl-click, and Shift-click select devices without extra controls', () => {
                 const { context, document } = deviceSetup();
                 context.window.__pm_shared.showPrinterDetails = jest.fn();
                 const container = document.getElementById('devices_cards');
                 container.innerHTML = ['A', 'B'].map(serial =>
-                    `<div class="device-card-clickable" data-serial="${serial}">${context.renderDeviceControls({ serial })}</div>`
+                    `<div class="device-card-clickable" data-serial="${serial}">${serial}</div>`
                 ).join('');
-                context.bindDeviceControls(container);
-                context.bindDeviceControls(container);
-                const checkboxes = container.querySelectorAll('input');
-                checkboxes[0].click();
-                checkboxes[1].click();
+                context.handleDeviceSelection('A', {});
+                context.handleDeviceSelection('B', { ctrlKey: true });
                 expect([...context.devicesVM.selection.selectedIds]).toEqual(['A', 'B']);
-                expect(checkboxes[0].checked).toBe(true);
-                checkboxes[0].click();
+                expect(container.firstElementChild.classList.contains('device-card-selected')).toBe(true);
+                context.handleDeviceSelection('A', { ctrlKey: true });
                 expect([...context.devicesVM.selection.selectedIds]).toEqual(['B']);
-                container.querySelector('button').click();
-                expect(context.window.__pm_shared.showPrinterDetails).toHaveBeenCalledTimes(1);
-                expect(context.window.__pm_shared.showPrinterDetails).toHaveBeenCalledWith('A', 'saved');
-                expect(checkboxes[1].getAttribute('aria-label')).toBe('Select device B');
+                context.handleDeviceSelection('B', {});
+                context.handleDeviceSelection('A', { shiftKey: true });
+                expect([...context.devicesVM.selection.selectedIds]).toEqual(['A', 'B']);
+                expect(container.querySelectorAll('input, button')).toHaveLength(0);
             });
 
             test('refresh reset/failure preserves selection; ready authorized index prunes only absent IDs', () => {
@@ -244,7 +243,7 @@ describe('server settings recovery', () => {
                 expect(context.devicesVM.selection.lastSelected).toBeNull();
             });
 
-            test('table controls remain available with customized columns and progressive pages', () => {
+            test('table uses only customized data columns and preserves progressive pages', () => {
                 const { context, document } = deviceSetup(['renderDevicesTableHeader', 'renderDeviceTable'], {
                     initTableScrollIndicators: jest.fn(), setupDevicesInfiniteScroll: jest.fn(),
                     getProgressiveDevice: device => device, loadMoreDevices: jest.fn(),
@@ -255,13 +254,13 @@ describe('server settings recovery', () => {
                     renderRow: device => `<td data-column-id="network">${device.ip}</td>`,
                 };
                 context.renderDevicesTableHeader();
-                expect(document.getElementById('devices_table_header').children).toHaveLength(2);
-                expect(document.querySelector('#devices_table_header > th').classList.contains('device-controls-cell')).toBe(true);
+                expect(document.getElementById('devices_table_header').children).toHaveLength(1);
+                expect(document.querySelector('#devices_table_header > th').dataset.columnId).toBe('network');
                 context.renderDeviceTable([{ serial: 'A', ip: '10.0.0.1' }, { serial: 'B', ip: '10.0.0.2' }]);
                 expect(document.querySelectorAll('.device-row-clickable')).toHaveLength(1);
-                expect(document.querySelector('.device-row-clickable [data-device-details]')).not.toBeNull();
-                expect(document.querySelector('.device-row-clickable > td').classList.contains('device-controls-cell')).toBe(true);
-                expect(document.querySelector('#devices_load_more_sentinel td').colSpan).toBe(2);
+                expect(document.querySelector('.device-row-clickable [data-device-details]')).toBeNull();
+                expect(document.querySelector('.device-row-clickable > td').dataset.columnId).toBe('network');
+                expect(document.querySelector('#devices_load_more_sentinel td').colSpan).toBe(1);
                 expect(context.devicesVM.render.displayed).toBe(1);
             });
         });

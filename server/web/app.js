@@ -1054,13 +1054,12 @@ function connectSSE() {
             // SSE is a notification, not an authorized inventory projection.
             // Coalesce uploads; refresh index and invalidate stale hydration.
             if (isDevicesTabActive()) {
-                clearTimeout(devicesRefreshTimer);
-                devicesRefreshTimer = setTimeout(() => loadDevices(true), 250);
+                scheduleDeviceRefresh(data.serial, !data.serial);
             }
         } catch (err) {
-            window.__pm_shared.warn('Failed to parse device_updated event, falling back to full reload:', err);
+            window.__pm_shared.warn('Failed to parse device_updated event, refreshing authorized inventory:', err);
             if (isDevicesTabActive()) {
-                loadDevices(true);
+                scheduleDeviceRefresh(null, true);
             }
         }
     });
@@ -10807,12 +10806,12 @@ function renderAgentCard(agent) {
             <div class="device-card-header">
                 <div>
                     <div style="display:flex;align-items:center;gap:8px">
-                        <div class="device-card-title">${escapeHtml(getAgentDisplayName(agent))}</div>
+                        <div class="device-card-title">${window.__pm_shared.renderCopyableValue(getAgentDisplayName(agent), 'agent name')}</div>
                         <span class="agent-joined-bubble" style="margin-left:8px;display:${registeredDate ? 'inline-flex' : 'none'};align-items:center;padding:2px 6px;border-radius:12px;background:var(--panel);font-size:12px;color:var(--muted);border:1px solid var(--border);">${registeredDate ? 'Joined' : ''}</span>
                     </div>
                     <div class="device-card-subtitle">
-                        <span class="copyable" data-copy="${escapeHtml(agent.hostname || '')}" title="Click to copy Hostname">${escapeHtml(agent.hostname || 'N/A')}</span>
-                        <span style="margin-left:8px;color:var(--muted);font-size:12px;" class="copyable" data-copy="${escapeHtml(agent.agent_id || '')}" title="Click to copy Agent ID">${escapeHtml(agent.agent_id || '')}</span>
+                        ${window.__pm_shared.renderCopyableValue(agent.hostname, 'hostname', 'N/A')}
+                        <span style="margin-left:8px;color:var(--muted);font-size:12px;">${window.__pm_shared.renderCopyableValue(agent.agent_id, 'agent ID')}</span>
                     </div>
                 </div>
             </div>
@@ -10823,7 +10822,7 @@ function renderAgentCard(agent) {
                 </div>
                 <div class="device-card-row">
                     <span class="device-card-label">IP Address</span>
-                    <span class="device-card-value copyable" data-copy="${escapeHtml(agent.ip || '')}" title="Click to copy">${escapeHtml(agent.ip || 'N/A')}</span>
+                    <span class="device-card-value">${window.__pm_shared.renderCopyableValue(agent.ip, 'IP address', 'N/A')}</span>
                 </div>
                 <div class="device-card-row">
                     <span class="device-card-label">Platform</span>
@@ -11144,9 +11143,6 @@ function updateAgentSelectionUI() {
  * Updates visual selection state for device rows/cards
  */
 function updateDeviceSelectionUI() {
-    document.querySelectorAll('[data-device-select]').forEach(input => {
-        input.checked = devicesVM.selection.selectedIds.has(input.dataset.deviceSelect);
-    });
     // Update table rows
     document.querySelectorAll('tr.device-row-clickable').forEach(row => {
         const serial = row.getAttribute('data-serial');
@@ -11177,30 +11173,6 @@ function reconcileDeviceSelection(devices) {
         if (!authorizedIds.has(id)) devicesVM.selection.selectedIds.delete(id);
     }
     if (!authorizedIds.has(devicesVM.selection.lastSelected)) devicesVM.selection.lastSelected = null;
-}
-
-function renderDeviceControls(device) {
-    const id = device.serial || device.ip || '';
-    const escapedId = escapeHtml(id);
-    const selected = devicesVM.selection.selectedIds.has(id);
-    return `<div class="device-selection-controls">
-        <label><input type="checkbox" data-device-select="${escapedId}" aria-label="Select device ${escapedId}" ${selected ? 'checked' : ''}> Select</label>
-        <button type="button" class="ghost-btn" data-device-details="${escapedId}" aria-label="Details for device ${escapedId}">Details</button>
-    </div>`;
-}
-
-function bindDeviceControls(container) {
-    if (!container || container.dataset.deviceControlsBound) return;
-    container.dataset.deviceControlsBound = 'true';
-    container.addEventListener('click', event => {
-        const details = event.target.closest('[data-device-details]');
-        if (details) {
-            window.__pm_shared.showPrinterDetails(details.dataset.deviceDetails, 'saved');
-            return;
-        }
-        const select = event.target.closest('[data-device-select]');
-        if (select) handleDeviceSelection(select.dataset.deviceSelect, { ctrlKey: true });
-    });
 }
 
 /**
@@ -11594,6 +11566,14 @@ function renderAgentDetailsModal(agent) {
                 </div>
         </details>
     `;
+    body.querySelectorAll('.device-card-value').forEach(value => {
+        const text = value.textContent.trim();
+        if (!text || ['N/A', 'Unknown', 'Not reported', 'Not reported by agent', 'Never'].includes(text)) return;
+        const label = value.closest('.device-card-row')?.querySelector('.device-card-label')?.textContent || 'value';
+        value.classList.remove('copyable');
+        value.removeAttribute('data-copy');
+        value.insertAdjacentHTML('beforeend', window.__pm_shared.renderCopyButton(text, label));
+    });
     // Attach inline editor handlers now that DOM nodes are present
     try { _attachAgentDetailsNameEditor(rawAgent); } catch (e) { window.__pm_shared && window.__pm_shared.warn && window.__pm_shared.warn('attach editor failed', e); }
     // Attach check for update handler
@@ -11612,11 +11592,16 @@ function _attachAgentDetailsNameEditor(agent) {
             const displayEl = document.getElementById('agent_details_name_display');
             if (!displayEl) return;
             const current = displayEl.textContent || '';
+            const restoreName = name => {
+                displayEl.innerHTML = escapeHtml(name) + window.__pm_shared.renderCopyButton(name, 'Name');
+                editBtn.hidden = false;
+            };
+            editBtn.hidden = true;
             // Create edit UI with proper mobile-friendly input styling
             // Use flex-start to prevent mobile cursor position bugs with flex-end
-            displayEl.innerHTML = `<span style="display:flex;align-items:center;gap:6px;justify-content:flex-start;width:100%;">
+            displayEl.innerHTML = `<span style="display:flex;flex-wrap:wrap;align-items:center;gap:6px;justify-content:flex-start;width:100%;">
                 <input id="agent_details_name_input" value="${escapeHtml(agent.name || '')}" aria-label="Agent name"
-                    style="flex:1;min-width:120px;max-width:200px;text-align:left;direction:ltr;font-size:14px;padding:4px 8px;" 
+                    style="flex:1 1 100%;min-width:0;text-align:left;direction:ltr;font-size:14px;padding:4px 8px;"
                     autocomplete="off" data-1p-ignore data-lpignore="true" />
                 <button id="agent_details_save_name">Save</button>
                 <button id="agent_details_cancel_name">Cancel</button>
@@ -11631,7 +11616,7 @@ function _attachAgentDetailsNameEditor(agent) {
 
             const saveBtn = document.getElementById('agent_details_save_name');
             const cancelBtn = document.getElementById('agent_details_cancel_name');
-            if (cancelBtn) cancelBtn.addEventListener('click', () => { displayEl.textContent = current; });
+            if (cancelBtn) cancelBtn.addEventListener('click', () => restoreName(current));
 
             if (saveBtn) saveBtn.addEventListener('click', async () => {
                 const input = document.getElementById('agent_details_name_input');
@@ -11647,8 +11632,8 @@ function _attachAgentDetailsNameEditor(agent) {
                     const updated = await res.json();
                     // Update modal display
                     const title = document.getElementById('agent_details_title');
-                    const nameDisplay = document.getElementById('agent_details_name_display');
-                    if (nameDisplay) nameDisplay.textContent = updated.name || '';
+                    agent.name = updated.name || '';
+                    restoreName(agent.name);
                     if (title) title.textContent = `Agent: ${updated.name || updated.hostname || updated.agent_id}`;
                     // Update agent card in list
                     try { upsertAgentRecord(updated); } catch (e) { }
@@ -11656,7 +11641,7 @@ function _attachAgentDetailsNameEditor(agent) {
                 } catch (err) {
                     window.__pm_shared.showToast('Failed to update agent name', 'error');
                     // restore display
-                    displayEl.textContent = current;
+                    restoreName(current);
                 }
             });
         });
@@ -12728,7 +12713,6 @@ function initDevicesUI() {
     syncTenantFilterOptions('devices');
 
     [table, cardsContainer].filter(Boolean).forEach(container => {
-        bindDeviceControls(container);
         if (container.dataset.deviceKeyboardBound) return;
         container.dataset.deviceKeyboardBound = 'true';
         container.addEventListener('keydown', event => {
@@ -12823,9 +12807,39 @@ function initDevicesTableCustomizer() {
 
 let devicesLoader = null;
 let devicesRefreshTimer = null;
+const devicesChangedKeys = new Set();
+let devicesRefreshInFlight = false;
 const deviceSupplyBands = new Map();
 let devicesDemand = [];
 let devicesPaintFrame = null;
+
+function scheduleDeviceRefresh(serial, invalidateAll = false) {
+    if (serial) devicesChangedKeys.add(serial);
+    if (invalidateAll && devicesLoader) devicesLoader.getIndex().forEach(item => devicesChangedKeys.add(item.serial));
+    if (devicesRefreshTimer) return;
+    devicesRefreshTimer = setTimeout(async () => {
+        devicesRefreshTimer = null;
+        if (!isDevicesTabActive()) return;
+        if (devicesRefreshInFlight) {
+            scheduleDeviceRefresh();
+            return;
+        }
+        if (!devicesLoader || !devicesVM.loaded) {
+            loadDevices();
+            return;
+        }
+        const keys = [...devicesChangedKeys];
+        devicesChangedKeys.clear();
+        keys.forEach(key => deviceSupplyBands.delete(key));
+        devicesRefreshInFlight = true;
+        try {
+            await devicesLoader.refresh(keys);
+            if (devicesLoader.getIndexState().error) keys.forEach(key => devicesChangedKeys.add(key));
+        } finally {
+            devicesRefreshInFlight = false;
+        }
+    }, 1000);
+}
 
 // Re-evaluate age without fetching full inventory or metrics. A printer must
 // expire even when no new device_updated event arrives after it powers off.
@@ -12851,6 +12865,12 @@ function initDevicesLoader() {
         getKey: device => device.serial,
         batchSize: 30, cacheLimit: 300, concurrency: 2,
         onChange: event => {
+            if (event.type === 'refresh-error') {
+                window.__pm_shared.error('Device refresh failed:', devicesLoader.getIndexState().error);
+                devicesVM.error = devicesLoader.getIndexState().error;
+                renderDeviceLoadingStatus();
+                return;
+            }
             if (event.type === 'reset') {
                 cleanupDevicesInfiniteScroll();
                 deviceSupplyBands.clear(); devicesDemand = [];
@@ -12867,11 +12887,12 @@ function initDevicesLoader() {
                 if (state.status === 'loading') renderDevicesLoading();
                 else if (state.status === 'error') renderDevicesError(state.error);
                 else if (state.status === 'ready') {
+                    event.keys?.forEach(key => deviceSupplyBands.delete(key));
                     devicesVM.items = enrichDevices(devicesLoader.getIndex());
                     reconcileDeviceSelection(devicesVM.items);
                     devicesVM.loaded = true;
                     refreshDeviceFilters(); syncDevicesAgentFilterOptions();
-                    applyDeviceFilters(); renderDevicesOverview();
+                    applyDeviceFilters(true); renderDevicesOverview();
                 }
                 renderDeviceLoadingStatus();
                 return;
@@ -12894,7 +12915,10 @@ function initDevicesLoader() {
         },
     });
     document.getElementById('devices_retry_loading')?.addEventListener('click', () => {
-        if (devicesVM.error) loadDevices(true);
+        if (devicesVM.error) {
+            if (devicesVM.loaded) scheduleDeviceRefresh(null, true);
+            else loadDevices(true);
+        }
         else {
             const failed = devicesVM.items.map(device => device.serial).filter(key =>
                 ['rows', 'metrics'].some(kind => devicesLoader.getState(kind, key).status === 'error'));
@@ -12954,7 +12978,13 @@ function patchVisibleDeviceRows() {
         if (devicesVM.view === 'table') {
             element.querySelectorAll('td[data-column-id]').forEach(cell => {
                 const def = window.DEVICES_COLUMN_DEFINITIONS.find(column => column.id === cell.dataset.columnId);
-                if (def) cell.innerHTML = def.render(device, device.__meta);
+                if (def) {
+                    const content = def.render(device, device.__meta);
+                    if (cell.__renderedContent !== content) {
+                        cell.innerHTML = content;
+                        cell.__renderedContent = content;
+                    }
+                }
             });
         } else {
             const template = document.createElement('template');
@@ -12962,7 +12992,7 @@ function patchVisibleDeviceRows() {
             ['.device-card-header', '.device-card-info'].forEach(selector => {
                 const current = element.querySelector(selector);
                 const updated = template.content.querySelector(selector);
-                if (current && updated) current.innerHTML = updated.innerHTML;
+                if (current && updated && current.innerHTML !== updated.innerHTML) current.innerHTML = updated.innerHTML;
             });
         }
     });
@@ -12979,7 +13009,7 @@ function renderDeviceLoadingStatus() {
     if (!status || !devicesLoader) return;
     const failures = devicesVM.items.filter(device => ['rows', 'metrics'].some(kind => devicesLoader.getState(kind, device.serial).status === 'error'));
     const pending = needsGlobalDeviceSupplies() ? devicesVM.items.filter(device => !deviceSupplyBands.has(device.serial)).length : 0;
-    status.textContent = devicesVM.loading ? 'Loading device index…' : devicesVM.error ? 'Device index unavailable.' :
+    status.textContent = devicesVM.loading ? 'Loading device index…' : devicesVM.error ? (devicesVM.loaded ? 'Device refresh failed; showing last loaded inventory. Retry available.' : 'Device index unavailable.') :
         failures.length ? `${failures.length} devices could not finish loading. Retry available (maximum two attempts per refresh).` :
         pending ? `Checking supplies: ${pending} devices pending. Results incomplete until checks finish.` : '';
     retry?.classList.toggle('hidden', !devicesVM.error && !failures.length);
@@ -13144,6 +13174,17 @@ function applyDeviceFilters(preservePage = false) {
     renderDevicesActiveFilters();
     syncDeviceQuickFilters();
     const displayed = preservePage ? devicesVM.render.displayed : 0;
+    const container = document.getElementById(devicesVM.view === 'table' ? 'devices_table' : 'devices_cards');
+    const visible = [...(container?.querySelectorAll('.device-row-clickable, .device-card-clickable') || [])];
+    const expected = devicesVM.filtered.slice(0, displayed);
+    if (preservePage && visible.length && visible.length === expected.length &&
+        visible.every((element, index) => element.dataset.serial === expected[index].serial)) {
+        patchVisibleDeviceRows();
+        updateDeviceSelectionUI();
+        renderDeviceLoadingStatus();
+        syncDeviceTableSortIndicators();
+        return;
+    }
     if (preservePage) devicesVM.render.pageSize = Math.max(30, displayed);
     if (devicesVM.view === 'table') {
         renderDeviceTable(devicesVM.filtered);
@@ -13307,7 +13348,7 @@ function renderDevicesTableHeader() {
     if (!headerRow) return;
 
     if (devicesVM.tableCustomizer) {
-        headerRow.innerHTML = '<th scope="col" class="device-controls-cell">Selection / Details</th>' + devicesVM.tableCustomizer.renderHeader();
+        headerRow.innerHTML = devicesVM.tableCustomizer.renderHeader();
         // Re-bind header events for sorting/resizing
         const thead = headerRow.closest('thead');
         if (thead) {
@@ -13316,7 +13357,6 @@ function renderDevicesTableHeader() {
     } else {
         // Fallback to static header
         headerRow.innerHTML = `
-            <th scope="col" class="device-controls-cell">Selection / Details</th>
             <th data-sort-key="manufacturer">Device</th>
             <th data-sort-key="status">Status</th>
             <th data-sort-key="consumables">Consumables</th>
@@ -13348,7 +13388,7 @@ function renderDeviceTable(devices, append = false) {
     if (!tbody) return;
 
     // Get visible columns count for colspan
-    const visibleColCount = (devicesVM.tableCustomizer?.getVisibleColumns()?.length || 8) + 1;
+    const visibleColCount = devicesVM.tableCustomizer?.getVisibleColumns()?.length || 8;
 
     if (!devices || devices.length === 0) {
         tbody.innerHTML = `<tr><td colspan="${visibleColCount}" class="muted-text">${deviceEmptyMessage()}</td></tr>`;
@@ -13386,7 +13426,7 @@ function renderDeviceTable(devices, append = false) {
             rowContent = `
                 <td>
                     <div class="table-primary">${escapeHtml((device.manufacturer || 'Unknown') + ' ' + (device.model || ''))}</div>
-                    <div class="muted-text">Serial ${escapeHtml(device.serial || '—')}</div>
+                    <div class="muted-text">Serial ${window.__pm_shared.renderCopyableValue(device.serial, 'serial number', '—')}</div>
                 </td>
                 <td>
                     ${renderDeviceStatusBadge(meta.status)}
@@ -13397,15 +13437,15 @@ function renderDeviceTable(devices, append = false) {
                 <td>${escapeHtml(meta.agentName || 'Unassigned')}</td>
                 <td>${escapeHtml(tenantLabel)}</td>
                 <td>
-                    <div class="table-primary">${escapeHtml(device.ip || 'N/A')}</div>
-                    ${device.hostname ? `<div class="muted-text">${escapeHtml(device.hostname)}</div>` : ''}
+                    <div class="table-primary">${window.__pm_shared.renderCopyableValue(device.ip, 'IP address', 'N/A')}</div>
+                    ${device.hostname ? `<div class="muted-text">${window.__pm_shared.renderCopyableValue(device.hostname, 'hostname')}</div>` : ''}
                 </td>
                 <td>${escapeHtml(meta.location || '—')}</td>
                 <td title="${escapeHtml(meta.lastSeenTooltip || 'Never')}">${escapeHtml(meta.lastSeenRelative || 'Never')}</td>
             `;
         }
 
-        return `<tr tabindex="0" data-hydrated="${meta.rowState === 'ready'}" data-serial="${serial}" data-ip="${ip}" data-agent-id="${escapeHtml(device.agent_id || '')}" class="device-row-clickable" title="Click to select, double-click for details, right-click for actions"><td class="device-controls-cell">${renderDeviceControls(device)}</td>${rowContent}</tr>`;
+        return `<tr tabindex="0" data-hydrated="${meta.rowState === 'ready'}" data-serial="${serial}" data-ip="${ip}" data-agent-id="${escapeHtml(device.agent_id || '')}" class="device-row-clickable" title="Click to select; Shift/Ctrl-click for multiple; double-click or Enter for details; right-click for actions">${rowContent}</tr>`;
     }).join('');
 
     tbody.insertAdjacentHTML('beforeend', rows);
@@ -13468,10 +13508,11 @@ function renderServerDeviceCard(device) {
     const meta = device.__meta || {};
     const serial = escapeHtml(device.serial || '');
     const agentId = escapeHtml(device.agent_id || '');
-    const networkLabel = escapeHtml(device.ip || 'N/A');
-    const hostname = device.hostname ? ` • ${escapeHtml(device.hostname)}` : '';
-    const asset = device.asset_number ? `<span class="device-card-chip">Asset ${escapeHtml(device.asset_number)}</span>` : '';
-    const location = escapeHtml(meta.location || '—');
+    const copyValue = window.__pm_shared.renderCopyableValue;
+    const networkLabel = copyValue(device.ip, 'IP address', 'N/A');
+    const hostname = device.hostname ? ` &middot; ${copyValue(device.hostname, 'hostname')}` : '';
+    const asset = device.asset_number ? `<span class="device-card-chip">Asset ${copyValue(device.asset_number, 'asset number')}</span>` : '';
+    const location = copyValue(meta.location, 'location', '—');
     const tenantLabel = escapeHtml(formatTenantDisplay(meta.tenantId || device.tenant_id || ''));
     const lastSeenText = escapeHtml(meta.lastSeenRelative || 'Never');
     const lastSeenTitle = escapeHtml(meta.lastSeenTooltip || 'Never');
@@ -13479,12 +13520,11 @@ function renderServerDeviceCard(device) {
     const capabilityBadges = renderDeviceCapabilityBadges(device);
     return `
         <div tabindex="0" data-hydrated="${meta.rowState === 'ready'}" class="device-card device-card-clickable" data-serial="${serial}" data-ip="${escapeHtml(device.ip || '')}" data-agent-id="${agentId}" data-mac="${escapeHtml(device.mac || '')}" data-source="saved" title="Click to select, double-click for details, right-click for actions">
-            ${renderDeviceControls(device)}
             <div class="device-card-header">
                 <div>
-                    <div class="device-card-title">${escapeHtml(device.manufacturer || 'Unknown')} ${escapeHtml(device.model || '')}</div>
-                    <div class="device-card-subtitle">Serial ${serial} ${asset}</div>
-                    <div class="device-card-subtitle">${agentName}</div>
+                    <div class="device-card-title">${copyValue(`${device.manufacturer || 'Unknown'} ${device.model || ''}`.trim(), 'device model')}</div>
+                    <div class="device-card-subtitle">Serial ${copyValue(device.serial, 'serial number')} ${asset}</div>
+                    <div class="device-card-subtitle">${agentName}${window.__pm_shared.renderCopyButton(meta.agentName, 'agent name')}</div>
                     ${capabilityBadges ? `<div class="device-card-capabilities">${capabilityBadges}</div>` : ''}
                 </div>
                 <div class="device-card-status">
@@ -13495,11 +13535,12 @@ function renderServerDeviceCard(device) {
             <div class="device-card-info">
                 <div class="device-card-row">
                     <span class="device-card-label">Network</span>
-                    <span class="device-card-value copyable" data-copy="${escapeHtml(device.ip || '')}">${networkLabel}${hostname}</span>
+                    <span class="device-card-value">${networkLabel}${hostname}</span>
                 </div>
+                ${device.mac ? `<div class="device-card-row"><span class="device-card-label">MAC</span><span class="device-card-value">${copyValue(device.mac, 'MAC address')}</span></div>` : ''}
                 <div class="device-card-row">
                     <span class="device-card-label">Tenant</span>
-                    <span class="device-card-value">${tenantLabel}</span>
+                    <span class="device-card-value">${tenantLabel}${window.__pm_shared.renderCopyButton(formatTenantDisplay(meta.tenantId || device.tenant_id || ''), 'tenant')}</span>
                 </div>
                 <div class="device-card-row">
                     <span class="device-card-label">Location</span>
@@ -13511,7 +13552,7 @@ function renderServerDeviceCard(device) {
                 </div>
             </div>
             <div class="device-card-hint muted-text" style="font-size:11px;padding:8px 12px;text-align:center;border-top:1px solid var(--border);">
-                Right-click for actions
+                Click to select &middot; Double-click for details &middot; Right-click for actions
             </div>
         </div>
     `;

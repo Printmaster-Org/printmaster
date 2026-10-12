@@ -38,7 +38,11 @@ async function open(page, options = {}) {
     await page.addInitScript(() => {
         localStorage.setItem('pm_server_active_tab', 'devices');
         localStorage.setItem('pm_server_devices_view', 'cards');
-        window.EventSource = class { addEventListener() {} close() {} };
+        window.EventSource = class {
+            constructor() { this.listeners = {}; window.testEventSource = this; }
+            addEventListener(name, listener) { this.listeners[name] = listener; }
+            close() {}
+        };
         window.WebSocket = class { addEventListener() {} close() {} };
     });
     await page.route('**/api/**', async route => {
@@ -66,6 +70,73 @@ async function open(page, options = {}) {
 const cards = page => page.locator('#devices_cards .device-card-clickable');
 const stageCalls = (calls, stage) => calls.filter(call => call.path.endsWith(stage));
 
+test('device interactions omit extra controls and Shift-select without highlighting text', async ({ page }) => {
+    await open(page, { devices: devices.slice(0, 3) });
+    await expect(cards(page)).toHaveCount(3);
+    await expect(page.locator('[data-device-select], [data-device-details]')).toHaveCount(0);
+    const first = cards(page).nth(0);
+    await first.locator('.device-card-title').click();
+    await cards(page).nth(2).locator('.device-card-title').click({ modifiers: ['Shift'] });
+    expect(await page.evaluate(() => [...devicesVM.selection.selectedIds].length)).toBe(3);
+    expect(await page.evaluate(() => window.getSelection().toString())).toBe('');
+    await first.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#printer_details_overlay')).toBeVisible();
+    await page.locator('#printer_details_actions').getByRole('button', { name: 'Close', exact: true }).click();
+    await page.evaluate(() => { devicesVM.view = 'table'; applyDeviceFilters(); renderDevicesTableHeader(); });
+    await expect(page.locator('#devices_table_header')).not.toContainText('Selection / Details');
+    await expect(page.locator('#devices_table tbody tr.device-row-clickable')).toHaveCount(3);
+});
+
+test('shared copy controls copy raw device values once without changing selection', async ({ page }) => {
+    await open(page, { devices: [{ ...devices[0], serial: 'COPY-ME', hostname: 'Printer host' }] });
+    await page.evaluate(() => {
+        window.copiedValues = [];
+        Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+            writeText: async value => window.copiedValues.push(value),
+        } });
+    });
+    const card = cards(page).first();
+    await expect(card.getByRole('button', { name: 'Copy serial number', exact: true })).toBeVisible();
+    await card.getByRole('button', { name: 'Copy serial number', exact: true }).click();
+    expect(await page.evaluate(() => window.copiedValues)).toEqual(['COPY-ME']);
+    expect(await page.evaluate(() => devicesVM.selection.selectedIds.size)).toBe(0);
+    await card.getByRole('button', { name: 'Copy IP address', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    expect(await page.evaluate(() => window.copiedValues)).toEqual(['COPY-ME', devices[0].ip]);
+    await card.focus(); await page.keyboard.press('Enter');
+    const details = page.locator('#printer_details_overlay');
+    await expect(details.getByRole('button', { name: 'Copy Serial', exact: true })).toBeVisible();
+    await details.getByRole('button', { name: 'Copy Serial', exact: true }).click();
+    expect(await page.evaluate(() => window.copiedValues)).toEqual(['COPY-ME', devices[0].ip, 'COPY-ME']);
+    const edit = details.getByRole('button', { name: 'Edit Location', exact: true });
+    await edit.click();
+    const input = page.locator('.modal-overlay input').last();
+    await expect(input).toBeVisible();
+    expect(await input.evaluate(element => getComputedStyle(element).userSelect)).toBe('text');
+});
+
+test('upload notifications refresh in place without repeated card loading or losing focus', async ({ page }) => {
+    const calls = await open(page, { devices: devices.slice(0, 3) });
+    await expect(cards(page)).toHaveCount(3);
+    await expect(cards(page).first()).toHaveAttribute('data-hydrated', 'true');
+    await page.waitForFunction(() => testEventSource?.listeners.device_updated);
+    await cards(page).first().getByRole('button', { name: 'Copy serial number', exact: true }).focus();
+    await page.evaluate(() => {
+        window.retainedCard = document.querySelector('.device-card-clickable');
+        window.retainedCopyButton = document.activeElement;
+        for (let i = 0; i < 20; i++) testEventSource.listeners.device_updated({
+            data: JSON.stringify({ serial: 'SERIAL-002', agent_id: 'agent-1' }),
+        });
+    });
+    const before = stageCalls(calls, '/index').length;
+    await expect.poll(() => stageCalls(calls, '/index').length).toBe(before + 1);
+    await expect.poll(async () => page.evaluate(() => !devicesRefreshInFlight)).toBe(true);
+    expect(await page.evaluate(() => window.retainedCard === document.querySelector('.device-card-clickable'))).toBe(true);
+    expect(await page.evaluate(() => window.retainedCopyButton === document.activeElement)).toBe(true);
+    await expect(page.locator('#devices_cards')).not.toContainText('Loading devices');
+});
+
 test('Server Details uses uploaded saved state and never invokes Agent-local Save', async ({ page }) => {
     await open(page, { devices: [
         { ...devices[0], serial: 'SAVED', is_saved: true },
@@ -91,7 +162,7 @@ test('Server Details uses uploaded saved state and never invokes Agent-local Sav
         deletes.push(route.request().postDataJSON());
         return route.fulfill({ json: { success: true } });
     });
-    await page.getByRole('button', { name: 'Details for device SAVED', exact: true }).click();
+    await page.locator('.device-card-clickable[data-serial="SAVED"]').dblclick();
     await expect(page.locator('#printer_details_overlay')).toBeVisible();
     await page.getByRole('button', { name: 'Delete from Server', exact: true }).click();
     let confirmation = page.locator('[id^="delete_device_confirm_"].modal-overlay');

@@ -25,4 +25,37 @@ describe('clipboard helpers', () => {
         
         window.__pm_shared.error = origError;
     });
+
+    test('copy buttons safely encode raw values and copy once without bubbling to selection', async () => {
+        const value = '<device "serial">&123';
+        document.body.innerHTML = `<div id="row">${window.__pm_shared.renderCopyableValue(value, 'serial number')}</div>`;
+        const rowClick = jest.fn();
+        document.getElementById('row').addEventListener('click', event => {
+            if (!event.target.closest('button')) rowClick();
+        });
+        const button = document.querySelector('.pm-copy-button');
+        expect(button.dataset.copy).toBe(value);
+        expect(button.getAttribute('aria-label')).toBe('Copy serial number');
+        expect(document.querySelector('device')).toBeNull();
+        button.click();
+        await Promise.resolve(); await Promise.resolve();
+        expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(1);
+        expect(navigator.clipboard.writeText).toHaveBeenCalledWith(value);
+        expect(rowClick).not.toHaveBeenCalled();
+    });
+
+    test('no copy button for absent values; zero is copyable', () => {
+        expect(window.__pm_shared.renderCopyButton('')).toBe('');
+        expect(window.__pm_shared.renderCopyButton(null)).toBe('');
+        expect(window.__pm_shared.renderCopyButton(0)).toContain('data-copy="0"');
+    });
+
+    test('missing clipboard API reports failure instead of throwing synchronously', async () => {
+        navigator.clipboard = undefined;
+        const original = window.__pm_shared.error;
+        window.__pm_shared.error = jest.fn();
+        expect(await window.__pm_shared.copyToClipboard('abc')).toBe(false);
+        expect(window.__pm_shared.error).toHaveBeenCalled();
+        window.__pm_shared.error = original;
+    });
 });

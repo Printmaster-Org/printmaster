@@ -139,7 +139,7 @@
 
         const capabilitiesHTML = (typeof renderCapabilities === 'function') ? renderCapabilities(device) : renderCapabilitiesFallback(device);
         const deviceSourceBadgesHTML = renderDeviceSourceBadges(item);
-    const clipIcon = (window.__pm_shared && typeof window.__pm_shared.makeClipboardIcon === 'function') ? window.__pm_shared.makeClipboardIcon() : makeClipboardIconFallback();
+    const copyValue = window.__pm_shared.renderCopyableValue;
 
         const ipVal = device.ip || 'N/A';
         const macVal = device.mac || '';
@@ -156,11 +156,12 @@
 
         return `<div class="saved-device-card card-entering" data-device-key="${deviceKey}" data-make="${device.manufacturer||''}" data-model="${device.model||''}" data-ip="${device.ip||''}" data-serial="${serial}" data-device-type="${item&&item.device_type||''}" data-source-type="${item&&item.source_type||''}" data-is-usb="${isUSB}">` +
             `<div class="saved-device-card-header"><div class="saved-device-card-main">` +
-            `<h5 class="saved-device-card-title">${device.manufacturer||'Unknown'} ${device.model||''}</h5>` +
+            `<h5 class="saved-device-card-title">${copyValue(`${device.manufacturer || 'Unknown'} ${device.model || ''}`.trim(), 'device model')}</h5>` +
             `${capabilitiesHTML}` +
             `${deviceSourceBadgesHTML}` +
-            `<p class="saved-device-card-subtitle copyable" role="button" tabindex="0" aria-label="Copy serial number" data-copy="${serial}">Serial: ${serial}${clipIcon}</p>` +
-            `<p class="saved-device-card-subtitle"><span class="copyable" role="button" tabindex="0" aria-label="Copy IP address" data-copy="${ipVal}" style="display:inline-flex;align-items:center;gap:4px;">IP: ${ipVal}${clipIcon}</span>` + (macVal?`<span class="copyable" role="button" tabindex="0" aria-label="Copy MAC address" data-copy="${macVal}" style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;"> • MAC: ${macVal}${clipIcon}</span>`:'') + `</p>` +
+            `<p class="saved-device-card-subtitle">Serial: ${copyValue(serial, 'serial number')}</p>` +
+            `<p class="saved-device-card-subtitle">IP: ${copyValue(device.ip, 'IP address', 'N/A')}` + (macVal ? ` &middot; MAC: ${copyValue(macVal, 'MAC address')}` : '') + `</p>` +
+            (device.hostname ? `<p class="saved-device-card-subtitle">${copyValue(device.hostname, 'hostname')}</p>` : '') +
             `</div><div style="display:flex;gap:8px;flex-wrap:wrap;">` +
             (webUIUrl ? `<button class="primary" style="font-size:12px" data-action="webui" data-webui-url="${webUIUrl}" data-serial="${serial}">WebUI</button>` : '') +
             `<button data-action="details" data-ip="${device.ip||''}" data-serial="${serial}" data-source="saved">Details</button>` +
@@ -168,8 +169,8 @@
             `</div></div>` +
             `<div class="saved-device-card-grid"><div class="saved-device-card-inner-panel">` +
             `<div class="saved-device-card-section"><div class="saved-device-card-section-title">Device Info</div>` +
-            `<div class="saved-device-card-row"><span class="saved-device-card-label">Asset #</span><span class="saved-device-card-value editable-field" role="button" tabindex="0" aria-label="Edit asset number" data-action="edit" data-serial="${serial}" data-field="asset_number" data-current="${item&&item.asset_number?item.asset_number:''}">${item&&item.asset_number?item.asset_number:'(click to add)'}</span></div>` +
-            `<div class="saved-device-card-row"><span class="saved-device-card-label">Location</span><span class="saved-device-card-value editable-field" role="button" tabindex="0" aria-label="Edit location" data-action="edit" data-serial="${serial}" data-field="location" data-current="${item&&item.location?item.location:''}">${item&&item.location?item.location:'(click to add)'}</span></div>` +
+            `<div class="saved-device-card-row"><span class="saved-device-card-label">Asset #</span><span class="saved-device-card-value"><span class="editable-field" role="button" tabindex="0" aria-label="Edit asset number" data-action="edit" data-serial="${escapeHtmlCards(serial)}" data-field="asset_number" data-current="${escapeHtmlCards(item?.asset_number || '')}">${escapeHtmlCards(item?.asset_number || '(click to add)')}</span>${window.__pm_shared.renderCopyButton(item?.asset_number, 'asset number')}</span></div>` +
+            `<div class="saved-device-card-row"><span class="saved-device-card-label">Location</span><span class="saved-device-card-value"><span class="editable-field" role="button" tabindex="0" aria-label="Edit location" data-action="edit" data-serial="${escapeHtmlCards(serial)}" data-field="location" data-current="${escapeHtmlCards(item?.location || '')}">${escapeHtmlCards(item?.location || '(click to add)')}</span>${window.__pm_shared.renderCopyButton(item?.location, 'location')}</span></div>` +
             `<div class="saved-device-card-row"><span class="saved-device-card-label">Total Pages</span><span class="saved-device-card-value" title="${lifeCount === null ? 'Page count not collected' : 'Last reported page count'}">${lifeCount === null ? 'Not collected' : lifeCount.toLocaleString()}</span></div>` +
             `</div>${consumablesSection}</div>${usageGraphHTML}</div></div>`;
     }
@@ -693,6 +694,7 @@
             // If ready promise rejected or missing, continue to avoid blocking UI
         }
         try {
+            if (ev.target.closest?.('.pm-copy-button')) return;
             const el = ev.target.closest && ev.target.closest('.copyable');
             if (!el) return;
             const val = el.getAttribute('data-copy');
@@ -971,6 +973,7 @@
             let row = '<div class="device-detail-field" data-field-row="' + field + '">';
             row += '<div class="device-detail-label">' + label + '</div>';
             row += '<div class="device-detail-value-group"><div class="device-detail-value" id="field_' + field + '_display">' + displayVal + '</div>';
+            row += window.__pm_shared.renderCopyButton(safeVal, label);
             if (!opts.readonly) {
                 row += '<button class="edit-field-btn" data-field="' + field + '" data-serial="' + escapeHtmlCards(serial) + '" data-current="' + escapeHtmlCards(safeVal) + '" data-label="' + label + '" title="Edit ' + label + '" aria-label="Edit ' + label + '"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M16 3l5 5L8 21H3v-5L16 3zM14 5l5 5"/></svg></button>';
             }
@@ -1320,6 +1323,9 @@
                     const displayEl = document.getElementById('field_' + field + '_display');
                     if (displayEl) {
                         displayEl.innerHTML = newValue ? escapeHtmlCards(newValue) : '<span class="device-detail-empty">Not set</span>';
+                        const group = displayEl.parentElement;
+                        group.querySelector('.pm-copy-button')?.remove();
+                        displayEl.insertAdjacentHTML('afterend', window.__pm_shared.renderCopyButton(newValue, btn.dataset.label));
                     }
                     // Update the data-current attribute for future edits
                     btn.setAttribute('data-current', newValue);
@@ -1729,13 +1735,15 @@
         html += '<div class="printer-card-header">';
         html += '<div style="display:flex;justify-content:space-between;align-items:center">';
         html += '<div style="display:flex;flex-direction:column">';
-        html += '<strong>' + (make ? (make + ' ') : '') + (model || '') + '</strong>';
-        html += '<span style="color:var(--muted);font-size:12px">' + ip + '</span>';
+        html += '<strong>' + window.__pm_shared.renderCopyableValue((make + ' ' + model).trim(), 'device model') + '</strong>';
+        html += '<span style="color:var(--muted);font-size:12px">' + window.__pm_shared.renderCopyableValue(ip, 'IP address') + '</span>';
         html += '</div>'; // left
         html += '<div style="display:flex;gap:8px">' + saveBtn + proxyBtn + '</div>';
         html += '</div></div>';
         html += '<div class="printer-card-body">';
-        if (serial) html += '<div><strong>Serial:</strong> <code>' + serial + '</code></div>';
+        if (serial) html += '<div><strong>Serial:</strong> ' + window.__pm_shared.renderCopyableValue(serial, 'serial number') + '</div>';
+        if (p.hostname) html += '<div><strong>Hostname:</strong> ' + window.__pm_shared.renderCopyableValue(p.hostname, 'hostname') + '</div>';
+        if (p.mac) html += '<div><strong>MAC:</strong> ' + window.__pm_shared.renderCopyableValue(p.mac, 'MAC address') + '</div>';
         html += '</div></div>';
 
         return html;

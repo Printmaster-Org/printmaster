@@ -1,6 +1,11 @@
 /** @jest-environment jsdom */
 
+require('../shared.js');
 require('../cards.js');
+const copyHelpers = {
+    renderCopyButton: window.__pm_shared.renderCopyButton,
+    renderCopyableValue: window.__pm_shared.renderCopyableValue,
+};
 const epsonSupplies = require('./fixtures/epson-p9500-supplies.json');
 
 describe('device details', () => {
@@ -25,6 +30,7 @@ describe('device details', () => {
                 <div id="printer_details_actions"></div>
             </div>`;
         window.__pm_shared = {
+            ...copyHelpers,
             showPrompt: jest.fn().mockResolvedValue('Finance'),
             showConfirm: jest.fn().mockResolvedValue(false),
             showToast: jest.fn(),
@@ -47,6 +53,20 @@ describe('device details', () => {
         expect(document.querySelector('#printer_metrics_summary')).not.toBeNull();
         expect(document.querySelector('#refresh_data_btn')).not.toBeNull();
         expect(document.querySelector('#collect_metrics_btn')).not.toBeNull();
+    });
+
+    test('Agent saved and discovered cards expose shared raw-value copy controls', () => {
+        const printer = { ...device, hostname: 'printer.example', mac: '00:11:22:33:44:55' };
+        for (const html of [
+            window.__pm_shared_cards.renderSavedCard({ serial: device.serial, printer_info: printer }),
+            window.__pm_shared_cards.renderDiscoveredCard(printer, false),
+        ]) {
+            const card = document.createElement('div');
+            card.innerHTML = html;
+            const values = [...card.querySelectorAll('button.pm-copy-button')].map(button => button.dataset.copy);
+            expect(values).toEqual(expect.arrayContaining([device.serial, device.ip, printer.hostname, printer.mac]));
+            expect([...card.querySelectorAll('button.pm-copy-button')].every(button => button.getAttribute('aria-label'))).toBe(true);
+        }
     });
 
     test.each([
