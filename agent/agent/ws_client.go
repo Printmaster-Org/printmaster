@@ -655,8 +655,9 @@ func (ws *WSClient) handleStreamingProxyRequest(requestID, method, path, rawQuer
 		req.Header.Set(k, v)
 	}
 
-	// Mark this as a server-proxied request
-	req.Header.Set("X-PrintMaster-Proxy", "server")
+	// Mark this as a server-proxied request via the request context (not
+	// spoofable by network clients, unlike headers).
+	req = newServerProxyRequest(req)
 
 	// Use our streaming ResponseWriter that sends chunks via WebSocket
 	streamWriter := newStreamingResponseWriter(ws, requestID)
@@ -713,9 +714,9 @@ func (ws *WSClient) handleLocalProxyRequest(requestID, method, path, rawQuery st
 		req.Header.Set(k, v)
 	}
 
-	// Mark this as a server-proxied request so agent auth middleware can bypass it
-	// This is safe because this code path is only reached for requests from the trusted server
-	req.Header.Set("X-PrintMaster-Proxy", "server")
+	// Mark this as a server-proxied request via the request context so agent
+	// auth can bypass it. Only this in-process path can set the context marker.
+	req = newServerProxyRequest(req)
 
 	// Use httptest.ResponseRecorder to capture the response
 	recorder := httptest.NewRecorder()

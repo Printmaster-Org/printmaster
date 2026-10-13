@@ -28,10 +28,7 @@ func TestSNMPWalkRoutesRequireAdmin(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, snmpWalkRoutePrefix, nil)
-			req.Header.Set("X-PrintMaster-Proxy", "server")
-			if tc.role != "" {
-				req.Header.Set("X-PrintMaster-Role", tc.role)
-			}
+			req = req.WithContext(agent.WithServerProxy(req.Context(), agent.ServerProxyIdentity{User: "u", Role: tc.role}))
 			rec := httptest.NewRecorder()
 			handleSNMPWalks(rec, req)
 			if rec.Code != tc.status {
@@ -47,6 +44,17 @@ func TestSNMPWalkRoutesRequireAdmin(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("local viewer status = %d", rec.Code)
 	}
+
+	// Forged proxy headers from a network client must not grant admin.
+	forged := httptest.NewRequest(http.MethodGet, snmpWalkRoutePrefix, nil)
+	forged.Header.Set("X-PrintMaster-Proxy", "server")
+	forged.Header.Set("X-PrintMaster-Role", "admin")
+	forged = forged.WithContext(context.WithValue(forged.Context(), agentPrincipalContextKey, &AgentPrincipal{Username: "u", Role: "viewer"}))
+	rec = httptest.NewRecorder()
+	agent.StripUntrustedProxyHeaders(http.HandlerFunc(handleSNMPWalks)).ServeHTTP(rec, forged)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("forged header status = %d", rec.Code)
+	}
 }
 
 func TestSNMPWalkRoutesListAndValidate(t *testing.T) {
@@ -55,8 +63,7 @@ func TestSNMPWalkRoutesListAndValidate(t *testing.T) {
 
 	admin := func(method, path, body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
-		req.Header.Set("X-PrintMaster-Proxy", "server")
-		req.Header.Set("X-PrintMaster-Role", "admin")
+		req = req.WithContext(agent.WithServerProxy(req.Context(), agent.ServerProxyIdentity{User: "u", Role: "admin"}))
 		rec := httptest.NewRecorder()
 		handleSNMPWalks(rec, req)
 		return rec

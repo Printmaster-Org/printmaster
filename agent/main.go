@@ -388,9 +388,9 @@ func (a *agentAuthManager) shouldBypass(r *http.Request) bool {
 	if a == nil || a.mode == "disabled" {
 		return true
 	}
-	// Bypass auth for server-proxied requests (header is set by ws_client.go handleProxyRequest)
-	// This is safe because only the internal proxy code path can set this header
-	if r.Header.Get("X-PrintMaster-Proxy") == "server" {
+	// Bypass auth for requests dispatched in-process by the authenticated
+	// server WebSocket proxy. This uses a context marker, never a header.
+	if agent.IsServerProxyRequest(r) {
 		return true
 	}
 	path := r.URL.Path
@@ -676,16 +676,14 @@ func (a *agentAuthManager) handleAuthMe(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// When accessed through server proxy, the server injects principal info in headers
-	// Return that info so the proxied UI can display the correct role/permissions
-	if r.Header.Get("X-PrintMaster-Proxy") == "server" {
-		user := r.Header.Get("X-PrintMaster-User")
-		role := r.Header.Get("X-PrintMaster-Role")
-		if user != "" && role != "" {
+	// When accessed through the server proxy, report the server-authenticated
+	// user so the proxied UI can display the correct role/permissions.
+	if id, ok := agent.ServerProxyFromContext(r.Context()); ok {
+		if id.User != "" && id.Role != "" {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(&AgentPrincipal{
-				Username: user,
-				Role:     role,
+				Username: id.User,
+				Role:     id.Role,
 				Source:   "server-proxy",
 			})
 			return
@@ -6848,7 +6846,7 @@ window.top.location.href = '/proxy/%s/';
 		// Skip notification if this delete was initiated by the server (via proxy)
 		// to avoid a race condition where both the HTTP handler and WebSocket handler
 		// try to delete from server storage simultaneously.
-		if r.Header.Get("X-PrintMaster-Server-Request") == "" {
+		if id, ok := agent.ServerProxyFromContext(r.Context()); !ok || !id.ServerInitiated {
 			go notifyServerDeviceDeleted(safeSerial)
 		}
 
@@ -8252,6 +8250,8 @@ window.top.location.href = '/proxy/%s/';
 	if agentAuth != nil {
 		rootHandler = agentAuth.Wrap(rootHandler)
 	}
+	// Outermost: drop forged server-proxy headers from network requests.
+	rootHandler = agent.StripUntrustedProxyHeaders(rootHandler)
 
 	// Register local handler globally for direct proxy invocation
 	// This allows the server to proxy to the agent's web UI without HTTP round-trip

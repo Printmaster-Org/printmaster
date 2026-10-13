@@ -33,8 +33,8 @@ func registerSNMPWalkRoutes(dir string, meta map[string]string) {
 // requireAgentAdmin allows server-proxied requests only for server admins and
 // local requests only for agent admins.
 func requireAgentAdmin(w http.ResponseWriter, r *http.Request) bool {
-	if r.Header.Get("X-PrintMaster-Proxy") == "server" {
-		if strings.EqualFold(r.Header.Get("X-PrintMaster-Role"), "admin") {
+	if id, ok := agent.ServerProxyFromContext(r.Context()); ok {
+		if id.IsAdmin() {
 			return true
 		}
 		http.Error(w, "administrator required", http.StatusForbidden)
