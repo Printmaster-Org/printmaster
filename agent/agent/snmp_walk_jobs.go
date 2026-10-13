@@ -401,7 +401,7 @@ func (m *SNMPWalkManager) writeWalk(ctx context.Context, id string, job SNMPWalk
 	cancelled := false
 	var errs []string
 	rootCounts := map[string]int{}
-	walkFn := walkFuncFor(client)
+	walkFn := walkFuncFor(ctx, client)
 
 	for _, root := range job.Roots {
 		if ctx.Err() != nil {
@@ -501,7 +501,12 @@ type bulkWalker interface {
 	BulkWalk(root string, walkFn gosnmp.WalkFunc) error
 }
 
-func walkFuncFor(client SNMPClient) func(string, gosnmp.WalkFunc) error {
+func walkFuncFor(ctx context.Context, client SNMPClient) func(string, gosnmp.WalkFunc) error {
+	if s, ok := client.(snmpStepper); ok {
+		return func(root string, fn gosnmp.WalkFunc) error {
+			return resumableWalk(ctx, s, root, fn)
+		}
+	}
 	if bw, ok := client.(bulkWalker); ok {
 		return bw.BulkWalk
 	}

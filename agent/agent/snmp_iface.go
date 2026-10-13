@@ -85,6 +85,16 @@ func (w *gosnmpWrapper) BulkWalk(root string, walkFn gosnmp.WalkFunc) error {
 	return w.snmp.BulkWalk(root, walkFn)
 }
 
+func (w *gosnmpWrapper) GetNext(oids []string) (*gosnmp.SnmpPacket, error) {
+	return w.snmp.GetNext(oids)
+}
+
+func (w *gosnmpWrapper) GetBulk(oids []string, nonRepeaters uint8, maxRepetitions uint32) (*gosnmp.SnmpPacket, error) {
+	return w.snmp.GetBulk(oids, nonRepeaters, maxRepetitions)
+}
+
+func (w *gosnmpWrapper) SNMPVersion() gosnmp.SnmpVersion { return w.snmp.Version }
+
 func (w *gosnmpWrapper) Close() error {
 	if w.snmp != nil && w.snmp.Conn != nil {
 		_ = w.snmp.Conn.Close()
