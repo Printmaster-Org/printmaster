@@ -50,6 +50,24 @@ func TestSuppliesPreserveDistinctInkCartridgesAndMaintenanceBoxes(t *testing.T) 
 	}
 }
 
+func TestSupplyPercentagesHaveNoFloatNoise(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		level, max int
+		want       float64
+	}{{58, 100, 58}, {29, 100, 29}, {1, 3, 33.3}, {750, 1000, 75}}
+	for i, c := range cases {
+		pdus := []gosnmp.SnmpPDU{
+			{Name: fmt.Sprintf("1.3.6.1.2.1.43.11.1.1.6.1.%d", i+1), Value: "Cyan Ink Supply Unit T05B2"},
+			{Name: fmt.Sprintf("1.3.6.1.2.1.43.11.1.1.8.1.%d", i+1), Value: c.max},
+			{Name: fmt.Sprintf("1.3.6.1.2.1.43.11.1.1.9.1.%d", i+1), Value: c.level},
+		}
+		if got := (&EpsonVendor{}).Parse(pdus)["supply_cyan_ink_supply_unit_t05b2"]; got != c.want {
+			t.Errorf("%d/%d = %v, want exactly %v", c.level, c.max, got, c.want)
+		}
+	}
+}
+
 func TestVendorDetection(t *testing.T) {
 	tests := []struct {
 		name         string

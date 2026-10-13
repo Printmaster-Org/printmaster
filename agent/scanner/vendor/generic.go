@@ -2,6 +2,7 @@ package vendor
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -245,7 +246,8 @@ func parseSuppliesTable(pdus []gosnmp.SnmpPDU) map[string]interface{} {
 		var percentage float64
 		if entry.MaxCapacity > 0 && entry.Level >= 0 {
 			// Normal case: calculate percentage from level/capacity
-			percentage = (float64(entry.Level) / float64(entry.MaxCapacity)) * 100.0
+			// Multiply first and round to 0.1 so 58/100 reports 58, not 57.99999999999999.
+			percentage = math.Round(float64(entry.Level)*1000.0/float64(entry.MaxCapacity)) / 10.0
 		} else if entry.Level >= 0 && entry.Level <= 100 && entry.MaxCapacity <= 0 {
 			// MaxCapacity is unknown/special but Level is valid 0-100 range
 			// Treat level as percentage directly (common for many printers)
