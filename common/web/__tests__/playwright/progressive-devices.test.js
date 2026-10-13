@@ -106,18 +106,26 @@ test('shared copy controls copy raw device values once without changing selectio
         } });
     });
     const card = cards(page).first();
+    const copied = () => page.evaluate(() => window.copiedValues);
+    // Hydration swaps card markup; clicking a pre-hydration button detaches it and WebKit drops the click.
+    await card.scrollIntoViewIfNeeded();
+    await expect(card).toHaveAttribute('data-hydrated', 'true');
     await expect(card.getByRole('button', { name: 'Copy serial number', exact: true })).toBeVisible();
     await card.getByRole('button', { name: 'Copy serial number', exact: true }).click();
-    expect(await page.evaluate(() => window.copiedValues)).toEqual(['COPY-ME']);
+    await expect.poll(copied).toEqual(['COPY-ME']);
     expect(await page.evaluate(() => devicesVM.selection.selectedIds.size)).toBe(0);
     await card.getByRole('button', { name: 'Copy IP address', exact: true }).focus();
     await page.keyboard.press('Enter');
-    expect(await page.evaluate(() => window.copiedValues)).toEqual(['COPY-ME', devices[0].ip]);
-    await card.focus(); await page.keyboard.press('Enter');
+    await expect.poll(copied).toEqual(['COPY-ME', devices[0].ip]);
     const details = page.locator('#printer_details_overlay');
+    await expect(async () => {
+        await card.focus();
+        await page.keyboard.press('Enter');
+        await expect(details).toBeVisible({ timeout: 1000 });
+    }).toPass();
     await expect(details.getByRole('button', { name: 'Copy Serial', exact: true })).toBeVisible();
     await details.getByRole('button', { name: 'Copy Serial', exact: true }).click();
-    expect(await page.evaluate(() => window.copiedValues)).toEqual(['COPY-ME', devices[0].ip, 'COPY-ME']);
+    await expect.poll(copied).toEqual(['COPY-ME', devices[0].ip, 'COPY-ME']);
     const edit = details.getByRole('button', { name: 'Edit Location', exact: true });
     await edit.click();
     const input = page.locator('.modal-overlay input').last();
