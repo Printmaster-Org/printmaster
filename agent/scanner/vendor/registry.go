@@ -57,6 +57,21 @@ type ExtendedVendorModule interface {
 	ParseWithRemoteMode(ctx context.Context, pdus []gosnmp.SnmpPDU, ip string, timeoutSeconds int) map[string]interface{}
 }
 
+// MetricTableModule is an optional interface for vendors whose metrics live in
+// enterprise tables (rather than scalars). Roots returned here are walked
+// during QueryMetrics, alongside SupplyOIDs/PaperTrayOIDs.
+type MetricTableModule interface {
+	MetricTableOIDs() []string
+}
+
+// MetricTableOIDs returns the module's metric table walk roots, if any.
+func MetricTableOIDs(module VendorModule) []string {
+	if m, ok := module.(MetricTableModule); ok {
+		return m.MetricTableOIDs()
+	}
+	return nil
+}
+
 // ParseWithContext calls the vendor's extended parsing if available,
 // otherwise falls back to standard Parse().
 // This is the preferred way to invoke vendor parsing when IP is known.

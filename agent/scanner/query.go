@@ -279,6 +279,11 @@ func queryDeviceWithCapabilitiesAndClient(ctx context.Context, ip string, profil
 			for _, s := range paperTrayOIDs {
 				tableOIDMap[s] = true
 			}
+			if profile == QueryMetrics {
+				for _, s := range vendor.MetricTableOIDs(detectedVendor) {
+					tableOIDMap[s] = true
+				}
+			}
 
 			for _, oid := range queryOIDs {
 				if tableOIDMap[oid] {
@@ -473,6 +478,7 @@ func buildQueryOIDsWithModule(profile QueryProfile, caps *capabilities.DeviceCap
 		queryOIDs = append(queryOIDs, vendorModule.MetricOIDs(caps)...)
 		queryOIDs = append(queryOIDs, vendorModule.SupplyOIDs()...)
 		queryOIDs = append(queryOIDs, vendorModule.PaperTrayOIDs()...)
+		queryOIDs = appendUniqueOIDs(queryOIDs, vendor.MetricTableOIDs(vendorModule)...)
 	}
 	return queryOIDs
 }
