@@ -28,7 +28,8 @@ generic.
 | Kyocera | Matches the KDM-based module. `large_paper_*` (A3 + B4 + Ledger) was added from these findings. See `KYOCERA_OID_MAPPING.md`. |
 | Epson | Matches the EDA-based module. `large_paper_*` (A3, A3/Legal, A3/Ledger, A3 Wide, US B) was added from these findings. See `EPSON_OID_MAPPING.md`. |
 | HP | **Gap.** `agent/scanner/vendor/hp.go` uses `...4.2.1.4.4.7.0`/`.8.0` for color/mono and `...4.2.1.4.1.1/.2/.3.0` for scans/copies. Print Audit instead reads the legacy totals table `...4.2.1.4.1.2.{5,6,7}` (total/mono/color), the MFP media tables `...4.2.1.1.16.{1,3,7}.1.{1,3,8}` (print mono/color and copy; simplex/duplex/combined), the print-meter-equivalent table `...4.2.1.1.16.1.44` (float values, three-tier billing) and the scan counters `...4.2.1.2.2.1.{20,21,59,60,61,62,89,90}`. Validate against a real HP walk before rewriting. |
-| Brother, Canon, Ricoh, Sharp, Toshiba, Xerox, Lexmark, Samsung, Konica Minolta, OKI and others | No vendor module yet; they use generic parsing. The sections below are the starting point for each module. Capture a walk with the SNMP walk capture tool first. |
+| Brother | Module built from these findings: info blobs, function/scan tables, IEEE model. Dell-branded detection is not implemented. Blob parsing still needs a real walk to validate. See `BROTHER_OID_MAPPING.md`. |
+| Canon, Ricoh, Sharp, Toshiba, Xerox, Lexmark, Samsung, Konica Minolta, OKI and others | No vendor module yet; they use generic parsing. The sections below are the starting point for each module. Capture a walk with the SNMP walk capture tool first. |
 
 The sections below are organized per script. "ect" names are Print Audit's
 extended counter types: for example `ectPrintMono` is printer mono pages, and
