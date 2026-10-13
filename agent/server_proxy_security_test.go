@@ -84,3 +84,37 @@ func TestServerProxyContextBypassesAuth(t *testing.T) {
 		t.Fatalf("auth/me = %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// Forwarding headers are client-controlled and must never grant the
+// loopback local-admin bypass to a remote peer.
+func TestRequestIsLoopbackIgnoresForgedForwardingHeaders(t *testing.T) {
+	cases := []struct {
+		name    string
+		remote  string
+		headers map[string]string
+		want    bool
+	}{
+		{"direct loopback", "127.0.0.1:5000", nil, true},
+		{"direct ipv6 loopback", "[::1]:5000", nil, true},
+		{"remote peer", "192.168.1.50:5000", nil, false},
+		{"remote forged xff", "192.168.1.50:5000", map[string]string{"X-Forwarded-For": "127.0.0.1"}, false},
+		{"remote forged real ip", "192.168.1.50:5000", map[string]string{"X-Real-IP": "127.0.0.1"}, false},
+		{"local proxy for remote client", "127.0.0.1:5000", map[string]string{"X-Forwarded-For": "203.0.113.9"}, false},
+		{"local proxy spoofed chain", "127.0.0.1:5000", map[string]string{"X-Forwarded-For": "127.0.0.1, 203.0.113.9"}, false},
+		{"local proxy real ip remote", "127.0.0.1:5000", map[string]string{"X-Real-IP": "203.0.113.9"}, false},
+		{"local proxy forwarded header", "127.0.0.1:5000", map[string]string{"Forwarded": "for=203.0.113.9"}, false},
+		{"local proxy for local client", "127.0.0.1:5000", map[string]string{"X-Forwarded-For": "127.0.0.1"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/version", nil)
+			req.RemoteAddr = tc.remote
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+			if got := requestIsLoopback(req); got != tc.want {
+				t.Fatalf("requestIsLoopback = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

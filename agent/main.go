@@ -477,17 +477,25 @@ func requestIsLoopback(r *http.Request) bool {
 		ip := net.ParseIP(strings.TrimSpace(host))
 		return ip != nil && ip.IsLoopback()
 	}
-	if checkHost(r.RemoteAddr) {
-		return true
+	// Only the TCP peer address proves locality; forwarding headers are
+	// client-controlled and must never grant loopback trust.
+	if !checkHost(r.RemoteAddr) {
+		return false
 	}
-	xff := r.Header.Get("X-Forwarded-For")
-	if xff != "" {
-		parts := strings.Split(xff, ",")
-		if len(parts) > 0 && checkHost(parts[0]) {
-			return true
+	// A loopback peer that forwards for someone else (local reverse proxy)
+	// is only local if every hop it reports is loopback too.
+	for _, hop := range strings.Split(r.Header.Get("X-Forwarded-For"), ",") {
+		if hop = strings.TrimSpace(hop); hop != "" && !checkHost(hop) {
+			return false
 		}
 	}
-	return false
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" && !checkHost(realIP) {
+		return false
+	}
+	if r.Header.Get("Forwarded") != "" {
+		return false
+	}
+	return true
 }
 
 func requestIsHTTPS(r *http.Request) bool {
