@@ -15,6 +15,7 @@ This document captures the agreed strategy for server- and agent-driven updates,
 1. **Release Intake**
    - Server polls the authoritative release feed (GitHub or artifact bucket) for new agent/server versions.
    - Downloaded artifacts are verified with upstream checksums and cached per platform.
+   - Within the same major/minor/patch Dev line, Agent update manifests select the latest publication time, not the commit hash or manifest signing time. Stable and Beta retain semantic-version ordering.
 
 2. **Manifest Signing**
    - Server maintains an Ed25519 signing key pair.
@@ -31,6 +32,7 @@ This document captures the agreed strategy for server- and agent-driven updates,
 
 5. **Agent Auto-Update**
    - Agents poll the server (per policy) for new updates and fetch repackaged installers.
+   - A different server-selected Dev build on the same version line is eligible regardless of hash ordering, subject to the existing version pins. Older version lines are not automatic upgrades.
    - Updates respect version pinning strategy (major: stay on 0.x, minor: stay on 0.9.x, patch: stay on 0.9.14) unless an admin explicitly initiates an upgrade.
    - The agent stages the new build, replaces the running service, and reports status.
 

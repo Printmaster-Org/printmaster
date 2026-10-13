@@ -231,6 +231,7 @@ func (m *Manager) GetLatestManifest(ctx context.Context, component, platform, ar
 
 	var latest *storage.ReleaseManifest
 	var latestVersion *semver.Version
+	var latestPublishedAt time.Time
 	matchCount := 0
 	for _, manifest := range manifests {
 		if manifest.Platform != platform || manifest.Arch != arch || normalizedFormat(manifest.Format) != format {
@@ -241,6 +242,19 @@ func (m *Manager) GetLatestManifest(ctx context.Context, component, platform, ar
 		}
 		matchCount++
 		candidateVersion := parseSemverVersion(manifest.Version)
+		var publishedAt time.Time
+		if channelFromVersion(manifest.Version) == "dev" {
+			if manifest.ManifestJSON != "" {
+				var payload ManifestPayload
+				if err := json.Unmarshal([]byte(manifest.ManifestJSON), &payload); err != nil {
+					return nil, fmt.Errorf("failed to read dev release publication time for %s: %w", manifest.Version, err)
+				}
+				publishedAt = payload.PublishedAt
+			}
+			if publishedAt.IsZero() && m.log != nil {
+				m.log.Warn("Dev release has no publication time; chronological ordering is unavailable", "version", manifest.Version)
+			}
+		}
 		m.logDebug("manifest candidate",
 			"version", manifest.Version,
 			"parsed", candidateVersion != nil,
@@ -254,12 +268,20 @@ func (m *Manager) GetLatestManifest(ctx context.Context, component, platform, ar
 		if latest == nil {
 			latest = manifest
 			latestVersion = candidateVersion
+			latestPublishedAt = publishedAt
 			continue
 		}
 		if candidateVersion != nil {
-			if latestVersion == nil || candidateVersion.GreaterThan(latestVersion) {
+			newer := latestVersion == nil || candidateVersion.GreaterThan(latestVersion)
+			// Commit hashes are identifiers, not ordered prerelease numbers.
+			if latestVersion != nil && channelFromVersion(manifest.Version) == "dev" && channelFromVersion(latest.Version) == "dev" &&
+				candidateVersion.Major() == latestVersion.Major() && candidateVersion.Minor() == latestVersion.Minor() && candidateVersion.Patch() == latestVersion.Patch() {
+				newer = publishedAt.After(latestPublishedAt)
+			}
+			if newer {
 				latest = manifest
 				latestVersion = candidateVersion
+				latestPublishedAt = publishedAt
 			}
 			continue
 		}
@@ -310,6 +332,7 @@ func (m *Manager) GetLatestManifest(ctx context.Context, component, platform, ar
 		result.SHA256 = artifact.SHA256
 		result.SizeBytes = artifact.SizeBytes
 		result.SourceURL = artifact.SourceURL
+		result.PublishedAt = artifact.PublishedAt
 	}
 
 	return result, nil

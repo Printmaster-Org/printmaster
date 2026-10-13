@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"printmaster/common/updatepolicy"
 )
 
 type channelTestClient struct {
@@ -116,8 +118,46 @@ func TestBetaReleaseVersionOrdering(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+
 			if got := manager.isUpdateNeeded(&UpdateManifest{Version: tc.target}); got != tc.newer {
 				t.Fatalf("update needed = %v, want %v", got, tc.newer)
+			}
+		})
+	}
+}
+
+func TestDevReleaseUpdateNeeded(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		current string
+		target  string
+		spec    updatepolicy.PolicySpec
+		want    bool
+	}{
+		{name: "lower hash", current: "0.32.0-dev.f829bdb", target: "0.32.0-dev.00a4d92", want: true},
+		{name: "higher hash", current: "0.32.0-dev.00a4d92", target: "0.32.0-dev.f829bdb", want: true},
+		{name: "same build", current: "0.32.0-dev.f829bdb", target: "0.32.0-dev.f829bdb"},
+		{name: "older line", current: "0.32.0-dev.00a4d92", target: "0.31.0-dev.f829bdb"},
+		{name: "stable to dev", current: "0.32.0", target: "0.32.0-dev.f829bdb"},
+		{name: "dev to stable", current: "0.32.0-dev.f829bdb", target: "0.32.0", want: true},
+		{name: "pinned version", current: "0.32.0-dev.f829bdb", target: "0.32.0-dev.00a4d92",
+			spec: updatepolicy.PolicySpec{TargetVersion: "0.32.0-dev.f829bdb"}},
+		{name: "patch pin", current: "0.32.0-dev.f829bdb", target: "0.32.0-dev.00a4d92",
+			spec: updatepolicy.PolicySpec{VersionPinStrategy: updatepolicy.VersionPinPatch}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			manager, err := NewManager(Options{
+				Enabled: true, CurrentVersion: tc.current, Channel: "dev", DataDir: t.TempDir(),
+				ServerClient:   &channelTestClient{},
+				PolicyProvider: &mockPolicyProvider{enabled: true, spec: tc.spec},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := manager.isUpdateNeeded(&UpdateManifest{Version: tc.target, Channel: "dev"}); got != tc.want {
+				t.Fatalf("update needed = %v, want %v", got, tc.want)
 			}
 		})
 	}

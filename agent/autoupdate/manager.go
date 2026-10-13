@@ -1615,6 +1615,13 @@ func (m *Manager) isUpdateNeeded(manifest *UpdateManifest) bool {
 		}
 	}
 
+	// The server selects the latest published dev build; its hash has no ordering.
+	targetPrerelease, currentPrerelease := targetSemver.Prerelease(), m.currentSemver.Prerelease()
+	if (targetPrerelease == "dev" || strings.HasPrefix(targetPrerelease, "dev.")) &&
+		(currentPrerelease == "dev" || strings.HasPrefix(currentPrerelease, "dev.")) &&
+		targetSemver.Major() == m.currentSemver.Major() && targetSemver.Minor() == m.currentSemver.Minor() && targetSemver.Patch() == m.currentSemver.Patch() {
+		return !targetSemver.Equal(m.currentSemver)
+	}
 	return targetSemver.GreaterThan(m.currentSemver)
 }
 

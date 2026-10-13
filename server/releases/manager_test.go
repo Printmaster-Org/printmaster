@@ -59,6 +59,7 @@ func TestManagerRotateAndRegenerate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
+
 	t.Cleanup(func() { _ = store.Close() })
 
 	mgr, err := NewManager(store, nil, ManagerOptions{ManifestVersion: "1.0"})
@@ -109,5 +110,69 @@ func TestManagerRotateAndRegenerate(t *testing.T) {
 	}
 	if len(keys) < 2 {
 		t.Fatalf("expected at least 2 signing keys, got %d", len(keys))
+	}
+}
+
+func TestLatestManifestVersionOrdering(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                string
+		channel             string
+		older               string
+		newer               string
+		olderPublishedLater bool
+	}{
+		{"dev hashes", "dev", "0.32.0-dev.f829bdb", "0.32.0-dev.00a4d92", false},
+		{"numeric dev hash", "dev", "0.32.0-dev.abcdef0", "0.32.0-dev.1234567", false},
+		{"dev version line", "dev", "0.31.0-dev.fffffff", "0.32.0-dev.0000000", true},
+		{"beta sequence", "beta", "0.32.0-beta.9", "0.32.0-beta.10", true},
+		{"stable version", "stable", "0.9.9", "0.10.0", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store, err := storage.NewSQLiteStore(":memory:")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			generatedAt := time.Date(2026, 10, 13, 18, 0, 0, 0, time.UTC)
+			manager, err := NewManager(store, nil, ManagerOptions{Now: func() time.Time { return generatedAt }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			publishedAt := time.Date(2026, 10, 13, 17, 10, 14, 0, time.UTC)
+			ctx := context.Background()
+			for _, version := range []string{tc.newer, tc.older} {
+				artifact := &storage.ReleaseArtifact{
+					Component: "agent", Version: version, Platform: "windows", Arch: "amd64",
+					Channel: tc.channel, SHA256: strings.Repeat("ab", 32), SizeBytes: 42,
+					SourceURL: "https://example.com/" + version, PublishedAt: publishedAt,
+				}
+				if version == tc.older {
+					artifact.PublishedAt = publishedAt.Add(-24 * time.Hour)
+					if tc.olderPublishedLater {
+						artifact.PublishedAt = publishedAt.Add(24 * time.Hour)
+					}
+					// Re-signing an old manifest must not make it the latest release.
+					generatedAt = generatedAt.Add(time.Hour)
+				}
+				if err := store.UpsertReleaseArtifact(ctx, artifact); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := manager.EnsureManifestForArtifact(ctx, artifact); err != nil {
+					t.Fatal(err)
+				}
+			}
+			latest, err := manager.GetLatestManifest(ctx, "agent", "windows", "amd64", tc.channel, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if latest.Version != tc.newer {
+				t.Fatalf("latest = %s, want %s", latest.Version, tc.newer)
+			}
+			if !latest.PublishedAt.Equal(publishedAt) {
+				t.Fatalf("published_at = %s, want %s", latest.PublishedAt, publishedAt)
+			}
+		})
 	}
 }
