@@ -182,6 +182,7 @@ func (v *EpsonVendor) Parse(pdus []gosnmp.SnmpPDU) map[string]interface{} {
 
 	// === Paper sizes and simplex/duplex ===
 	paperRows := parseEpsonPaperSizeTable(pdus)
+	largeTotal, largeColor, haveLarge := 0, 0, false
 	for _, row := range paperRows {
 		slug := epsonSlug(row.name)
 		if slug == "" {
@@ -195,6 +196,18 @@ func (v *EpsonVendor) Parse(pdus []gosnmp.SnmpPDU) map[string]interface{} {
 		if row.hasSimplex {
 			result["paper_"+slug+"_duplex_pages"] = row.total - row.simplex
 		}
+		if epsonLargePaperSizes[slug] {
+			haveLarge = true
+			largeTotal += row.total
+			if row.hasColor {
+				largeColor += row.color
+			}
+		}
+	}
+	if haveLarge && largeTotal > 0 {
+		result["large_paper_pages"] = largeTotal
+		result["large_paper_mono_pages"] = largeTotal - largeColor
+		result["large_paper_color_pages"] = largeColor
 	}
 	for k, val := range epsonDuplexMetrics(idx, total, hasTotal, color, hasColor, paperRows) {
 		result[k] = val
@@ -379,6 +392,10 @@ func tableRows(table map[int]map[string]gosnmp.SnmpPDU, col int) []string {
 	sort.Strings(rows)
 	return rows
 }
+
+// epsonLargePaperSizes are the paper-size names (as slugs) billed as "large",
+// matching Print Audit's Epson large-paper classification.
+var epsonLargePaperSizes = map[string]bool{"a3": true, "a3_legal": true, "a3_ledger": true, "a3_wide": true, "us_b": true}
 
 func epsonSlug(s string) string {
 	var b strings.Builder

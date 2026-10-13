@@ -131,6 +131,7 @@ func TestEpsonVendorParse_MatchesEpsonDeviceAdmin(t *testing.T) {
 		"duplex_color_pages": 8, "duplex_mono_pages": 235,
 		"paper_a3_ledger_pages": 255, "paper_a3_ledger_color_pages": 105, "paper_a3_ledger_mono_pages": 150, "paper_a3_ledger_duplex_pages": 1,
 		"paper_a4_letter_pages": 6782, "paper_a4_letter_color_pages": 2419, "paper_a4_letter_mono_pages": 4363, "paper_a4_letter_duplex_pages": 242,
+		"large_paper_pages": 255, "large_paper_color_pages": 105, "large_paper_mono_pages": 150,
 		"scan_count": 1078, "scan_color_pages": 557, "scan_mono_pages": 521,
 		"scan_flatbed_pages": 398, "scan_flatbed_color_pages": 92, "scan_flatbed_mono_pages": 306,
 		"scan_adf_pages": 680, "scan_adf_color_pages": 465, "scan_adf_mono_pages": 215,

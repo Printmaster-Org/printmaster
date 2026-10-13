@@ -58,6 +58,11 @@ Keys: `print_pages`, `print_color_pages`, `print_mono_pages`, and the same for
 
 Per row: `paper_<size>_pages`, `_color_pages`, `_mono_pages`, `_duplex_pages`.
 
+The large sizes `A3`, `A3/Legal`, `A3/Ledger`, `A3 Wide` and `US B` are also
+summed into `large_paper_pages`, `large_paper_color_pages` and
+`large_paper_mono_pages`. This follows Print Audit's Epson large-paper
+classification; see `PRINTAUDIT_ICE_FINDINGS.md`.
+
 Simplex/duplex (EDA logic):
 - If scalar `1.2.2.27.1.1.10.1.1` (simplex total) exists:
   - simplex = s, duplex = total − s
