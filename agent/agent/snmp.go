@@ -205,7 +205,7 @@ func getVendorSpecificSerialOIDs(manufacturer string) []string {
 	case strings.Contains(vendor, "samsung"):
 		return []string{"1.3.6.1.4.1.236.11.5.11.55.1.1.1.1"}
 	case strings.Contains(vendor, "kyocera"):
-		return []string{"1.3.6.1.4.1.1347.42.2.1.1.1.5.1"}
+		return []string{"1.3.6.1.4.1.1347.43.5.1.1.28.1"} // kcprtSerialNumber
 	case strings.Contains(vendor, "oki"):
 		return []string{"1.3.6.1.4.1.2001.1.1.1.1.11.1.1.1.0"}
 	case strings.Contains(vendor, "ricoh"):
