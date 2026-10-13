@@ -2,6 +2,7 @@ package vendor
 
 import (
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -245,5 +246,52 @@ func TestEpsonMetricTableOIDsAreWalkRoots(t *testing.T) {
 	}
 	if MetricTableOIDs(&GenericVendor{}) != nil {
 		t.Fatal("generic vendor should not declare metric tables")
+	}
+}
+
+// WF-C878R epPrtInputTable rows from a live walk: rear ASF without a roller
+// counter, then the standard cassette and three optional cassettes.
+func TestEpsonInputRollersWFC878R(t *testing.T) {
+	const tbl = "1.3.6.1.4.1.1248.1.2.2.23.1.1."
+	var pdus []gosnmp.SnmpPDU
+	feedTypes := []int{6, 101, 201, 202, 203}
+	levels := []int{-2, 95, 95, 100, 100}
+	changed := []int{-2, 0, 0, 0, 1}
+	for i := range feedTypes {
+		row := fmt.Sprintf(".1.%d", i+1)
+		pdus = append(pdus,
+			intPDU(tbl+"14"+row, feedTypes[i]),
+			intPDU(tbl+"8"+row, 8),
+			intPDU(tbl+"9"+row, levels[i]),
+			intPDU(tbl+"5"+row, changed[i]),
+		)
+		if i > 0 {
+			pdus = append(pdus, strPDU(tbl+"13"+row, "S210049"))
+		}
+	}
+
+	got := parseEpsonInputRollers(pdus)
+	want := map[string]interface{}{
+		"supply_feed_roller_1":       95.0,
+		"supply_feed_roller_2":       95.0,
+		"supply_feed_roller_3":       100.0,
+		"supply_feed_roller_4":       100.0,
+		"feed_roller_1_replacements": 0,
+		"feed_roller_2_replacements": 0,
+		"feed_roller_3_replacements": 0,
+		"feed_roller_4_replacements": 1,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d metrics %v, want %d", len(got), got, len(want))
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %v, want %v", k, got[k], v)
+		}
+	}
+
+	all := (&EpsonVendor{}).Parse(pdus)
+	if all["supply_feed_roller_1"] != 95.0 {
+		t.Errorf("Parse did not include roller levels: %v", all)
 	}
 }

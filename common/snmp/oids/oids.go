@@ -198,6 +198,12 @@ const (
 	// 5=two-sided, 7=color, 9=unit (1=sheets, 3/empty=pages),
 	// 12=ADF roller residue, 14=ADF roller replacements.
 	EpsonScanInputTable = "1.3.6.1.4.1.1248.1.4.2.6.1.1"
+
+	// EpsonInputTable (epPrtInputTable) holds paper-feed roller life per input.
+	// Columns: 5=roller replacements, 8=counter unit (8=percent),
+	// 9=roller level (-2=none), 13=roller part number, 14=sheet feed type
+	// (6=rear ASF; EDA maps 3/4/5 to feed rollers, newer models report 1xx/2xx).
+	EpsonInputTable = "1.3.6.1.4.1.1248.1.2.2.23.1.1"
 )
 
 // Kyocera vendor-specific OIDs (Enterprise 1347)

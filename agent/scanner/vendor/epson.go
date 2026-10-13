@@ -84,6 +84,7 @@ func (v *EpsonVendor) MetricTableOIDs() []string {
 		oids.EpsonPaperSizeTable,
 		oids.EpsonScanInputTable,
 		oids.EpsonSuppliesTable,
+		oids.EpsonInputTable,
 	}
 }
 
@@ -106,6 +107,9 @@ func (v *EpsonVendor) PaperTrayOIDs() []string {
 		oids.PrtInputStatus,
 		oids.PrtInputType,
 		oids.PrtInputDescription,
+		oids.PrtInputDimUnit,
+		oids.PrtInputMediaDimFeedDirDeclared,
+		oids.PrtInputMediaDimXFeedDirDeclared,
 	}
 }
 
@@ -198,6 +202,9 @@ func (v *EpsonVendor) Parse(pdus []gosnmp.SnmpPDU) map[string]interface{} {
 
 	// === Scanner counters ===
 	for k, val := range parseEpsonScanTable(pdus) {
+		result[k] = val
+	}
+	for k, val := range parseEpsonInputRollers(pdus) {
 		result[k] = val
 	}
 
@@ -595,6 +602,42 @@ func parseEpsonMaintenanceBoxes(pdus []gosnmp.SnmpPDU) map[string]interface{} {
 			result[st2MaintenanceKey("maintenance_box_replacements", box)] = n
 		}
 		box++
+	}
+	return result
+}
+
+// parseEpsonInputRollers reads paper-feed roller life from epPrtInputTable,
+// following EDA: feed type 6 is the rear ASF roller, other inputs are feed
+// rollers numbered in table order. Levels are only reported when the counter
+// unit is percent (8).
+func parseEpsonInputRollers(pdus []gosnmp.SnmpPDU) map[string]interface{} {
+	table := epsonTable(pdus, oids.EpsonInputTable)
+	result := make(map[string]interface{})
+	rear, feed := false, 0
+	for _, row := range tableRows(table, 14) {
+		feedType, ok := tableInt(table, 14, row)
+		if !ok {
+			continue
+		}
+		var name string
+		if feedType == 6 {
+			if rear {
+				continue
+			}
+			rear = true
+			name = "rear_feed_roller"
+		} else {
+			feed++
+			name = fmt.Sprintf("feed_roller_%d", feed)
+		}
+		if unit, ok := tableInt(table, 8, row); ok && unit == 8 {
+			if level, ok := tableInt(table, 9, row); ok && level >= 0 && level <= 100 {
+				result["supply_"+name] = float64(level)
+			}
+		}
+		if n, ok := tableInt(table, 5, row); ok && n >= 0 {
+			result[name+"_replacements"] = n
+		}
 	}
 	return result
 }
