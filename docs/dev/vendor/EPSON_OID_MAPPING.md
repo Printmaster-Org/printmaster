@@ -155,6 +155,55 @@ ST2 values are used as fallbacks:
 - Maintenance box only when the supplies table lacks it.
 - Mono/color/total only when the SNMP counters are missing.
 
+### Status, error and warning codes
+
+The code tables come from EDA's `BdcCode` dictionaries and live in
+`agent/scanner/vendor/epson_status_codes.go`. The status code EDA displays
+(for example "0004") is the field 0x01 byte.
+
+| Kind | Codes |
+|------|-------|
+| Status (0x01) | 0 error, 1 self-printing, 2 busy, 3 standby, 4 idle, 5 printing cancelled, 7 cleaning, 10 shutting down, 15 initializing, 16 updating firmware, 19 sleeping (0–19 in total) |
+| Ready statuses | 3 standby, 4 idle, 19 sleeping |
+| Error (0x02) | 2 cover open, 4 paper jam, 5 ink out, 6 paper out, 16 waste ink overflow, 34 maintenance box missing, and others. Reported only when non-zero, or when the status is 0 (0 = fatal error) |
+| Warning (0x04) | 0/1 paper low; 32–36 maintenance box; 48–57 main tank ink low; 16–31 "Ink low (color)" with ink index `code & 0xF`; 81–90 "Cannot clean, ink low", 113–122 "Ink low 2" and 145/146 "Ink cartridge must be replaced", all with ink index `(code & 0xF) - 1`; 129–138 ignored, as in EDA |
+
+The ink index is resolved through the field 0x0f order to give a color name
+such as "Ink low (Magenta)".
+
+`ST2Status.StatusMessages()` produces lines such as:
+- `Error: Paper jam (Epson error 4)`
+- `Warning: Ink low (Magenta) (Epson warning 18)`
+- `Ready: Idle (Epson status 4)`
+
+`ToMetrics` emits:
+- `status_messages` ([]string)
+- `epson_status_code` (2-digit hex)
+- `epson_error_code`
+
+The agent merges `status_messages` into `PrinterInfo.StatusMessages`, with
+vendor lines first and duplicates removed. The UI then classifies the device
+as error, warning or ready from those lines.
+
+## Verified example (WF-C878R, matches EDA UI)
+
+The full walk was about 68,000 OIDs. Parsed values matched EDA, allowing for
+pages printed between the two reads:
+- totals 28026 / mono 14033 / color 13993
+- copy, fax and other counters
+- duplex/simplex and per-paper-size counts
+- ADF and flatbed scans
+- inks Y 58 / M 61 / C 58 / K 48
+- status "Ready: Idle (Epson status 4)"
+
+ST2 field 0x45 holds per-ink replacement counts (`[2,2,2,2]`), and 0x46
+holds maintenance-box replacements.
+
+Additional tables seen on this model:
+- **Maintenance rollers:** `1.2.2.23.1.1.<col>.1.<idx>`. Row 1 is the rear feeder and rows 2–5 are cassettes 1–4. Columns: 4 feed count, 9 level %, 13 part number (e.g. S210048).
+- **Parts:** `1.2.2.32.1.1` (row 1 "Maintenance Unit").
+- **Cassettes:** standard prtInput `43.8.2.1`. The media name is empty, so the paper size must be derived from the dimensions (columns 4 and 5, micrometres, unit 4).
+
 ## Verified example (ST-C8090, matches EDA UI)
 
 | Counter | Value |

@@ -37,6 +37,10 @@ The agent keeps the 50 most recent finished walks.
   dropped when `1.3.6.1.2.1` is also present.
 - If the OID limit is reached, the walk is marked `truncated`.
 - Walks use GETBULK on SNMPv2c/v3 and GETNEXT on v1.
+- Walks resume after timeouts. Each request is retried up to 4 times, the
+  GETBULK repetition count is halved on each retry (starting at 25), and the
+  walk continues from the last OID received. Slow devices such as the Epson
+  WF-C878R (about 68,000 OIDs in about 19 minutes) can be walked completely.
 - Walks use the agent's configured SNMP credentials.
 - IP scanning must be enabled on the agent.
 

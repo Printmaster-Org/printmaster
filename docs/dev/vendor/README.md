@@ -14,6 +14,11 @@ Epson-specific OID mappings derived from Epson Device Admin.
 Admin-only tool for capturing full SNMP walks from remote agents via the
 server UI, used to gather raw data for new vendor mappings.
 
+### DEVICE_CONFIGURATION_NOTES.md
+Known mechanisms for remotely changing device settings, such as Epson SNMP SET
+operations, ENPC and templates. Reference material for future cross-vendor
+configuration editing.
+
 ### KYOCERA_OID_MAPPING.md
 Kyocera-specific OID mappings and meter analysis.
 - Enterprise OID discovery
