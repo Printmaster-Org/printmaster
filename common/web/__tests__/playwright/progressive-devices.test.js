@@ -51,7 +51,7 @@ async function open(page, options = {}) {
         if (pathname === '/api/v1/auth/me') return route.fulfill({ json: { username: 'test', role: 'admin', tenant_ids: [] } });
         if (pathname === '/api/v1/agents/list' || pathname === '/api/v1/tenants') {
             if (options.directories) await options.directories.promise;
-            return route.fulfill({ json: pathname.endsWith('/list') ? [{ agent_id: 'agent-1', name: 'Delayed office', tenant_id: 'tenant-1' }] : [{ id: 'tenant-1', name: 'Authorized tenant' }] });
+            return route.fulfill({ json: pathname.endsWith('/list') ? (options.agents || [{ agent_id: 'agent-1', name: 'Delayed office', tenant_id: 'tenant-1' }]) : [{ id: 'tenant-1', name: 'Authorized tenant' }] });
         }
         const stage = pathname.endsWith('/index') ? 'index' : pathname.endsWith('/rows') ? 'rows' : pathname.endsWith('/metrics/query') ? 'metrics' : '';
         if (stage && options[stage]) await options[stage].promise;
@@ -74,14 +74,23 @@ test('device interactions omit extra controls and Shift-select without highlight
     await open(page, { devices: devices.slice(0, 3) });
     await expect(cards(page)).toHaveCount(3);
     await expect(page.locator('[data-device-select], [data-device-details]')).toHaveCount(0);
+    // Hydration replaces card header markup; clicking mid-swap detaches the mousedown target and WebKit drops the click.
+    for (let i = 0; i < 3; i++) {
+        await cards(page).nth(i).scrollIntoViewIfNeeded();
+        await expect(cards(page).nth(i)).toHaveAttribute('data-hydrated', 'true');
+    }
     const first = cards(page).nth(0);
     await first.locator('.device-card-title').click();
+    await expect.poll(() => page.evaluate(() => devicesVM.selection.lastSelected)).toBe(devices[0].serial);
     await cards(page).nth(2).locator('.device-card-title').click({ modifiers: ['Shift'] });
     expect(await page.evaluate(() => [...devicesVM.selection.selectedIds].length)).toBe(3);
     expect(await page.evaluate(() => window.getSelection().toString())).toBe('');
-    await first.focus();
-    await page.keyboard.press('Enter');
-    await expect(page.locator('#printer_details_overlay')).toBeVisible();
+    // Late re-renders can replace the focused card; retry focus + Enter atomically.
+    await expect(async () => {
+        await first.focus();
+        await page.keyboard.press('Enter');
+        await expect(page.locator('#printer_details_overlay')).toBeVisible({ timeout: 1000 });
+    }).toPass();
     await page.locator('#printer_details_actions').getByRole('button', { name: 'Close', exact: true }).click();
     await page.evaluate(() => { devicesVM.view = 'table'; applyDeviceFilters(); renderDevicesTableHeader(); });
     await expect(page.locator('#devices_table_header')).not.toContainText('Selection / Details');
@@ -230,7 +239,8 @@ test('Agent update channel modal dispatches exact selection and cancels without 
 });
 
 test('right-click Agent update opens one picker; inline pending update sends policy check directly', async ({ page }) => {
-    await open(page, { devices: [] });
+    // Serve the WS agent from the mocked list so the async agents load cannot overwrite the fixture.
+    await open(page, { devices: [], agents: [{ agent_id: 'agent-1', name: 'Test PC', connection_type: 'ws', tenant_id: 'tenant-1' }] });
     const commands = [];
     await page.route('**/api/v1/agents/command/**', route => {
         commands.push(route.request().postDataJSON());
