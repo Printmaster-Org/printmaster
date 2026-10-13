@@ -11,11 +11,25 @@ import (
 	"github.com/gosnmp/gosnmp"
 )
 
-// KyoceraVendor implements vendor-specific support for Kyocera devices.
-// Provides comprehensive metrics via enterprise OID tree 1.3.6.1.4.1.1347.*
-// OID structure derived from ICE packet capture analysis.
-// Reference: docs/vendor/KYOCERA_OID_MAPPING.md
+// KyoceraVendor implements vendor-specific support for Kyocera devices via the
+// enterprise OID tree 1.3.6.1.4.1.1347.*. OIDs and their semantics come from
+// Kyocera Net Device Manager (def.dev.snmp-oid.xml plus the decompiled
+// DeviceController operators).
+// Reference: docs/dev/vendor/KYOCERA_OID_MAPPING.md
 type KyoceraVendor struct{}
+
+const (
+	kyoceraFuncPrinter = 1
+	kyoceraFuncCopier  = 2
+	kyoceraFuncFax     = 4
+
+	kyoceraModeMono        = 1
+	kyoceraModeSingleColor = 2
+	kyoceraModeFullColor   = 3
+)
+
+// KDM reports "Call for service" when kcprtAlertStateDisplayIndex holds one of these codes.
+var kyoceraServiceCallCodes = map[int]bool{50100: true, 40070: true}
 
 func init() {
 	RegisterVendor(&KyoceraVendor{})
@@ -26,12 +40,9 @@ func (v *KyoceraVendor) Name() string {
 }
 
 func (v *KyoceraVendor) Detect(sysObjectID, sysDescr, model string) bool {
-	// Check enterprise number (1347)
 	if strings.Contains(sysObjectID, ".1.3.6.1.4.1.1347.") {
 		return true
 	}
-
-	// Check sysDescr or model for "Kyocera" or "TASKalfa"
 	combined := strings.ToLower(sysDescr + " " + model)
 	return strings.Contains(combined, "kyocera") || strings.Contains(combined, "taskalfa") || strings.Contains(combined, "ecosys")
 }
@@ -40,60 +51,60 @@ func (v *KyoceraVendor) BaseOIDs() []string {
 	return []string{
 		oids.SysDescr,
 		oids.SysObjectID,
-		oids.SysUpTime, // ICE queries this
+		oids.SysUpTime,
 		oids.SysName,
-		oids.SysLocation, // ICE queries this
+		oids.SysLocation,
 		oids.HrDeviceDescr,
-		oids.HrDeviceStatus, // ICE queries this
+		oids.HrDeviceStatus,
 		oids.PrtGeneralPrinterName,
 		oids.PrtGeneralSerialNumber,
 		oids.HrPrinterStatus + ".1",
 		oids.HrPrinterDetectedErrorState + ".1",
-		// Kyocera-specific identity
-		oids.KyoceraModelName,
+		oids.KyoceraGeneralModelName,
+		oids.KyoceraAbsoluteModelName,
 		oids.KyoceraSerialNumber,
-		oids.KyoceraStatusInfo,
+		oids.KyoceraAssetNumber,
+		oids.KyoceraFirmwareVersion + ".1",
+		oids.KyoceraFirmwareVersion + ".2",
 	}
 }
 
 func (v *KyoceraVendor) MetricOIDs(caps *capabilities.DeviceCapabilities) []string {
-	baseOIDs := []string{
-		// Standard Printer-MIB (fallback)
-		oids.PrtMarkerLifeCount + ".1", // prtMarkerLifeCount (instance .1)
-
-		// Kyocera enterprise - Total printed (extended Printer MIB)
-		oids.KyoceraTotalPrinted,
-
-		// Print breakdown by function and color (.42.3.1.2.1.1.*)
-		// Function 1 = Print, 2 = Copy, 3 = Scan(N/A), 4 = Fax
-		// Color mode: 1 = B&W, 2 = Single color, 3 = Full color
-		oids.KyoceraPrintBW,
-		oids.KyoceraPrintColor,
-		oids.KyoceraCopyBW,
-		oids.KyoceraCopyColor,
+	list := []string{
+		oids.KyoceraMarkerServiceCount,
+		oids.PrtMarkerLifeCount + ".1",
+		oids.PrtMarkerCounterUnit + ".1.1",
+		oids.KyoceraMFPOtherScanCounter,
 	}
-
-	// Add fax OIDs always (let the parsing handle missing values)
-	baseOIDs = append(baseOIDs, oids.KyoceraFaxBW)
-
-	// Add scan OIDs always
-	baseOIDs = append(baseOIDs,
-		oids.KyoceraCopyScans,
-		oids.KyoceraFaxScans,
-		oids.KyoceraOtherScans,
-	)
-
-	// ICE-style: Add extended counter table rows (42.5.4.1.2.1-17)
-	// These contain more granular breakdowns
-	for i := 1; i <= 17; i++ {
-		baseOIDs = append(baseOIDs, oids.KyoceraDetailedCounters+"."+fmt.Sprint(i))
+	for n := 1; n <= 4; n++ {
+		list = append(list,
+			fmt.Sprintf("%s.%d", oids.KyoceraMFPCounter, n),
+			fmt.Sprintf("%s.%d", oids.KyoceraMFPScanCounter, n),
+		)
+		for mode := kyoceraModeMono; mode <= kyoceraModeFullColor; mode++ {
+			list = append(list, fmt.Sprintf("%s.%d.%d", oids.KyoceraMFPColorModeCounter, n, mode))
+		}
 	}
+	for mode := kyoceraModeMono; mode <= kyoceraModeFullColor; mode++ {
+		list = append(list, fmt.Sprintf("%s.%d", oids.KyoceraColorModeCounter, mode))
+	}
+	return list
+}
 
-	return baseOIDs
+// MetricTableOIDs returns Kyocera enterprise tables walked during metrics queries.
+func (v *KyoceraVendor) MetricTableOIDs() []string {
+	return []string{
+		oids.KyoceraScanLifeCount,
+		oids.KyoceraMediaCounterTable,
+		oids.KyoceraColorCoverageTable,
+		oids.KyoceraMaintenanceKitTable,
+		oids.KyoceraAlertStateTable,
+		oids.KyoceraScannerErrorState,
+		oids.KyoceraFinisherTable,
+	}
 }
 
 func (v *KyoceraVendor) SupplyOIDs() []string {
-	// Use standard Printer-MIB supply tables
 	return []string{
 		oids.PrtMarkerSuppliesDesc,
 		oids.PrtMarkerSuppliesLevel,
@@ -104,7 +115,6 @@ func (v *KyoceraVendor) SupplyOIDs() []string {
 }
 
 func (v *KyoceraVendor) PaperTrayOIDs() []string {
-	// Use standard Printer-MIB paper input tables
 	return []string{
 		oids.PrtInputName,
 		oids.PrtInputMediaName,
@@ -121,139 +131,295 @@ func (v *KyoceraVendor) Parse(pdus []gosnmp.SnmpPDU) map[string]interface{} {
 	if logger.Global != nil {
 		logger.Global.TraceTag("vendor_parse", "Parsing Kyocera vendor PDUs", "pdu_count", len(pdus))
 	}
-
 	idx := newPDUIndex(pdus)
 
-	// Extract Kyocera enterprise counters
-	// Print function (direct prints from network/USB)
-	printerBW := getOIDIntIndexed(idx, pdus, oids.KyoceraPrintBW)
-	printerColor := getOIDIntIndexed(idx, pdus, oids.KyoceraPrintColor)
-	// Copy function (uses scanner, outputs to print engine)
-	copyBW := getOIDIntIndexed(idx, pdus, oids.KyoceraCopyBW)
-	copyColor := getOIDIntIndexed(idx, pdus, oids.KyoceraCopyColor)
-	// Fax function - prints are mono only
-	faxBW := getOIDIntIndexed(idx, pdus, oids.KyoceraFaxBW)
+	parseKyoceraIdentity(idx, result)
+	parseKyoceraCounters(idx, result)
+	parseKyoceraScans(idx, pdus, result)
+	parseKyoceraMediaCounters(pdus, result)
+	parseKyoceraCoverage(pdus, result)
+	parseKyoceraMaintenanceKits(pdus, result)
 
-	// Scanner unit usage counters
-	copyScan := getOIDIntIndexed(idx, pdus, oids.KyoceraCopyScans)
-	faxScan := getOIDIntIndexed(idx, pdus, oids.KyoceraFaxScans)
-	otherScan := getOIDIntIndexed(idx, pdus, oids.KyoceraOtherScans) // scan-to-email, scan-to-folder, etc.
-
-	totalPrinted := getOIDIntIndexed(idx, pdus, oids.KyoceraTotalPrinted)
-
-	// === PRINT IMPRESSIONS ===
-	// Print engine output = all pages that went through the fuser
-	// Includes: direct prints + copy outputs + fax prints (received faxes)
-
-	// Store per-function print counters
-	if printerBW > 0 {
-		result["print_mono_pages"] = printerBW
-	}
-	if printerColor > 0 {
-		result["print_color_pages"] = printerColor
-	}
-	if printerBW > 0 || printerColor > 0 {
-		result["print_pages"] = printerBW + printerColor
+	if msgs := kyoceraStatusMessages(pdus); len(msgs) > 0 {
+		result["status_messages"] = msgs
 	}
 
-	// Copy function print output
-	if copyBW > 0 || copyColor > 0 {
-		result["copy_pages"] = copyBW + copyColor
-		result["copy_mono_pages"] = copyBW
-		result["copy_color_pages"] = copyColor
-	}
-
-	// Fax print output (received faxes printed)
-	if faxBW > 0 {
-		result["fax_pages"] = faxBW
-		result["fax_mono_pages"] = faxBW
-	}
-
-	// Calculate TOTAL PRINT IMPRESSIONS (mono + color)
-	// These are all the physical prints made by the print engine
-	monoTotal := printerBW + copyBW + faxBW
-	colorTotal := printerColor + copyColor
-
-	if monoTotal > 0 {
-		result["mono_pages"] = monoTotal
-	}
-
-	if colorTotal > 0 {
-		result["color_pages"] = colorTotal
-	}
-
-	// Determine page_count (total print impressions) using best available source:
-	// 1. Kyocera enterprise total (most accurate for Kyocera)
-	// 2. Standard Printer-MIB PrtMarkerLifeCount (widely supported)
-	// 3. Calculated from mono+color (last resort)
-	var finalTotal int
-	var totalSource string
-	if totalPrinted > 0 {
-		finalTotal = totalPrinted
-		totalSource = "KyoceraTotalPrinted"
-		result["page_count"] = totalPrinted
-		result["total_pages"] = totalPrinted
-	} else if pageCount := getOIDIntIndexed(idx, pdus, oids.PrtMarkerLifeCount+".1"); pageCount > 0 {
-		finalTotal = pageCount
-		totalSource = "PrtMarkerLifeCount"
-		result["page_count"] = pageCount
-		result["total_pages"] = pageCount
-	} else if monoTotal > 0 || colorTotal > 0 {
-		// Last resort: calculate from function counters
-		finalTotal = monoTotal + colorTotal
-		totalSource = "calculated"
-		result["page_count"] = monoTotal + colorTotal
-		result["total_pages"] = monoTotal + colorTotal
-	}
-
-	// Validate: Check if parts (mono + color) match total when all are available
-	if finalTotal > 0 && (monoTotal > 0 || colorTotal > 0) {
-		partsSum := monoTotal + colorTotal
-		if partsSum != finalTotal && logger.Global != nil {
-			// Log mismatch for investigation - this is expected when using KyoceraTotalPrinted
-			// which may include additional job types not broken down
-			logger.Global.Debug("Kyocera total/parts mismatch (normal for KyoceraTotalPrinted)",
-				"total", finalTotal, "source", totalSource,
-				"mono", monoTotal, "color", colorTotal, "parts_sum", partsSum,
-				"diff", finalTotal-partsSum)
-		}
-	}
-
-	// === SCAN IMPRESSIONS ===
-	// Scanner unit usage = all pages digitized by the scanner
-	// Includes: copy scans + fax scans (outgoing) + scan-to-host/email/folder
-	// Note: copy_scans = scanner usage for copying (results in print impressions too)
-	//       fax_scans = scanner usage for sending faxes (outgoing fax)
-	//       other_scans = scan-to-email, scan-to-folder, scan-to-USB, etc.
-
-	if copyScan > 0 {
-		result["copy_scans"] = copyScan
-	}
-
-	if faxScan > 0 {
-		result["fax_scans"] = faxScan
-	}
-
-	if otherScan > 0 {
-		result["other_scans"] = otherScan
-	}
-
-	// Total scan impressions = all uses of the scanner unit
-	totalScanImpressions := copyScan + faxScan + otherScan
-	if totalScanImpressions > 0 {
-		result["scan_count"] = totalScanImpressions
-	}
-
-	// Parse supply levels using generic parser
-	supplies := parseSuppliesTable(pdus)
-	for k, v := range supplies {
-		result[k] = v
+	for k, val := range parseSuppliesTable(pdus) {
+		result[k] = val
 	}
 
 	if logger.Global != nil {
 		logger.Global.Debug("Kyocera parsing complete",
-			"print_total", finalTotal, "mono_pages", monoTotal, "color_pages", colorTotal,
-			"scan_count", totalScanImpressions)
+			"page_count", result["page_count"], "mono_pages", result["mono_pages"],
+			"color_pages", result["color_pages"], "scan_count", result["scan_count"])
 	}
 	return result
+}
+
+func parseKyoceraIdentity(idx *pduIndex, result map[string]interface{}) {
+	text := func(oid string) string {
+		if pdu, ok := idx.byOID[normalizeOID(oid)]; ok {
+			return strings.TrimSpace(pduText(pdu.Value))
+		}
+		return ""
+	}
+	for key, oid := range map[string]string{
+		"model_name":              oids.KyoceraAbsoluteModelName,
+		"serial_number":           oids.KyoceraSerialNumber,
+		"asset_number":            oids.KyoceraAssetNumber,
+		"firmware_version":        oids.KyoceraFirmwareVersion + ".1",
+		"engine_firmware_version": oids.KyoceraFirmwareVersion + ".2",
+	} {
+		if s := text(oid); s != "" {
+			result[key] = s
+		}
+	}
+	if _, ok := result["model_name"]; !ok {
+		if s := text(oids.KyoceraGeneralModelName); s != "" {
+			result["model_name"] = s
+		}
+	}
+}
+
+// parseKyoceraCounters mirrors KDM's PageCount/MonoCount/FullColorCount operators.
+func parseKyoceraCounters(idx *pduIndex, result map[string]interface{}) {
+	colorMode := func(fn, mode int) (int, bool) {
+		return epsonInt(idx, fmt.Sprintf("%s.%d.%d", oids.KyoceraMFPColorModeCounter, fn, mode))
+	}
+	funcCounter := func(n int) (int, bool) {
+		return epsonInt(idx, fmt.Sprintf("%s.%d", oids.KyoceraMFPCounter, n))
+	}
+
+	var mono, single, full int
+	haveMFP := false
+	for fn := 1; fn <= 4; fn++ {
+		if n, ok := colorMode(fn, kyoceraModeMono); ok && n > 0 {
+			mono += n
+			haveMFP = true
+		}
+		if n, ok := colorMode(fn, kyoceraModeSingleColor); ok && n > 0 {
+			single += n
+			haveMFP = true
+		}
+		if n, ok := colorMode(fn, kyoceraModeFullColor); ok && n > 0 {
+			full += n
+			haveMFP = true
+		}
+	}
+	if !haveMFP {
+		// Printer-only models (KDM logic 2) expose kmColorModeCounterItem instead.
+		mono, _ = epsonInt(idx, oids.KyoceraColorModeCounter+".1")
+		single, _ = epsonInt(idx, oids.KyoceraColorModeCounter+".2")
+		full, _ = epsonInt(idx, oids.KyoceraColorModeCounter+".3")
+	}
+
+	positive := func(key string, n int) {
+		if n > 0 {
+			result[key] = n
+		}
+	}
+	positive("mono_pages", mono)
+	positive("color_pages", single+full)
+	positive("full_color_pages", full)
+	positive("single_color_pages", single)
+
+	for _, f := range []struct {
+		fn     int
+		prefix string
+	}{{kyoceraFuncPrinter, "print"}, {kyoceraFuncCopier, "copy"}, {kyoceraFuncFax, "fax"}} {
+		m, _ := colorMode(f.fn, kyoceraModeMono)
+		s, _ := colorMode(f.fn, kyoceraModeSingleColor)
+		c, _ := colorMode(f.fn, kyoceraModeFullColor)
+		positive(f.prefix+"_mono_pages", m)
+		positive(f.prefix+"_color_pages", s+c)
+		positive(f.prefix+"_full_color_pages", c)
+		positive(f.prefix+"_single_color_pages", s)
+		if m+s+c > 0 {
+			result[f.prefix+"_pages"] = m + s + c
+		}
+	}
+	if n, ok := funcCounter(1); ok && n > 0 {
+		result["print_pages"] = n
+	}
+	if n, ok := funcCounter(2); ok && n > 0 {
+		result["copy_pages"] = n
+	}
+	// Fax output is position 4 on MFPs and position 3 on older layouts.
+	if n, ok := funcCounter(4); ok && n > 0 {
+		result["fax_pages"] = n
+	} else if n, ok := funcCounter(3); ok && n > 0 {
+		result["fax_pages"] = n
+	}
+
+	total := 0
+	if n, ok := epsonInt(idx, oids.KyoceraMarkerServiceCount); ok && n > 0 {
+		total = n
+	} else if n, ok := epsonInt(idx, oids.PrtMarkerLifeCount+".1"); ok && n > 0 {
+		// KDM logic 1 only trusts prtMarkerLifeCount in impressions (7) or sheets (8).
+		if unit, ok := epsonInt(idx, oids.PrtMarkerCounterUnit+".1.1"); !ok || unit == 7 || unit == 8 {
+			total = n
+		}
+	}
+	if total == 0 {
+		total = mono + single + full
+	}
+	if total > 0 {
+		result["page_count"] = total
+		result["total_pages"] = total
+	}
+}
+
+func parseKyoceraScans(idx *pduIndex, pdus []gosnmp.SnmpPDU, result map[string]interface{}) {
+	scan := func(n int) int {
+		v, _ := epsonInt(idx, fmt.Sprintf("%s.%d", oids.KyoceraMFPScanCounter, n))
+		return v
+	}
+	copyScans := scan(2)
+	faxScans := scan(4)
+	if faxScans <= 0 {
+		faxScans = scan(3)
+	}
+	otherScans, _ := epsonInt(idx, oids.KyoceraMFPOtherScanCounter)
+
+	for key, n := range map[string]int{"copy_scans": copyScans, "fax_scans": faxScans, "other_scans": otherScans} {
+		if n > 0 {
+			result[key] = n
+		}
+	}
+
+	// kmscnLifeCount is indexed by the scanner's hrDeviceIndex, so it is walked.
+	life := 0
+	prefix := normalizeOID(oids.KyoceraScanLifeCount) + "."
+	for _, pdu := range pdus {
+		if strings.HasPrefix(normalizeOID(pdu.Name), prefix) {
+			if n := coerceToInt(pdu.Value); n > 0 {
+				life += n
+			}
+		}
+	}
+	if life == 0 {
+		life = max(copyScans, 0) + max(faxScans, 0) + max(otherScans, 0)
+	}
+	if life > 0 {
+		result["scan_count"] = life
+	}
+}
+
+// parseKyoceraMediaCounters decodes kmMediaCounterTable into paper_<size>_* meters.
+func parseKyoceraMediaCounters(pdus []gosnmp.SnmpPDU, result map[string]interface{}) {
+	table := epsonTable(pdus, oids.KyoceraMediaCounterTable)
+	for _, row := range tableRows(table, 2) {
+		total, ok := tableInt(table, 6, row)
+		if !ok || total <= 0 {
+			continue
+		}
+		slug := epsonSlug(pduText(table[2][row].Value))
+		if slug == "" {
+			continue
+		}
+		result["paper_"+slug+"_pages"] = total
+		if n, ok := tableInt(table, 7, row); ok && n > 0 {
+			result["paper_"+slug+"_mono_pages"] = n
+		}
+		full, _ := tableInt(table, 8, row)
+		monoColor, _ := tableInt(table, 9, row)
+		if full+monoColor > 0 {
+			result["paper_"+slug+"_color_pages"] = full + monoColor
+		}
+	}
+}
+
+// parseKyoceraCoverage sums the low/medium/high coverage counters across device indexes.
+func parseKyoceraCoverage(pdus []gosnmp.SnmpPDU, result map[string]interface{}) {
+	table := epsonTable(pdus, oids.KyoceraColorCoverageTable)
+	for col, key := range map[int]string{1: "coverage_low_pages", 2: "coverage_medium_pages", 3: "coverage_high_pages"} {
+		sum := 0
+		for _, row := range tableRows(table, col) {
+			if n, ok := tableInt(table, col, row); ok && n > 0 {
+				sum += n
+			}
+		}
+		if sum > 0 {
+			result[key] = sum
+		}
+	}
+}
+
+// parseKyoceraMaintenanceKits reports kcprtMaintenanceKitTable counters as raw meters;
+// KDM passes them through unchanged so no remaining-life percentage is derived.
+func parseKyoceraMaintenanceKits(pdus []gosnmp.SnmpPDU, result map[string]interface{}) {
+	table := epsonTable(pdus, oids.KyoceraMaintenanceKitTable)
+	for _, row := range tableRows(table, 4) {
+		slug := epsonSlug(pduText(table[4][row].Value))
+		if slug == "" {
+			slug = "kit_" + epsonSlug(row)
+		}
+		base := "maintenance_kit_" + strings.TrimPrefix(slug, "maintenance_kit_")
+		if n, ok := tableInt(table, 5, row); ok && n > 0 {
+			result[base+"_count"] = n
+		}
+		if n, ok := tableInt(table, 6, row); ok && n > 0 {
+			result[base+"_preset"] = n
+		}
+		if n, ok := tableInt(table, 2, row); ok && n > 0 {
+			result[base+"_utilization"] = n
+		}
+	}
+}
+
+// kyoceraStatusMessages surfaces operator-panel text, KDM's "Call for service"
+// alert codes, scanner cover state, and staple supply state.
+func kyoceraStatusMessages(pdus []gosnmp.SnmpPDU) []string {
+	var msgs []string
+	seen := map[string]bool{}
+	add := func(m string) {
+		if m != "" && !seen[m] {
+			seen[m] = true
+			msgs = append(msgs, m)
+		}
+	}
+
+	alerts := epsonTable(pdus, oids.KyoceraAlertStateTable)
+	rows := tableRows(alerts, 2)
+	for _, row := range tableRows(alerts, 3) {
+		if _, ok := alerts[2][row]; !ok {
+			rows = append(rows, row)
+		}
+	}
+	for _, row := range rows {
+		text := ""
+		if pdu, ok := alerts[2][row]; ok {
+			text = strings.TrimSpace(pduText(pdu.Value))
+		}
+		code, hasCode := tableInt(alerts, 3, row)
+		switch {
+		case text != "" && hasCode && code > 0:
+			add(fmt.Sprintf("%s (Kyocera code %d)", text, code))
+		case text != "":
+			add(text)
+		case hasCode && code > 0:
+			add(fmt.Sprintf("Kyocera code %d", code))
+		}
+		if hasCode && kyoceraServiceCallCodes[code] {
+			add("Call for service")
+		}
+	}
+
+	prefix := normalizeOID(oids.KyoceraScannerErrorState) + "."
+	for _, pdu := range pdus {
+		if strings.HasPrefix(normalizeOID(pdu.Name), prefix) {
+			if n := coerceToInt(pdu.Value); n == 2 || (n > 0 && n&0x08 != 0) {
+				add("Scanner cover open")
+			}
+		}
+	}
+
+	finisher := epsonTable(pdus, oids.KyoceraFinisherTable)
+	if stapler, ok := tableInt(finisher, 8, "1.1"); ok && stapler == 3 {
+		// kcprtStaplerConsumableState is signed (-2 = add staples), which tableInt rejects.
+		if pdu, ok := finisher[9]["1.1"]; ok && coerceToInt(pdu.Value) == -2 {
+			add("Add staples")
+		}
+	}
+	return msgs
 }

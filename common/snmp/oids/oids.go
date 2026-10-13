@@ -207,40 +207,62 @@ const (
 )
 
 // Kyocera vendor-specific OIDs (Enterprise 1347)
-// Reference: ICE packet capture analysis
+// Reference: Kyocera Net Device Manager (KDM) def.dev.snmp-oid.xml and the
+// decompiled KDM.AccessDevice.DeviceController operators. Validated against real
+// walks of a TASKalfa 4053ci and an ECOSYS P2040dw.
 const (
 	// KyoceraEnterprise is the Kyocera enterprise OID prefix
 	KyoceraEnterprise = "1.3.6.1.4.1.1347"
 
-	// --- Kyocera Identity (40.1) ---
-	KyoceraModelName    = "1.3.6.1.4.1.1347.40.1.1.1.1.1"
-	KyoceraSerialNumber = "1.3.6.1.4.1.1347.40.10.1.1.5.1"
+	// --- Identity (kcprtGeneralTable 43.5.1.1, index .1) ---
+	KyoceraGeneralModelName  = "1.3.6.1.4.1.1347.43.5.1.1.1.1"  // kcprtGeneralModelName
+	KyoceraMemoryTotal       = "1.3.6.1.4.1.1347.43.5.1.1.11.1" // kcprtMemoryDeviceTotalSize
+	KyoceraSerialNumber      = "1.3.6.1.4.1.1347.43.5.1.1.28.1" // kcprtSerialNumber
+	KyoceraAssetNumber       = "1.3.6.1.4.1.1347.43.5.1.1.29.1" // kcprtAssetNumber
+	KyoceraAbsoluteModelName = "1.3.6.1.4.1.1347.43.5.1.1.36.1" // kcprtAbsoluteModelName
+	KyoceraEquipmentID       = "1.3.6.1.4.1.1347.43.5.1.1.37.1" // kcprtEquipmentID
+	// kcprtFirmwareVersion table: .43.5.4.1.5.1.<n> (1=system/main, 2=engine)
+	KyoceraFirmwareVersion = "1.3.6.1.4.1.1347.43.5.4.1.5.1"
+	KyoceraHostName        = "1.3.6.1.4.1.1347.40.10.1.1.5.1" // kmHostName
 
-	// --- Kyocera Extended Counter Table (42.2.1.1.1) - Detailed page counts ---
-	// Table structure: .42.2.1.1.1.<column>.<printer>.<row>
-	// Columns: 2-9 (8 columns), Rows: 1-14
-	KyoceraCounterTable = "1.3.6.1.4.1.1347.42.2.1.1.1"
+	// --- Page counters ---
+	// kcprtMarkerServiceCount: KDM PageCount (5036) logic 2, used by most models.
+	KyoceraMarkerServiceCount = "1.3.6.1.4.1.1347.43.10.1.1.12.1.1"
 
-	// --- Kyocera Function Counters (42.3.1) - Print/Copy/Fax/Scan ---
-	// .42.3.1.2.1.1.<function>.<color_mode>
-	// Functions: 1=print, 2=copy, 3=scan, 4=fax
-	// Color modes: 1=B&W, 2=single_color, 3=full_color
-	KyoceraPrintBW    = "1.3.6.1.4.1.1347.42.3.1.2.1.1.1.1"
-	KyoceraPrintColor = "1.3.6.1.4.1.1347.42.3.1.2.1.1.1.3"
-	KyoceraCopyBW     = "1.3.6.1.4.1.1347.42.3.1.2.1.1.2.1"
-	KyoceraCopyColor  = "1.3.6.1.4.1.1347.42.3.1.2.1.1.2.3"
-	KyoceraFaxBW      = "1.3.6.1.4.1.1347.42.3.1.2.1.1.4.1"
+	// kmMFPCounterItem .42.3.1.1.1.1.<n>: 1=printer, 2=copier, 3/4=fax (model dependent)
+	KyoceraMFPCounter = "1.3.6.1.4.1.1347.42.3.1.1.1.1"
+	// kmMFPColorModeCounterItem .42.3.1.2.1.1.<function>.<mode>
+	// function: 1=printer, 2=copier, 3=(unused), 4=fax; mode: 1=mono, 2=single color, 3=full color
+	KyoceraMFPColorModeCounter = "1.3.6.1.4.1.1347.42.3.1.2.1.1"
+	// kmMFPScanCounterItem .42.3.1.3.1.1.<n>: 2=copy scans, 3/4=fax scans
+	KyoceraMFPScanCounter = "1.3.6.1.4.1.1347.42.3.1.3.1.1"
+	// kmMFPOtherScanCounterItem .42.3.1.4.1.1.1
+	KyoceraMFPOtherScanCounter = "1.3.6.1.4.1.1347.42.3.1.4.1.1.1"
+	// kmColorModeCounterItem .42.2.2.1.1.3.1.<mode> (1=mono, 2=mono color, 3=full color)
+	// used by printer-only models (KDM logic 2) instead of the MFP table.
+	KyoceraColorModeCounter = "1.3.6.1.4.1.1347.42.2.2.1.1.3.1"
+	// kmscnLifeCount .46.10.1.1.5.<hrDeviceIndex> (total scans; walked)
+	KyoceraScanLifeCount = "1.3.6.1.4.1.1347.46.10.1.1.5"
 
-	// --- Kyocera Scan Counters (42.3.1.3 and 42.3.1.4) ---
-	KyoceraCopyScans  = "1.3.6.1.4.1.1347.42.3.1.3.1.1.2"
-	KyoceraFaxScans   = "1.3.6.1.4.1.1347.42.3.1.3.1.1.4"
-	KyoceraOtherScans = "1.3.6.1.4.1.1347.42.3.1.4.1.1.1"
+	// kmMediaCounterTable .42.2.1.1.1.<col>.1.<row>
+	// cols: 2=media name, 6=total, 7=mono, 8=full color, 9=mono color
+	KyoceraMediaCounterTable = "1.3.6.1.4.1.1347.42.2.1.1.1"
+	// kmColorCoverage{Low,Medium,High}CoverageCounter .42.2.4.1.1.<1|2|3>.1.<hrDeviceIndex>
+	KyoceraColorCoverageTable = "1.3.6.1.4.1.1347.42.2.4.1.1"
 
-	// --- Kyocera Additional Counters (42.5.4.1) ---
-	// Table: .42.5.4.1.2.<row> (rows 1-17)
-	KyoceraDetailedCounters = "1.3.6.1.4.1.1347.42.5.4.1.2"
+	// --- Maintenance kits (kcprtMaintenanceKitTable 43.24.1.1) ---
+	// cols: 2=utilization, 3=type, 4=name, 5=current counter, 6=preset counter
+	KyoceraMaintenanceKitTable = "1.3.6.1.4.1.1347.43.24.1.1"
 
-	// --- Kyocera Extended Printer MIB (43.x) ---
-	KyoceraTotalPrinted = "1.3.6.1.4.1.1347.43.10.1.1.12.1.1"
-	KyoceraStatusInfo   = "1.3.6.1.4.1.1347.43.5.1.1.28.1"
+	// --- Status ---
+	// kcprtAlertStateTable .43.18.2.1.<col>.1.<n>: 2=panel display text, 3=display index (code)
+	KyoceraAlertStateTable = "1.3.6.1.4.1.1347.43.18.2.1"
+	// kmscnDeviceErrorState .46.18.1.1.2.<idx>: 2 or bit 0x08 = scanner cover open
+	KyoceraScannerErrorState = "1.3.6.1.4.1.1347.46.18.1.1.2"
+
+	// --- Finisher (kcprtFinisherTable 43.9.1.1, index .1.1) ---
+	// col 8 kcprtStapler: 3=installed/on, 4=off, 5=not present
+	// col 9 kcprtStaplerConsumableState: -3=has staples, -2=add staples
+	// col 11 kcprtPunchStatus: 1=installed
+	KyoceraFinisherTable = "1.3.6.1.4.1.1347.43.9.1.1"
 )
