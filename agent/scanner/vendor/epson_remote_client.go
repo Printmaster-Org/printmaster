@@ -6,6 +6,7 @@ import (
 
 	"printmaster/agent/featureflags"
 	"printmaster/common/logger"
+	"printmaster/common/snmp/oids"
 
 	"github.com/gosnmp/gosnmp"
 )
@@ -35,9 +36,19 @@ func NewEpsonRemoteClient(client SNMPClient, timeoutSeconds int) *EpsonRemoteCli
 }
 
 // GetStatus fetches the ST2 status frame from an Epson printer.
-// Returns parsed status or error. This is the primary remote-mode command
-// that gives us ink levels, maintenance box status, and printer state.
+// It first issues a plain GET of epPrtDeviceStatus (what Epson Device Admin
+// uses), then falls back to the remote-mode "st" command for older devices.
 func (c *EpsonRemoteClient) GetStatus(ctx context.Context) (*ST2Status, error) {
+	if result, err := c.client.Get([]string{oids.EpsonDeviceStatus}); err == nil && result != nil {
+		for _, pdu := range result.Variables {
+			if data := st2Bytes(pdu.Value); len(data) > 0 {
+				if status, perr := ParseST2Response(data); perr == nil {
+					return status, nil
+				}
+			}
+		}
+	}
+
 	// Build the status command OID
 	oid, err := BuildEpsonRemoteOID(EpsonRemoteStatusCommand, nil)
 	if err != nil {
@@ -309,34 +320,32 @@ func splitColon(s string) []string {
 	return result
 }
 
-// QueryEpsonRemoteStatus is a lower-level function that queries status
-// using an existing set of PDUs (for integration with existing query flow).
-// It extracts the status OID response if present and parses it.
+// QueryEpsonRemoteStatus extracts and parses an ST2 frame from already
+// collected PDUs. It accepts both the epPrtDeviceStatus OID (plain GET) and
+// the remote-mode status command OID.
 func QueryEpsonRemoteStatus(pdus []gosnmp.SnmpPDU) *ST2Status {
-	// Look for our status OID in the PDUs
 	statusOID, _ := BuildEpsonRemoteOID(EpsonRemoteStatusCommand, nil)
 
 	for _, pdu := range pdus {
-		// Normalize OID comparison
-		pduOID := pdu.Name
-		if len(pduOID) > 0 && pduOID[0] == '.' {
-			pduOID = pduOID[1:]
+		pduOID := normalizeOID(pdu.Name)
+		if pduOID != oids.EpsonDeviceStatus && pduOID != statusOID {
+			continue
 		}
-		if pduOID == statusOID {
-			var data []byte
-			switch v := pdu.Value.(type) {
-			case []byte:
-				data = v
-			case string:
-				data = []byte(v)
-			}
-			if len(data) > 0 {
-				status, err := ParseST2Response(data)
-				if err == nil {
-					return status
-				}
+		if data := st2Bytes(pdu.Value); len(data) > 0 {
+			if status, err := ParseST2Response(data); err == nil {
+				return status
 			}
 		}
+	}
+	return nil
+}
+
+func st2Bytes(value interface{}) []byte {
+	switch v := value.(type) {
+	case []byte:
+		return v
+	case string:
+		return []byte(v)
 	}
 	return nil
 }

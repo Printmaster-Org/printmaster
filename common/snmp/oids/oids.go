@@ -135,44 +135,69 @@ const (
 )
 
 // Epson vendor-specific OIDs (Enterprise 1248)
-// Reference: ICE packet capture analysis
+// Reference: Epson Device Admin (EDA) MIB usage, verified against a live
+// ST-C8090. See docs/vendor/EPSON_OID_MAPPING.md.
 const (
 	// EpsonEnterprise is the Epson enterprise OID prefix
 	EpsonEnterprise = "1.3.6.1.4.1.1248"
 
-	// --- Epson Identity (1.2.2.1) ---
+	// --- Identity (epPrtIdentity 1.2.2.1.1.1.<col>.1) ---
+	EpsonDeviceID1284 = "1.3.6.1.4.1.1248.1.2.2.1.1.1.1.1"
 	EpsonModelName    = "1.3.6.1.4.1.1248.1.2.2.1.1.1.2.1"
+	// EpsonDeviceStatus (epPrtDeviceStatus) returns a full "@BDC ST2" status
+	// frame on a plain GET. This is what EDA uses for status, inks,
+	// maintenance box and paper counts; no remote-mode command is needed.
+	EpsonDeviceStatus = "1.3.6.1.4.1.1248.1.2.2.1.1.1.4.1"
 	EpsonSerialNumber = "1.3.6.1.4.1.1248.1.2.2.1.1.1.5.1"
+	// EpsonFirmwareVersion is the main firmware string.
+	EpsonFirmwareVersion = "1.3.6.1.4.1.1248.1.1.3.1.21.1.1.2.5"
 
-	// --- Epson Supplies Table (1.2.2.2) - Ink levels ---
-	// Table structure: .1.2.2.2.1.1.<column>.<printer>.<supply_index>
-	// Columns: 2=status, 3=level
-	EpsonSuppliesStatus = "1.3.6.1.4.1.1248.1.2.2.2.1.1.2.1"
-	EpsonSuppliesLevel  = "1.3.6.1.4.1.1248.1.2.2.2.1.1.3.1"
+	// --- Version table (1.2.2.2.1.1.<col>.1.<idx>): 2=value, 3=name ---
+	// e.g. Main FW / Serial No / Network FW / FW Package / PS / PCL.
+	EpsonVersionTable = "1.3.6.1.4.1.1248.1.2.2.2.1.1"
 
-	// --- Epson Counter Table (1.2.2.6.1.1) - Detailed page counts ---
-	// Table structure: .1.2.2.6.1.1.<column>.<printer>.<row>
-	// Columns: 2=name, 3-9=various counters, 12-19=detailed breakdowns
-	EpsonCounterTable = "1.3.6.1.4.1.1248.1.2.2.6.1.1"
-	EpsonCounterName  = "1.3.6.1.4.1.1248.1.2.2.6.1.1.2.1"
+	// --- Power counters (1.2.2.3.1.1) ---
+	EpsonPowerOnCount         = "1.3.6.1.4.1.1248.1.2.2.3.1.1.17.1"
+	EpsonMoveFromStandbyCount = "1.3.6.1.4.1.1248.1.2.2.3.1.1.18.1"
 
-	// --- Epson Page Counts (1.2.2.27) - Summary counters ---
-	// ICE queries these OIDs:
-	EpsonTotalPages = "1.3.6.1.4.1.1248.1.2.2.27.1.1.33.1.1" // Total lifetime pages (ICE)
-	EpsonColorPages = "1.3.6.1.4.1.1248.1.2.2.27.1.1.4.1.1"  // Color pages (ICE)
-	EpsonMonoPages  = "1.3.6.1.4.1.1248.1.2.2.27.1.1.6.1.1"  // Mono pages (ICE)
-	// Legacy OIDs (some older Epson devices)
-	EpsonTotalPagesLegacy = "1.3.6.1.4.1.1248.1.2.2.27.1.1.30.1.1" // Total pages (legacy)
-	EpsonMonoPagesLegacy  = "1.3.6.1.4.1.1248.1.2.2.27.1.1.3.1.1"  // B&W pages (legacy)
+	// --- Single-pass color mode counters (1.2.2.5.1.1) ---
+	EpsonSinglePassColorMode    = "1.3.6.1.4.1.1248.1.2.2.5.1.1.56.1.1"
+	EpsonSinglePassColorModeAlt = "1.3.6.1.4.1.1248.1.2.2.5.1.1.119.1.1"
 
-	// --- Epson Function Counters (1.2.2.27.6.1) - Print/Copy/Fax/Scan ---
-	// Table: .27.6.1.<column>.<printer>.<function>
-	// Columns: 2=names, 3=B&W, 4=total, 5=color
-	// Functions: 1=print, 2=copy, 3=fax, 4=scan
-	EpsonFunctionNames      = "1.3.6.1.4.1.1248.1.2.2.27.6.1.2.1.1"
-	EpsonFunctionBWCount    = "1.3.6.1.4.1.1248.1.2.2.27.6.1.3.1.1"
-	EpsonFunctionTotalCount = "1.3.6.1.4.1.1248.1.2.2.27.6.1.4.1.1"
-	EpsonFunctionColorCount = "1.3.6.1.4.1.1248.1.2.2.27.6.1.5.1.1"
+	// --- Paper-size table (1.2.2.6.1.1.<col>.1.<row>) ---
+	// Columns: 2=size name, 3=unit (row valid only if non-empty), 4=total,
+	// 5=color, 7=simplex, 8=null, 9=color simplex.
+	EpsonPaperSizeTable = "1.3.6.1.4.1.1248.1.2.2.6.1.1"
+
+	// --- Marker totals (1.2.2.27.1.1.<col>.1.1) ---
+	EpsonMarkerTotalPrinted        = "1.3.6.1.4.1.1248.1.2.2.27.1.1.3.1.1" // mono (B&W) pages
+	EpsonMarkerColorPrinted        = "1.3.6.1.4.1.1248.1.2.2.27.1.1.4.1.1" // color pages
+	EpsonMarkerProcessColorForMono = "1.3.6.1.4.1.1248.1.2.2.27.1.1.6.1.1" // composite-black pages (NOT mono)
+	EpsonMarkerSimplexTotal        = "1.3.6.1.4.1.1248.1.2.2.27.1.1.10.1.1"
+	EpsonMarkerSimplexColor        = "1.3.6.1.4.1.1248.1.2.2.27.1.1.11.1.1"
+	// Legacy totals not read by EDA; kept only as fallbacks when
+	// prtMarkerLifeCount is missing.
+	EpsonTotalPagesLegacy  = "1.3.6.1.4.1.1248.1.2.2.27.1.1.33.1.1"
+	EpsonTotalPagesLegacy2 = "1.3.6.1.4.1.1248.1.2.2.27.1.1.30.1.1"
+
+	// --- Function counters (1.2.2.27.6.1.<col>.1.1.<idx>) ---
+	// Columns: 2=type (1=print, 2=copy, 3=fax, 0=other), 3=unit (3=pages),
+	// 4=total, 5=color. Mono = total - color.
+	EpsonFunctionTable = "1.3.6.1.4.1.1248.1.2.2.27.6.1"
+
+	// --- Supplies table (1.2.2.28.1.1.<col>.1.<idx>) ---
+	// Columns: 2=level %, 3=replacement count (-2 = n/a), 5/18=description,
+	// 21=type (1002=ink, 1003=maintenance box).
+	EpsonSuppliesTable = "1.3.6.1.4.1.1248.1.2.2.28.1.1"
+
+	// --- Jam counter ---
+	EpsonJamCount = "1.3.6.1.4.1.1248.1.2.2.36.1.1.2.1"
+
+	// --- Scanner input table (1.4.2.6.1.1.<col>.3.<row>) ---
+	// Columns: 2=type (3=flatbed, 4=ADF, 5=sheet-feed, 6=check), 4=total,
+	// 5=two-sided, 7=color, 9=unit (1=sheets, 3/empty=pages),
+	// 12=ADF roller residue, 14=ADF roller replacements.
+	EpsonScanInputTable = "1.3.6.1.4.1.1248.1.4.2.6.1.1"
 )
 
 // Kyocera vendor-specific OIDs (Enterprise 1347)

@@ -2,6 +2,8 @@ package vendor
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"strings"
 
 	"printmaster/agent/featureflags"
@@ -13,9 +15,8 @@ import (
 )
 
 // EpsonVendor implements vendor-specific support for Epson devices.
-// Provides color/mono breakdown and function-specific counters via enterprise OID 1.3.6.1.4.1.1248.*
-// OID structure derived from ICE packet capture analysis.
-// Reference: docs/vendor/EPSON_OID_MAPPING.md
+// OIDs and derivations mirror what Epson Device Admin (EDA) reads, verified
+// against a live device. Reference: docs/vendor/EPSON_OID_MAPPING.md
 type EpsonVendor struct{}
 
 func init() {
@@ -41,11 +42,11 @@ func (v *EpsonVendor) BaseOIDs() []string {
 	return []string{
 		oids.SysDescr,
 		oids.SysObjectID,
-		oids.SysUpTime, // ICE queries this
+		oids.SysUpTime,
 		oids.SysName,
-		oids.SysLocation, // ICE queries this
+		oids.SysLocation,
 		oids.HrDeviceDescr,
-		oids.HrDeviceStatus, // ICE queries this
+		oids.HrDeviceStatus,
 		oids.PrtGeneralPrinterName,
 		oids.PrtGeneralSerialNumber,
 		oids.HrPrinterStatus + ".1",
@@ -53,72 +54,50 @@ func (v *EpsonVendor) BaseOIDs() []string {
 		// Epson-specific identity
 		oids.EpsonModelName,
 		oids.EpsonSerialNumber,
+		// ST2 status frame (status, inks, maintenance box, paper counts)
+		oids.EpsonDeviceStatus,
 	}
 }
 
 func (v *EpsonVendor) MetricOIDs(caps *capabilities.DeviceCapabilities) []string {
-	baseOIDs := []string{
-		// Standard Printer-MIB (fallback)
-		oids.PrtMarkerLifeCount + ".1", // prtMarkerLifeCount (instance .1)
-
-		// Epson enterprise page count summaries - ICE OIDs
-		oids.EpsonTotalPages,
-		oids.EpsonColorPages,
-		oids.EpsonMonoPages,
-		// Legacy OIDs for older devices
+	return []string{
+		oids.PrtMarkerLifeCount + ".1",
+		oids.EpsonMarkerTotalPrinted,
+		oids.EpsonMarkerColorPrinted,
+		oids.EpsonMarkerProcessColorForMono,
+		oids.EpsonMarkerSimplexTotal,
+		oids.EpsonMarkerSimplexColor,
 		oids.EpsonTotalPagesLegacy,
-		oids.EpsonMonoPagesLegacy,
+		oids.EpsonTotalPagesLegacy2,
+		oids.EpsonSinglePassColorMode,
+		oids.EpsonSinglePassColorModeAlt,
+		oids.EpsonJamCount,
+		oids.EpsonPowerOnCount,
+		oids.EpsonMoveFromStandbyCount,
 	}
+}
 
-	// ICE-style function counters for all 4 functions (print, copy, fax, scan)
-	// These are table OIDs that walk: .27.6.1.<column>.1.1.<function>
-	functionCounters := []string{
-		// Function names (column 2)
-		oids.EpsonFunctionNames + ".1", // Print
-		oids.EpsonFunctionNames + ".2", // Copy
-		oids.EpsonFunctionNames + ".3", // Fax
-		oids.EpsonFunctionNames + ".4", // Scan
-
-		// B&W counts (column 3)
-		oids.EpsonFunctionBWCount + ".1", // Print B&W
-		oids.EpsonFunctionBWCount + ".2", // Copy B&W
-		oids.EpsonFunctionBWCount + ".3", // Fax B&W
-		oids.EpsonFunctionBWCount + ".4", // Scan B&W
-
-		// Total counts (column 4)
-		oids.EpsonFunctionTotalCount + ".1", // Print Total
-		oids.EpsonFunctionTotalCount + ".2", // Copy Total
-		oids.EpsonFunctionTotalCount + ".3", // Fax Total
-		oids.EpsonFunctionTotalCount + ".4", // Scan Total
-
-		// Color counts (column 5)
-		oids.EpsonFunctionColorCount + ".1", // Print Color
-		oids.EpsonFunctionColorCount + ".2", // Copy Color
-		oids.EpsonFunctionColorCount + ".3", // Fax Color
-		oids.EpsonFunctionColorCount + ".4", // Scan Color
+// MetricTableOIDs returns Epson enterprise tables walked during metrics queries.
+func (v *EpsonVendor) MetricTableOIDs() []string {
+	return []string{
+		oids.EpsonFunctionTable,
+		oids.EpsonPaperSizeTable,
+		oids.EpsonScanInputTable,
+		oids.EpsonSuppliesTable,
 	}
-
-	baseOIDs = append(baseOIDs, functionCounters...)
-	return baseOIDs
 }
 
 func (v *EpsonVendor) SupplyOIDs() []string {
-	// Use both standard Printer-MIB and Epson-specific supply tables
 	return []string{
-		// Standard Printer-MIB supplies
 		oids.PrtMarkerSuppliesDesc,
 		oids.PrtMarkerSuppliesLevel,
 		oids.PrtMarkerSuppliesMaxCap,
 		oids.PrtMarkerSuppliesClass,
 		oids.PrtMarkerSuppliesType,
-		// Epson-specific ink levels (more detailed)
-		oids.EpsonSuppliesStatus,
-		oids.EpsonSuppliesLevel,
 	}
 }
 
 func (v *EpsonVendor) PaperTrayOIDs() []string {
-	// Use standard Printer-MIB paper input tables
 	return []string{
 		oids.PrtInputName,
 		oids.PrtInputMediaName,
@@ -137,235 +116,494 @@ func (v *EpsonVendor) Parse(pdus []gosnmp.SnmpPDU) map[string]interface{} {
 	}
 
 	idx := newPDUIndex(pdus)
+	st2 := QueryEpsonRemoteStatus(pdus)
 
-	// Extract Epson enterprise summary counters
-	// Try ICE OIDs first, fall back to legacy if not found
-	totalPages := getOIDIntIndexed(idx, pdus, oids.EpsonTotalPages)
-	if totalPages == 0 {
-		totalPages = getOIDIntIndexed(idx, pdus, oids.EpsonTotalPagesLegacy)
+	// === Totals (EDA: total = prtMarkerLifeCount, mono = 27.1.1.3, color = 27.1.1.4) ===
+	total, hasTotal := epsonInt(idx, oids.PrtMarkerLifeCount+".1")
+	if !hasTotal {
+		total, hasTotal = epsonInt(idx, oids.EpsonTotalPagesLegacy)
 	}
-	colorPages := getOIDIntIndexed(idx, pdus, oids.EpsonColorPages)
-	monoPages := getOIDIntIndexed(idx, pdus, oids.EpsonMonoPages)
-	if monoPages == 0 {
-		monoPages = getOIDIntIndexed(idx, pdus, oids.EpsonMonoPagesLegacy)
+	if !hasTotal {
+		total, hasTotal = epsonInt(idx, oids.EpsonTotalPagesLegacy2)
+	}
+	mono, hasMono := epsonInt(idx, oids.EpsonMarkerTotalPrinted)
+	color, hasColor := epsonInt(idx, oids.EpsonMarkerColorPrinted)
+	if st2 != nil {
+		if !hasTotal && st2.TotalPages >= 0 {
+			total, hasTotal = st2.TotalPages, true
+		}
+		if !hasMono && st2.MonoPages >= 0 {
+			mono, hasMono = st2.MonoPages, true
+		}
+		if !hasColor && st2.ColorPages >= 0 {
+			color, hasColor = st2.ColorPages, true
+		}
+	}
+	if !hasTotal && hasMono && hasColor {
+		total, hasTotal = mono+color, true
+	}
+	if hasTotal && hasColor && !hasMono && total >= color {
+		mono, hasMono = total-color, true
 	}
 
-	// Page count totals
-	if totalPages > 0 {
-		result["total_pages"] = totalPages
-		result["page_count"] = totalPages
+	// === Function counters (print/copy/fax/other) ===
+	functions := parseEpsonFunctionTable(pdus)
+	for k, val := range functions {
+		result[k] = val
 	}
-
-	if monoPages > 0 {
-		result["mono_pages"] = monoPages
-	}
-
-	if colorPages > 0 {
-		result["color_pages"] = colorPages
-	}
-
-	// === FUNCTION COUNTERS (ICE-style) ===
-	// Epson reports per-function counters for print, copy, fax, scan
-	// We need to correctly categorize these into:
-	// - Print Impressions = marks made on paper by print engine
-	// - Scan Impressions = pages digitized by scanner unit
-
-	// Print function (1) - direct prints from network/USB
-	printTotal := getOIDIntIndexed(idx, pdus, oids.EpsonFunctionTotalCount+".1")
-	printColor := getOIDIntIndexed(idx, pdus, oids.EpsonFunctionColorCount+".1")
-	printBW := getOIDIntIndexed(idx, pdus, oids.EpsonFunctionBWCount+".1")
-	if printTotal > 0 {
-		result["print_pages"] = printTotal
-	}
-	if printColor > 0 {
-		result["print_color_pages"] = printColor
-	}
-	if printBW > 0 {
-		result["print_mono_pages"] = printBW
-	} else if printTotal > 0 && printColor > 0 {
-		// Calculate B&W by subtraction if not directly available
-		if bw := printTotal - printColor; bw > 0 {
-			result["print_mono_pages"] = bw
+	if !hasTotal {
+		if sum := intVal(functions["print_pages"]) + intVal(functions["copy_pages"]) + intVal(functions["fax_pages"]) + intVal(functions["other_pages"]); sum > 0 {
+			total, hasTotal = sum, true
 		}
 	}
 
-	// Copy function (2) - uses both scanner (input) and print engine (output)
-	// Copy pages = OUTPUT (print impressions)
-	// Copy scans need to be tracked separately but Epson may not provide separate counter
-	copyTotal := getOIDIntIndexed(idx, pdus, oids.EpsonFunctionTotalCount+".2")
-	copyColor := getOIDIntIndexed(idx, pdus, oids.EpsonFunctionColorCount+".2")
-	copyBW := getOIDIntIndexed(idx, pdus, oids.EpsonFunctionBWCount+".2")
-	if copyTotal > 0 {
-		result["copy_pages"] = copyTotal
-		// Also estimate copy scans (1:1 for single-page copies, but could differ with multi-copy)
-		// Store as copy_scans for scan impression tracking
-		result["copy_scans"] = copyTotal // Best estimate without separate counter
+	if hasTotal {
+		result["total_pages"] = total
+		result["page_count"] = total
 	}
-	if copyColor > 0 {
-		result["copy_color_pages"] = copyColor
+	if hasMono {
+		result["mono_pages"] = mono
 	}
-	if copyBW > 0 {
-		result["copy_mono_pages"] = copyBW
-	} else if copyTotal > 0 && copyColor > 0 {
-		if bw := copyTotal - copyColor; bw > 0 {
-			result["copy_mono_pages"] = bw
+	if hasColor {
+		result["color_pages"] = color
+	}
+	if n, ok := epsonInt(idx, oids.EpsonMarkerProcessColorForMono); ok {
+		result["process_color_for_mono_pages"] = n
+	}
+	if n, ok := epsonInt(idx, oids.EpsonSinglePassColorMode); ok {
+		result["single_pass_color_mode_pages"] = n
+	} else if n, ok := epsonInt(idx, oids.EpsonSinglePassColorModeAlt); ok {
+		result["single_pass_color_mode_pages"] = n
+	}
+
+	// === Paper sizes and simplex/duplex ===
+	paperRows := parseEpsonPaperSizeTable(pdus)
+	for _, row := range paperRows {
+		slug := epsonSlug(row.name)
+		if slug == "" {
+			continue
+		}
+		result["paper_"+slug+"_pages"] = row.total
+		if row.hasColor {
+			result["paper_"+slug+"_color_pages"] = row.color
+			result["paper_"+slug+"_mono_pages"] = row.total - row.color
+		}
+		if row.hasSimplex {
+			result["paper_"+slug+"_duplex_pages"] = row.total - row.simplex
 		}
 	}
-
-	// Fax function (3) - Epson fax counter typically counts pages printed (received faxes)
-	// For received faxes: this is a PRINT impression
-	// For sent faxes: the scan would be counted separately (in scan function or not at all)
-	faxTotal := getOIDIntIndexed(idx, pdus, oids.EpsonFunctionTotalCount+".3")
-	faxBW := getOIDIntIndexed(idx, pdus, oids.EpsonFunctionBWCount+".3")
-	if faxTotal > 0 {
-		result["fax_pages"] = faxTotal
-		result["fax_mono_pages"] = faxTotal // Fax is typically mono
-	}
-	if faxBW > 0 {
-		result["fax_mono_pages"] = faxBW
+	for k, val := range epsonDuplexMetrics(idx, total, hasTotal, color, hasColor, paperRows) {
+		result[k] = val
 	}
 
-	// Scan function (4) - direct scans to host/email/folder
-	// This is a SCAN impression (scanner unit usage)
-	scanTotal := getOIDIntIndexed(idx, pdus, oids.EpsonFunctionTotalCount+".4")
-	if scanTotal > 0 {
-		result["other_scans"] = scanTotal // scan-to-host/email/folder
+	// === Scanner counters ===
+	for k, val := range parseEpsonScanTable(pdus) {
+		result[k] = val
 	}
 
-	// === CALCULATE TOTAL PRINT IMPRESSIONS ===
-	// = direct prints + copy outputs + fax prints (received)
-	// Note: mono_pages and color_pages from summary OIDs may already represent this
-	// but we calculate from functions for validation
-	totalPrintFromFunctions := printTotal + copyTotal + faxTotal
-	if totalPrintFromFunctions > 0 && totalPages == 0 {
-		// No summary total available, use function sum
-		result["page_count"] = totalPrintFromFunctions
-		result["total_pages"] = totalPrintFromFunctions
+	// === Misc counters ===
+	if n, ok := epsonInt(idx, oids.EpsonJamCount); ok {
+		result["jams"] = n
+	}
+	if n, ok := epsonInt(idx, oids.EpsonPowerOnCount); ok {
+		result["power_on_count"] = n
+	}
+	if n, ok := epsonInt(idx, oids.EpsonMoveFromStandbyCount); ok {
+		result["wake_from_standby_count"] = n
 	}
 
-	// === CALCULATE TOTAL SCAN IMPRESSIONS ===
-	// = copy scans + fax scans (sent) + other scans
-	// Note: Epson may not separate fax_scans (outgoing fax) from scan function
-	totalScanImpressions := copyTotal + scanTotal // copy_scans estimated from copy_pages
-	if totalScanImpressions > 0 {
-		result["scan_count"] = totalScanImpressions
+	// === Supplies ===
+	// Standard Printer-MIB is authoritative for inks; Epson's supplies table
+	// adds the maintenance box (not exposed in prtMarkerSuppliesTable).
+	supplyLevels := parseSuppliesTable(pdus)
+	for k, val := range supplyLevels {
+		result[k] = val
 	}
-
-	// Parse supply levels using generic parser (handles both standard and Epson supplies)
-	supplies := parseSuppliesTable(pdus)
-	for k, v := range supplies {
-		result[k] = v
-	}
-
-	// Also try Epson-specific ink levels
-	epsonSupplies := v.parseEpsonSupplies(pdus)
-	for k, v := range epsonSupplies {
-		// Only add if not already set by standard table
+	maint := parseEpsonMaintenanceBoxes(pdus)
+	for k, val := range maint {
 		if _, exists := result[k]; !exists {
-			result[k] = v
+			result[k] = val
 		}
 	}
 
-	// Fallback to standard Printer-MIB if enterprise OIDs failed
-	if _, ok := result["page_count"]; !ok {
-		if pageCount := getOIDIntIndexed(idx, pdus, oids.PrtMarkerLifeCount+".1"); pageCount > 0 {
-			result["page_count"] = pageCount
-			result["total_pages"] = pageCount
+	// === ST2 fallbacks ===
+	if st2 != nil {
+		st2Metrics := st2.ToMetrics()
+		for k, val := range st2Metrics {
+			switch {
+			case strings.HasPrefix(k, "ink_"):
+				if len(supplyLevels) == 0 {
+					result[k] = val
+				}
+			case strings.HasPrefix(k, "supply_maintenance_box"):
+				if len(maint) == 0 && !hasMaintenanceSupply(result) {
+					result[k] = val
+				}
+			case strings.HasPrefix(k, "maintenance_box_replacements"):
+				if _, exists := result[k]; !exists {
+					result[k] = val
+				}
+			case k == "total_pages", k == "mono_pages", k == "color_pages":
+				// Already used as fallbacks above.
+			default:
+				if _, exists := result[k]; !exists {
+					result[k] = val
+				}
+			}
 		}
 	}
 
 	if logger.Global != nil {
-		mono := 0
-		color := 0
-		scan := 0
-		if m, ok := result["mono_pages"].(int); ok {
-			mono = m
-		}
-		if c, ok := result["color_pages"].(int); ok {
-			color = c
-		}
-		if s, ok := result["scan_count"].(int); ok {
-			scan = s
-		}
 		logger.Global.Debug("Epson parsing complete",
-			"mono_pages", mono, "color_pages", color, "scan_count", scan,
-			"print_func", printTotal, "copy_func", copyTotal, "fax_func", faxTotal, "scan_func", scanTotal)
+			"total_pages", total, "mono_pages", mono, "color_pages", color,
+			"scan_count", intVal(result["scan_count"]), "st2", st2 != nil, "metrics", len(result))
 	}
 	return result
 }
 
-// ParseWithRemoteMode is an extended version of Parse that also queries
-// Epson remote-mode commands when the feature flag is enabled.
-// This provides richer data (ink levels, maintenance box status) that
-// standard SNMP OIDs often don't expose on Epson printers.
+// ParseWithRemoteMode extends Parse with a dedicated status fetch when the
+// Epson remote-mode feature flag is enabled and the ST2 frame was not already
+// collected by the regular query (epPrtDeviceStatus in BaseOIDs).
 func (v *EpsonVendor) ParseWithRemoteMode(ctx context.Context, pdus []gosnmp.SnmpPDU, ip string, timeoutSeconds int) map[string]interface{} {
-	// Start with standard parsing
 	result := v.Parse(pdus)
 
-	// If remote mode is enabled, fetch additional metrics
-	if featureflags.EpsonRemoteModeEnabled() && ip != "" {
+	if !featureflags.EpsonRemoteModeEnabled() || ip == "" {
 		if logger.Global != nil {
-			logger.Global.TraceTag("epson_remote", "Epson remote mode: fetching extended metrics", "ip", ip)
+			logger.Global.TraceTag("epson_remote", "Epson remote mode: skipped", "enabled", featureflags.EpsonRemoteModeEnabled(), "ip_set", ip != "")
 		}
-
-		remoteMetrics := FetchEpsonRemoteMetricsWithIP(ctx, ip, timeoutSeconds)
-		if remoteMetrics != nil {
-			// Merge remote metrics, preferring remote data for ink levels
-			// since it's typically more accurate than standard SNMP
-			for k, v := range remoteMetrics {
-				// For ink levels, always prefer remote mode data
-				if strings.HasPrefix(k, "ink_") || strings.HasPrefix(k, "maintenance_") ||
-					strings.HasPrefix(k, "waste_") || strings.HasPrefix(k, "epson_") {
-					result[k] = v
-				} else if _, exists := result[k]; !exists {
-					// For other metrics, only add if not already present
-					result[k] = v
-				}
-			}
-
-			if logger.Global != nil {
-				logger.Global.Debug("Epson remote mode: merged metrics",
-					"ip", ip,
-					"remote_metrics", len(remoteMetrics),
-					"total_metrics", len(result))
-			}
-		}
-	} else if logger.Global != nil {
-		// Keep this as trace: it can be called a lot during discovery.
-		logger.Global.TraceTag("epson_remote", "Epson remote mode: skipped", "enabled", featureflags.EpsonRemoteModeEnabled(), "ip_set", ip != "")
+		return result
+	}
+	if QueryEpsonRemoteStatus(pdus) != nil {
+		return result
 	}
 
+	if logger.Global != nil {
+		logger.Global.TraceTag("epson_remote", "Epson remote mode: fetching extended metrics", "ip", ip)
+	}
+	remoteMetrics := FetchEpsonRemoteMetricsWithIP(ctx, ip, timeoutSeconds)
+	for k, val := range remoteMetrics {
+		if _, exists := result[k]; !exists {
+			result[k] = val
+		}
+	}
+	if logger.Global != nil && remoteMetrics != nil {
+		logger.Global.Debug("Epson remote mode: merged metrics", "ip", ip, "remote_metrics", len(remoteMetrics), "total_metrics", len(result))
+	}
 	return result
 }
 
-// parseEpsonSupplies parses Epson-specific ink level table (1.2.2.2.1.1)
-func (v *EpsonVendor) parseEpsonSupplies(pdus []gosnmp.SnmpPDU) map[string]interface{} {
-	result := make(map[string]interface{})
+// --- helpers ---
 
-	// Epson ink table: .1.2.2.2.1.1.3.1.<ink_index>
-	// Indexes typically: 1=Black, 2=Cyan, 3=Magenta, 4=Yellow, etc.
-	colorMap := map[string]string{
-		".1": "ink_black",
-		".2": "ink_cyan",
-		".3": "ink_magenta",
-		".4": "ink_yellow",
-		".5": "ink_light_cyan",
-		".6": "ink_light_magenta",
+// epsonInt returns an integer value only if the OID is present and numeric.
+func epsonInt(idx *pduIndex, oid string) (int, bool) {
+	pdu, ok := idx.byOID[normalizeOID(oid)]
+	if !ok {
+		return 0, false
 	}
+	switch pdu.Type {
+	case gosnmp.NoSuchObject, gosnmp.NoSuchInstance, gosnmp.EndOfMibView, gosnmp.Null:
+		return 0, false
+	}
+	switch pdu.Value.(type) {
+	case int, int32, int64, uint, uint32, uint64:
+		n := coerceToInt(pdu.Value)
+		return n, n >= 0
+	}
+	return 0, false
+}
 
+func pduText(value interface{}) string {
+	switch v := value.(type) {
+	case []byte:
+		return strings.TrimRight(string(v), "\x00")
+	case string:
+		return strings.TrimRight(v, "\x00")
+	}
+	return ""
+}
+
+func intVal(v interface{}) int {
+	if n, ok := v.(int); ok {
+		return n
+	}
+	return 0
+}
+
+// epsonTable groups PDUs under root as column -> row-suffix -> PDU.
+func epsonTable(pdus []gosnmp.SnmpPDU, root string) map[int]map[string]gosnmp.SnmpPDU {
+	prefix := normalizeOID(root) + "."
+	table := make(map[int]map[string]gosnmp.SnmpPDU)
 	for _, pdu := range pdus {
 		oid := normalizeOID(pdu.Name)
-		// Check if this is an Epson ink level OID
-		if strings.HasPrefix(oid, "1.3.6.1.4.1.1248.1.2.2.2.1.1.3.1.") {
-			suffix := strings.TrimPrefix(oid, "1.3.6.1.4.1.1248.1.2.2.2.1.1.3.1")
-			if metricName, ok := colorMap[suffix]; ok {
-				level := coerceToInt(pdu.Value)
-				if level >= 0 && level <= 100 {
-					result[metricName] = float64(level)
-				}
+		if !strings.HasPrefix(oid, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(oid, prefix)
+		dot := strings.IndexByte(rest, '.')
+		if dot <= 0 {
+			continue
+		}
+		var col int
+		if _, err := fmt.Sscanf(rest[:dot], "%d", &col); err != nil {
+			continue
+		}
+		if table[col] == nil {
+			table[col] = make(map[string]gosnmp.SnmpPDU)
+		}
+		table[col][rest[dot+1:]] = pdu
+	}
+	return table
+}
+
+func tableInt(table map[int]map[string]gosnmp.SnmpPDU, col int, row string) (int, bool) {
+	pdu, ok := table[col][row]
+	if !ok {
+		return 0, false
+	}
+	idx := &pduIndex{byOID: map[string]gosnmp.SnmpPDU{"x": pdu}}
+	return epsonInt(idx, "x")
+}
+
+func tableRows(table map[int]map[string]gosnmp.SnmpPDU, col int) []string {
+	rows := make([]string, 0, len(table[col]))
+	for row := range table[col] {
+		rows = append(rows, row)
+	}
+	sort.Strings(rows)
+	return rows
+}
+
+func epsonSlug(s string) string {
+	var b strings.Builder
+	underscore := false
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			underscore = false
+		} else if !underscore && b.Len() > 0 {
+			b.WriteByte('_')
+			underscore = true
+		}
+	}
+	return strings.TrimSuffix(b.String(), "_")
+}
+
+// parseEpsonFunctionTable decodes 27.6.1: col2 type, col3 unit, col4 total, col5 color.
+func parseEpsonFunctionTable(pdus []gosnmp.SnmpPDU) map[string]interface{} {
+	table := epsonTable(pdus, oids.EpsonFunctionTable)
+	names := map[int]string{0: "other", 1: "print", 2: "copy", 3: "fax"}
+	totals := map[string]int{}
+	colors := map[string]int{}
+	hasColor := map[string]bool{}
+	for _, row := range tableRows(table, 4) {
+		fnType, ok := tableInt(table, 2, row)
+		if !ok {
+			continue
+		}
+		name, ok := names[fnType]
+		if !ok {
+			continue
+		}
+		// EDA only accepts rows whose unit is 3 (pages).
+		if unit, ok := tableInt(table, 3, row); ok && unit != 3 {
+			continue
+		}
+		t, ok := tableInt(table, 4, row)
+		if !ok {
+			continue
+		}
+		totals[name] += t
+		if c, ok := tableInt(table, 5, row); ok {
+			colors[name] += c
+			hasColor[name] = true
+		}
+	}
+	result := make(map[string]interface{})
+	for name, t := range totals {
+		result[name+"_pages"] = t
+		if hasColor[name] {
+			result[name+"_color_pages"] = colors[name]
+			result[name+"_mono_pages"] = t - colors[name]
+		}
+	}
+	return result
+}
+
+type epsonPaperRow struct {
+	name                  string
+	total, color          int
+	simplex, colorSimplex int
+	hasColor, hasSimplex  bool
+	hasColorSimplex       bool
+}
+
+// parseEpsonPaperSizeTable decodes 6.1.1 rows that EDA considers valid
+// (unit column 3 non-empty and numeric total in column 4).
+func parseEpsonPaperSizeTable(pdus []gosnmp.SnmpPDU) []epsonPaperRow {
+	table := epsonTable(pdus, oids.EpsonPaperSizeTable)
+	var rows []epsonPaperRow
+	for _, row := range tableRows(table, 4) {
+		unit, ok := table[3][row]
+		if !ok || (pduText(unit.Value) == "" && coerceToInt(unit.Value) < 0) {
+			continue
+		}
+		t, ok := tableInt(table, 4, row)
+		if !ok {
+			continue
+		}
+		r := epsonPaperRow{name: pduText(table[2][row].Value), total: t}
+		r.color, r.hasColor = tableInt(table, 5, row)
+		r.simplex, r.hasSimplex = tableInt(table, 7, row)
+		r.colorSimplex, r.hasColorSimplex = tableInt(table, 9, row)
+		rows = append(rows, r)
+	}
+	return rows
+}
+
+// epsonDuplexMetrics follows EDA: prefer scalar simplex counters with the
+// marker total; otherwise sum the paper-size table.
+func epsonDuplexMetrics(idx *pduIndex, total int, hasTotal bool, color int, hasColor bool, rows []epsonPaperRow) map[string]interface{} {
+	result := make(map[string]interface{})
+	if s, ok := epsonInt(idx, oids.EpsonMarkerSimplexTotal); ok && hasTotal && total >= s {
+		duplex := total - s
+		result["simplex_pages"] = s
+		result["duplex_pages"] = duplex
+		if sc, ok := epsonInt(idx, oids.EpsonMarkerSimplexColor); ok && hasColor {
+			duplexColor := color - sc
+			result["simplex_color_pages"] = sc
+			result["simplex_mono_pages"] = s - sc
+			result["duplex_color_pages"] = duplexColor
+			result["duplex_mono_pages"] = duplex - duplexColor
+		} else if !hasColor {
+			result["simplex_mono_pages"] = s
+			result["duplex_mono_pages"] = duplex
+		}
+		return result
+	}
+
+	var simplex, duplex, simplexColor, duplexColor int
+	anySimplex, allColorSimplex := false, true
+	for _, r := range rows {
+		if !r.hasSimplex {
+			continue
+		}
+		anySimplex = true
+		simplex += r.simplex
+		duplex += r.total - r.simplex
+		if r.hasColor && r.hasColorSimplex {
+			simplexColor += r.colorSimplex
+			duplexColor += r.color - r.colorSimplex
+		} else {
+			allColorSimplex = false
+		}
+	}
+	if !anySimplex {
+		return result
+	}
+	result["simplex_pages"] = simplex
+	result["duplex_pages"] = duplex
+	if allColorSimplex {
+		result["simplex_color_pages"] = simplexColor
+		result["simplex_mono_pages"] = simplex - simplexColor
+		result["duplex_color_pages"] = duplexColor
+		result["duplex_mono_pages"] = duplex - duplexColor
+	}
+	return result
+}
+
+// parseEpsonScanTable decodes the scanner input table (1.4.2.6.1.1).
+func parseEpsonScanTable(pdus []gosnmp.SnmpPDU) map[string]interface{} {
+	table := epsonTable(pdus, oids.EpsonScanInputTable)
+	sources := map[int]string{3: "flatbed", 4: "adf", 5: "sheetfeed", 6: "check"}
+	result := make(map[string]interface{})
+	add := func(key string, n int) { result[key] = intVal(result[key]) + n }
+
+	var total, colorTotal int
+	anyRow, allColor := false, true
+	for _, row := range tableRows(table, 4) {
+		srcType, ok := tableInt(table, 2, row)
+		if !ok {
+			continue
+		}
+		src, ok := sources[srcType]
+		if !ok {
+			continue
+		}
+		t, ok := tableInt(table, 4, row)
+		if !ok {
+			continue
+		}
+		unit := "pages"
+		if u, ok := tableInt(table, 9, row); ok && u == 1 {
+			unit = "sheets"
+		}
+		base := "scan_" + src
+		add(base+"_"+unit, t)
+		anyRow = true
+		total += t
+		if c, ok := tableInt(table, 7, row); ok {
+			add(base+"_color_"+unit, c)
+			add(base+"_mono_"+unit, t-c)
+			colorTotal += c
+		} else {
+			allColor = false
+		}
+		if d, ok := tableInt(table, 5, row); ok {
+			add(base+"_duplex_"+unit, d)
+			add(base+"_simplex_"+unit, t-d)
+		}
+		if src == "adf" {
+			if residue, ok := tableInt(table, 12, row); ok && residue <= 100 {
+				result["supply_adf_roller"] = float64(residue)
+			}
+			if n, ok := tableInt(table, 14, row); ok {
+				add("scan_adf_roller_replacements", n)
 			}
 		}
 	}
-
+	if anyRow {
+		result["scan_count"] = total
+		if allColor {
+			result["scan_color_pages"] = colorTotal
+			result["scan_mono_pages"] = total - colorTotal
+		}
+	}
 	return result
+}
+
+// parseEpsonMaintenanceBoxes reads type-1003 rows of the Epson supplies table.
+func parseEpsonMaintenanceBoxes(pdus []gosnmp.SnmpPDU) map[string]interface{} {
+	table := epsonTable(pdus, oids.EpsonSuppliesTable)
+	result := make(map[string]interface{})
+	box := 0
+	for _, row := range tableRows(table, 21) {
+		if t, ok := tableInt(table, 21, row); !ok || t != 1003 {
+			continue
+		}
+		desc := pduText(table[5][row].Value)
+		if desc == "" {
+			desc = pduText(table[18][row].Value)
+		}
+		key := st2MaintenanceKey("supply_maintenance_box", box)
+		if desc != "" {
+			key = "supply_" + strings.ReplaceAll(strings.ToLower(desc), " ", "_")
+		}
+		if level, ok := tableInt(table, 2, row); ok && level <= 100 {
+			result[key] = float64(level)
+		}
+		if n, ok := tableInt(table, 3, row); ok {
+			result[st2MaintenanceKey("maintenance_box_replacements", box)] = n
+		}
+		box++
+	}
+	return result
+}
+
+func hasMaintenanceSupply(result map[string]interface{}) bool {
+	for k := range result {
+		if strings.HasPrefix(k, "supply_") && strings.Contains(k, "maint") {
+			return true
+		}
+	}
+	return false
 }

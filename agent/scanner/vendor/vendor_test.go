@@ -209,51 +209,6 @@ func TestKyoceraVendorParse(t *testing.T) {
 	}
 }
 
-func TestEpsonVendorParse(t *testing.T) {
-	pdus := []gosnmp.SnmpPDU{
-		// Epson enterprise OIDs (ICE-style)
-		{Name: ".1.3.6.1.4.1.1248.1.2.2.27.1.1.33.1.1", Value: 81563}, // Total pages (ICE)
-		{Name: ".1.3.6.1.4.1.1248.1.2.2.27.1.1.6.1.1", Value: 39797},  // Mono pages (ICE)
-		{Name: ".1.3.6.1.4.1.1248.1.2.2.27.1.1.4.1.1", Value: 41766},  // Color pages (ICE)
-		// Function counters
-		{Name: ".1.3.6.1.4.1.1248.1.2.2.27.6.1.4.1.1.1", Value: 49053}, // Total print
-		{Name: ".1.3.6.1.4.1.1248.1.2.2.27.6.1.4.1.1.2", Value: 32474}, // Total copy
-		{Name: ".1.3.6.1.4.1.1248.1.2.2.27.6.1.5.1.1.1", Value: 39434}, // Color print
-		{Name: ".1.3.6.1.4.1.1248.1.2.2.27.6.1.5.1.1.2", Value: 2313},  // Color copy
-	}
-
-	vendor := &EpsonVendor{}
-	result := vendor.Parse(pdus)
-
-	// Check totals
-	if totalPages, ok := result["total_pages"].(int); !ok || totalPages != 81563 {
-		t.Errorf("total_pages = %v, want 81563", result["total_pages"])
-	}
-
-	if monoPages, ok := result["mono_pages"].(int); !ok || monoPages != 39797 {
-		t.Errorf("mono_pages = %v, want 39797", result["mono_pages"])
-	}
-
-	if colorPages, ok := result["color_pages"].(int); !ok || colorPages != 41766 {
-		t.Errorf("color_pages = %v, want 41766", result["color_pages"])
-	}
-
-	// Check copy
-	if copyPages, ok := result["copy_pages"].(int); !ok || copyPages != 32474 {
-		t.Errorf("copy_pages = %v, want 32474", result["copy_pages"])
-	}
-
-	if copyColor, ok := result["copy_color_pages"].(int); !ok || copyColor != 2313 {
-		t.Errorf("copy_color_pages = %v, want 2313", result["copy_color_pages"])
-	}
-
-	// Check calculated B&W copy
-	expectedCopyMono := 32474 - 2313
-	if copyMono, ok := result["copy_mono_pages"].(int); !ok || copyMono != expectedCopyMono {
-		t.Errorf("copy_mono_pages = %v, want %d", result["copy_mono_pages"], expectedCopyMono)
-	}
-}
-
 func TestHPVendorFirmwareParse(t *testing.T) {
 	pdus := []gosnmp.SnmpPDU{
 		{Name: ".1.3.6.1.2.1.1.1.0", Value: []byte("HP LaserJet Pro M404dn Firmware Datecode: 20230712 Service ID")},

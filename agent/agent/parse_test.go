@@ -194,14 +194,19 @@ func TestMergeVendorMetrics_EpsonICEOIDs(t *testing.T) {
 	pdus := []gosnmp.SnmpPDU{
 		// sysObjectID to trigger Epson vendor detection
 		{Name: "1.3.6.1.2.1.1.2.0", Type: gosnmp.OctetString, Value: []byte("1.3.6.1.4.1.1248.1.2")},
-		// ICE-style Epson page counts (using exact OIDs from constants: EpsonTotalPages, etc.)
-		{Name: "1.3.6.1.4.1.1248.1.2.2.27.1.1.33.1.1", Type: gosnmp.Integer, Value: 15000}, // EpsonTotalPages
-		{Name: "1.3.6.1.4.1.1248.1.2.2.27.1.1.6.1.1", Type: gosnmp.Integer, Value: 8000},   // EpsonMonoPages
-		{Name: "1.3.6.1.4.1.1248.1.2.2.27.1.1.4.1.1", Type: gosnmp.Integer, Value: 7000},   // EpsonColorPages
-		// Function counters (EpsonFunctionTotalCount + ".<function>" for print/copy/scan)
-		{Name: "1.3.6.1.4.1.1248.1.2.2.27.6.1.4.1.1.1", Type: gosnmp.Integer, Value: 10000}, // Print total
-		{Name: "1.3.6.1.4.1.1248.1.2.2.27.6.1.4.1.1.2", Type: gosnmp.Integer, Value: 3000},  // Copy total
-		{Name: "1.3.6.1.4.1.1248.1.2.2.27.6.1.4.1.1.4", Type: gosnmp.Integer, Value: 500},   // Scan count
+		// Legacy enterprise total (used only when prtMarkerLifeCount is absent)
+		{Name: "1.3.6.1.4.1.1248.1.2.2.27.1.1.33.1.1", Type: gosnmp.Integer, Value: 15000},
+		// epPrtMarkerTotalPrinted (mono) and color pages, as read by Epson Device Admin
+		{Name: "1.3.6.1.4.1.1248.1.2.2.27.1.1.3.1.1", Type: gosnmp.Integer, Value: 8000},
+		{Name: "1.3.6.1.4.1.1248.1.2.2.27.1.1.4.1.1", Type: gosnmp.Integer, Value: 7000},
+		// Function table: col 2 = type (1 print, 2 copy), col 4 = total
+		{Name: "1.3.6.1.4.1.1248.1.2.2.27.6.1.2.1.1.1", Type: gosnmp.Integer, Value: 1},
+		{Name: "1.3.6.1.4.1.1248.1.2.2.27.6.1.2.1.1.2", Type: gosnmp.Integer, Value: 2},
+		{Name: "1.3.6.1.4.1.1248.1.2.2.27.6.1.4.1.1.1", Type: gosnmp.Integer, Value: 10000},
+		{Name: "1.3.6.1.4.1.1248.1.2.2.27.6.1.4.1.1.2", Type: gosnmp.Integer, Value: 3000},
+		// Scanner input table: ADF row with 500 pages
+		{Name: "1.3.6.1.4.1.1248.1.4.2.6.1.1.2.3.1", Type: gosnmp.Integer, Value: 4},
+		{Name: "1.3.6.1.4.1.1248.1.4.2.6.1.1.4.3.1", Type: gosnmp.Integer, Value: 500},
 	}
 
 	pi := PrinterInfo{
@@ -234,6 +239,12 @@ func TestMergeVendorMetrics_EpsonICEOIDs(t *testing.T) {
 	}
 	if pi.Meters["color_pages"] != 7000 {
 		t.Errorf("expected Meters[color_pages] 7000, got %d", pi.Meters["color_pages"])
+	}
+	if pi.Meters["print_pages"] != 10000 || pi.Meters["copy_pages"] != 3000 {
+		t.Errorf("expected print/copy 10000/3000, got %d/%d", pi.Meters["print_pages"], pi.Meters["copy_pages"])
+	}
+	if pi.Meters["scans"] != 500 {
+		t.Errorf("expected Meters[scans] 500, got %d", pi.Meters["scans"])
 	}
 }
 
