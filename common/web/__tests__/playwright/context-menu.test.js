@@ -14,6 +14,7 @@ const styleCss = path.resolve(__dirname, '../../../../server/web/style.css');
 const appJs = path.resolve(__dirname, '../../../../server/web/app.js');
 const rbacJs = path.resolve(__dirname, '../../../../server/web/rbac.js');
 const contextMenuJs = path.resolve(__dirname, '../../../../server/web/context-menu.js');
+const snmpWalkJs = path.resolve(__dirname, '../../../../server/web/snmp-walk.js');
 const ssoAdminJs = path.resolve(__dirname, '../../../../server/web/sso-admin.js');
 const chartsJs = path.resolve(__dirname, '../../../../server/web/utils/charts.js');
 const formattersJs = path.resolve(__dirname, '../../../../server/web/utils/formatters.js');
@@ -59,6 +60,7 @@ function startAppFixtureServer() {
         '/static/app.js': { file: appJs, type: 'application/javascript' },
         '/static/rbac.js': { file: rbacJs, type: 'application/javascript' },
         '/static/context-menu.js': { file: contextMenuJs, type: 'application/javascript' },
+        '/static/snmp-walk.js': { file: snmpWalkJs, type: 'application/javascript' },
         '/static/sso-admin.js': { file: ssoAdminJs, type: 'application/javascript' },
       };
       const normalizedPath = normalizeStaticPath(url.pathname);
@@ -329,6 +331,7 @@ test('device context menu: appearance, actions, delete flow', async ({ page, bro
   await openContextMenuAndVerifyItems(page, deviceElement, contextMenu, [
     'show-printer-details',
     'copy-serial',
+    'device-snmp-walk',
     'delete-device',
   ]);
 
@@ -410,6 +413,75 @@ test('device context menu: appearance, actions, delete flow', async ({ page, bro
   expect(deleteCall.body.delete_metrics).toBe(true);
   expect(deleteCall.body.delete_from_agent).toBe(true);
   expect(deleteCall.body.agent_id).toBe('agent-001');
+});
+
+test('device SNMP walk tool: admin can start and download captures', async ({ page }) => {
+  test.skip(isMobileViewport(page), 'Context menus are desktop-only (mobile uses different navigation)');
+
+  const walkCalls = [];
+  const walks = [];
+  const fallback = createApiHandler();
+  await page.addInitScript(() => {
+    window.EventSource = class { constructor() { this.readyState = 1; } addEventListener() { } close() { } };
+    window.WebSocket = class { constructor() { } addEventListener() { } close() { } };
+  });
+  await page.route('**/api/**', route => {
+    const url = route.request().url();
+    const method = route.request().method();
+    if (url.includes('/api/v1/proxy/agent/agent-001/api/diagnostics/snmp-walks')) {
+      walkCalls.push({ url, method, body: route.request().postData() });
+      if (method === 'POST') {
+        const body = JSON.parse(route.request().postData());
+        const job = {
+          id: 'walk1', ip: body.ip, label: body.label, roots: body.roots, max_oids: body.max_oids,
+          status: 'complete', oid_count: 1234, file_size: 4096, duration_ms: 5000,
+          file_name: 'snmpwalk_192-168-1-50.json.gz', started_at: new Date().toISOString()
+        };
+        walks.push(job);
+        return route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify(job) });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ walks, default_roots: ['1.3.6.1.2.1', '1.3.6.1.4.1'], default_max_oids: 100000, max_max_oids: 2000000 })
+      });
+    }
+    return fallback(route);
+  });
+
+  await page.goto(`${global.__PM_BASE_URL__}/app`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#desktop_tabs .tab[data-target="devices"]', { timeout: 10000 });
+  await page.locator('#desktop_tabs [data-target="devices"]').first().click();
+  await page.waitForSelector('[data-serial="ABC123"]', { timeout: 10000 });
+  await page.waitForFunction(() => {
+    const table = document.getElementById('devices_table');
+    const cards = document.getElementById('devices_cards');
+    return (table && table.dataset.contextMenuBound === 'true') ||
+      (cards && cards.dataset.contextMenuBound === 'true');
+  }, { timeout: 5000 });
+
+  const deviceElement = page.locator('.saved-device-card[data-serial="ABC123"], .device-card[data-serial="ABC123"], tr[data-serial="ABC123"]').first();
+  const contextMenu = page.locator('.pm-context-menu');
+  await openContextMenuAndClickAction(page, deviceElement, contextMenu, 'device-snmp-walk');
+
+  const modal = page.locator('.snmp-walk-modal');
+  await expect(modal).toBeVisible({ timeout: 5000 });
+  await expect(modal.locator('#snmp_walk_ip')).toHaveValue('192.168.1.50');
+  await expect(modal.locator('#snmp_walk_max')).toHaveValue('100000');
+  await expect(modal.locator('#snmp_walk_roots')).toHaveValue('1.3.6.1.2.1\n1.3.6.1.4.1');
+
+  await modal.locator('#snmp_walk_max').fill('500000');
+  await modal.locator('[data-action="start"]').click();
+
+  const download = modal.locator('a[download]');
+  await expect(download).toBeVisible({ timeout: 5000 });
+  await expect(download).toHaveAttribute('href', '/api/v1/proxy/agent/agent-001/api/diagnostics/snmp-walks/walk1/download');
+
+  const post = walkCalls.find(c => c.method === 'POST');
+  expect(JSON.parse(post.body)).toMatchObject({ ip: '192.168.1.50', max_oids: 500000, roots: ['1.3.6.1.2.1', '1.3.6.1.4.1'] });
+
+  await modal.locator('[data-action="close"]').click();
+  await expect(modal).toHaveCount(0);
 });
 
 test('bulk device deletion uses options modal and canonical API', async ({ page }) => {

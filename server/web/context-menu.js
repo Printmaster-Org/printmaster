@@ -62,6 +62,14 @@
             action: 'restart-agent',
             requiresWs: true
         },
+        {
+            id: 'snmp-walks',
+            label: 'SNMP Walks (Admin)…',
+            icon: '🧪',
+            action: 'agent-snmp-walks',
+            requiresAdmin: true,
+            requiresWs: true
+        },
         { divider: true },
         {
             id: 'copy-id',
@@ -111,6 +119,14 @@
             action: 'view-metrics',
             requiresSerial: true
         },
+        {
+            id: 'snmp-walk',
+            label: 'SNMP Walk (Admin)…',
+            icon: '🧪',
+            action: 'device-snmp-walk',
+            requiresAdmin: true,
+            requiresAgentIp: true
+        },
         { divider: true },
         {
             id: 'copy-serial',
@@ -142,6 +158,14 @@
     ];
 
     /**
+     * Whether the signed-in user is a global admin (for admin-only items)
+     */
+    function isAdminUser() {
+        const shared = window.__pm_shared || {};
+        return typeof shared.isGlobalAdmin === 'function' && !!shared.isGlobalAdmin();
+    }
+
+    /**
      * Create and show a context menu
      */
     function showContextMenu(event, items, context) {
@@ -169,6 +193,8 @@
             if (item.requiresUpdate && !context.hasUpdate) return;
             if (item.requiresAccess && !context.hasAccess) return;
             if (item.requiresSerial && !context.serial) return;
+            if (item.requiresAdmin && !isAdminUser()) return;
+            if (item.requiresAgentIp && !(context.agentId && context.ip)) return;
 
             // Situational unavailability (e.g. agent not connected via
             // WebSocket) keeps the item visible but disabled, matching the
@@ -329,6 +355,22 @@
 
             case 'copy-agent-ip':
                 copyToClipboard(context.ip, 'IP Address');
+                break;
+
+            case 'agent-snmp-walks':
+                if (shared.openSnmpWalkTool) {
+                    shared.openSnmpWalkTool({ agentId: context.agentId, agentName: context.agentName });
+                }
+                break;
+
+            case 'device-snmp-walk':
+                if (shared.openSnmpWalkTool) {
+                    shared.openSnmpWalkTool({
+                        agentId: context.agentId,
+                        ip: context.ip,
+                        label: context.model || context.serial || ''
+                    });
+                }
                 break;
 
             // Device actions
@@ -660,6 +702,7 @@
                 serial: serial,
                 ip: effectiveIP,
                 mac: device?.mac || '',
+                model: device?.model || '',
                 agentId: effectiveAgentId,
                 hasAccess: hasWebAccess,
                 webUiUrl: webUiUrl,

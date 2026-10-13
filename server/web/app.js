@@ -12189,6 +12189,7 @@ try {
     window.__pm_shared.openDeviceMetrics = window.__pm_shared.openDeviceMetrics || openDeviceMetrics;
     window.__pm_shared.openFleetSettingsForTenant = openFleetSettingsForTenant;
     window.__pm_shared.openFleetSettingsForAgent = openFleetSettingsForAgent;
+    window.__pm_shared.isGlobalAdmin = isGlobalAdmin;
 } catch (e) { console.warn('Failed to expose server UI helpers to shared namespace', e); }
 
 // ====== Delete Agent ======
