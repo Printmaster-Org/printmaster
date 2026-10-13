@@ -1610,6 +1610,12 @@ func MergeVendorMetricsWithContext(ctx context.Context, pi *PrinterInfo, pdus []
 			}
 
 		default:
+			if key == "status_messages" {
+				if msgs, ok := value.([]string); ok {
+					pi.StatusMessages = mergeStatusMessages(pi.StatusMessages, msgs)
+				}
+				continue
+			}
 			// Handle supply_* keys
 			if strings.HasPrefix(key, "supply_") || strings.HasPrefix(key, "toner_") || strings.HasPrefix(key, "ink_") {
 				if v, ok := toIntValue(value); ok && v >= 0 {
@@ -1623,6 +1629,23 @@ func MergeVendorMetricsWithContext(ctx context.Context, pi *PrinterInfo, pdus []
 			}
 		}
 	}
+}
+
+// mergeStatusMessages puts vendor-decoded status lines first (they are the
+// authoritative device state) and appends existing lines not already present.
+func mergeStatusMessages(existing, vendorMsgs []string) []string {
+	seen := make(map[string]bool, len(existing)+len(vendorMsgs))
+	out := make([]string, 0, len(existing)+len(vendorMsgs))
+	for _, list := range [][]string{vendorMsgs, existing} {
+		for _, m := range list {
+			if m == "" || seen[m] {
+				continue
+			}
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // toIntValue converts interface{} to int, handling common types

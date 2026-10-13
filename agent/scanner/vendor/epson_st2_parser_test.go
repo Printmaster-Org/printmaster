@@ -216,8 +216,8 @@ func TestParseST2Response_UnalignedHeader(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if status.StatusText != "Waiting" {
-		t.Errorf("expected StatusText='Waiting', got '%s'", status.StatusText)
+	if status.StatusText != "Standby" {
+		t.Errorf("expected StatusText='Standby', got '%s'", status.StatusText)
 	}
 }
 

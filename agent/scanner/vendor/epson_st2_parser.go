@@ -10,13 +10,20 @@ import (
 
 // ST2Status holds the parsed status from an Epson ST2 response frame.
 type ST2Status struct {
-	// Printer state
+	// Printer state. StatusCode is -1 when the frame has no status field.
+	// ErrorNum is -1 when no error is reported; WarningNums holds raw warning
+	// bytes (EDA-ignored informational codes removed).
 	StatusCode    int
 	StatusText    string
 	Ready         bool
 	ErrorCode     string
+	ErrorNum      int
 	WarningCodes  []string
+	WarningNums   []int
 	SelfPrintCode string
+
+	// InkOrder lists ink names in ST2 cartridge order (used for warnings).
+	InkOrder []string
 
 	// Ink levels: map of color name -> level (0-100, -1 for unknown)
 	InkLevels map[string]int
@@ -135,72 +142,6 @@ func st2InkName(code, allInOne byte) string {
 	return fmt.Sprintf("Unknown %d", code)
 }
 
-// Printer status codes
-var statusCodes = map[byte]string{
-	0x00: "Error",
-	0x01: "Self Printing",
-	0x02: "Busy",
-	0x03: "Waiting",
-	0x04: "Idle",
-	0x05: "Paused",
-	0x07: "Cleaning",
-	0x08: "Not Initialized",
-	0x0a: "Shutdown",
-	0x0f: "Nozzle Check",
-	0x11: "Charging",
-}
-
-// Error codes
-var errorCodes = map[byte]string{
-	// 0x00: No error (not in map, empty string returned)
-	0x01: "Other interface selected",
-	0x02: "Cover open",
-	0x03: "Fatal error",
-	0x04: "Paper jam",
-	0x05: "Ink out",
-	0x06: "Paper out",
-	0x0c: "Paper size/type/path error",
-	0x10: "Waste ink pad overflow",
-	0x11: "Wait return from tear-off",
-	0x12: "Double feed",
-	0x1a: "Cartridge cover open",
-	0x1c: "Cutter error (fatal)",
-	0x1d: "Cutter jam (recoverable)",
-	0x22: "Maintenance cartridge missing",
-	0x25: "Rear cover open",
-	0x29: "CD-R tray out",
-	0x2a: "Memory card error",
-	0x2B: "Tray cover open",
-	0x2C: "Ink cartridge overflow",
-	0x2F: "Battery voltage error",
-	0x30: "Battery temperature error",
-	0x31: "Battery empty",
-	0x33: "Initial filling impossible",
-	0x36: "Maintenance cartridge cover open",
-	0x37: "Scanner/front cover open",
-	0x41: "Maintenance request",
-	0x47: "Printing disabled",
-	0x4a: "Maintenance box near end",
-	0x4b: "Driver mismatch",
-}
-
-// Warning codes
-var warningCodes = map[byte]string{
-	0x10: "Ink low (Black or Yellow)",
-	0x11: "Ink low (Magenta)",
-	0x12: "Ink low (Yellow or Cyan)",
-	0x13: "Ink low (Cyan or Matte Black)",
-	0x14: "Ink low (Photo Black)",
-	0x15: "Ink low (Red)",
-	0x16: "Ink low (Blue)",
-	0x17: "Ink low (Gloss Optimizer)",
-	0x44: "Black print mode",
-	0x51: "Cleaning disabled (Cyan)",
-	0x52: "Cleaning disabled (Magenta)",
-	0x53: "Cleaning disabled (Yellow)",
-	0x54: "Cleaning disabled (Black)",
-}
-
 // ParseST2Response parses an Epson ST2 status response frame.
 // The response format is: \x00@BDC ST2\r\n<len_lo><len_hi><TLV data...>
 // Returns parsed status or error if format is invalid.
@@ -250,6 +191,8 @@ func ParseST2Response(data []byte) (*ST2Status, error) {
 	buf := data[:payloadLen]
 
 	status := &ST2Status{
+		StatusCode:       -1,
+		ErrorNum:         -1,
 		InkLevels:        make(map[string]int),
 		MaintenanceBoxes: make(map[int]string),
 		WarningCodes:     []string{},
@@ -258,6 +201,11 @@ func ParseST2Response(data []byte) (*ST2Status, error) {
 		ColorPages:       -1,
 		MonoPages:        -1,
 	}
+
+	// Error and warning text depend on fields that may appear later in the
+	// frame (status byte, ink order), so they are decoded after the loop.
+	errorByte := -1
+	var warningBytes []byte
 
 	// Parse TLV fields
 	for len(buf) >= 2 {
@@ -280,31 +228,17 @@ func ParseST2Response(data []byte) (*ST2Status, error) {
 		case st2FieldStatus:
 			if len(item) >= 1 {
 				status.StatusCode = int(item[0])
-				if text, ok := statusCodes[item[0]]; ok {
-					status.StatusText = text
-				} else {
-					status.StatusText = fmt.Sprintf("Unknown (%d)", item[0])
-				}
-				status.Ready = (item[0] == 0x03 || item[0] == 0x04) // Waiting or Idle
+				status.StatusText = st2StatusText(item[0])
+				status.Ready = st2ReadyStatuses[item[0]]
 			}
 
 		case st2FieldError:
 			if len(item) >= 1 {
-				if text, ok := errorCodes[item[0]]; ok {
-					status.ErrorCode = text
-				} else if item[0] != 0 {
-					status.ErrorCode = fmt.Sprintf("Unknown error (%d)", item[0])
-				}
+				errorByte = int(item[0])
 			}
 
 		case st2FieldWarning:
-			for _, w := range item {
-				if text, ok := warningCodes[w]; ok {
-					status.WarningCodes = append(status.WarningCodes, text)
-				} else if w != 0 {
-					status.WarningCodes = append(status.WarningCodes, fmt.Sprintf("Unknown warning (%d)", w))
-				}
-			}
+			warningBytes = append(warningBytes, item...)
 
 		case st2FieldInkInfo:
 			// Format: <colorlen> then repeating <colour><ink_color><level>
@@ -329,6 +263,7 @@ func ParseST2Response(data []byte) (*ST2Status, error) {
 				}
 
 				status.InkLevels[colorName] = level
+				status.InkOrder = append(status.InkOrder, colorName)
 				offset += colorLen
 			}
 
@@ -409,7 +344,46 @@ func ParseST2Response(data []byte) (*ST2Status, error) {
 		}
 	}
 
+	if errorByte >= 0 && (errorByte != 0 || status.StatusCode == 0) {
+		status.ErrorNum = errorByte
+		status.ErrorCode = st2ErrorText(byte(errorByte))
+	}
+	for _, w := range warningBytes {
+		if st2IgnoredWarning(w) {
+			continue
+		}
+		status.WarningNums = append(status.WarningNums, int(w))
+		status.WarningCodes = append(status.WarningCodes, st2WarningText(w, status.InkOrder))
+	}
+
 	return status, nil
+}
+
+// StatusMessages renders the status as vendor-neutral lines prefixed with
+// "Error:", "Warning:" or "Ready:" so the inventory status classifier and
+// alerting can act on them. Raw Epson codes are included for support.
+func (s *ST2Status) StatusMessages() []string {
+	var msgs []string
+	if s.ErrorCode != "" {
+		msgs = append(msgs, fmt.Sprintf("Error: %s (Epson error %d)", s.ErrorCode, s.ErrorNum))
+	} else if s.StatusCode == 0 && s.StatusText != "" {
+		msgs = append(msgs, "Error: Printer error (Epson status 0)")
+	}
+	for i, w := range s.WarningCodes {
+		if i < len(s.WarningNums) {
+			msgs = append(msgs, fmt.Sprintf("Warning: %s (Epson warning %d)", w, s.WarningNums[i]))
+		} else {
+			msgs = append(msgs, "Warning: "+w)
+		}
+	}
+	if s.StatusCode > 0 && s.StatusText != "" {
+		prefix := "Status"
+		if s.Ready {
+			prefix = "Ready"
+		}
+		msgs = append(msgs, fmt.Sprintf("%s: %s (Epson status %d)", prefix, s.StatusText, s.StatusCode))
+	}
+	return msgs
 }
 
 // ToMetrics converts ST2Status to a map suitable for device metrics.
@@ -419,6 +393,15 @@ func (s *ST2Status) ToMetrics() map[string]interface{} {
 	// Printer status
 	if s.StatusText != "" {
 		result["epson_status"] = s.StatusText
+	}
+	if s.StatusText != "" && s.StatusCode >= 0 {
+		result["epson_status_code"] = fmt.Sprintf("%02x", s.StatusCode)
+	}
+	if s.ErrorCode != "" {
+		result["epson_error_code"] = fmt.Sprintf("%d", s.ErrorNum)
+	}
+	if msgs := s.StatusMessages(); len(msgs) > 0 {
+		result["status_messages"] = msgs
 	}
 	result["epson_ready"] = s.Ready
 
