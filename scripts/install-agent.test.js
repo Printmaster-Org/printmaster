@@ -1,12 +1,30 @@
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
 const root = path.resolve(__dirname, '..');
 const shell = process.platform === 'win32' ? 'C:\\Program Files\\Git\\bin\\sh.exe' : 'sh';
 
+// POSIX sh (dash on Debian/Ubuntu CI) rejects hyphenated function names such
+// as apt-get(), so package managers are mocked as executables on PATH.
+const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-install-test-'));
+for (const name of ['apt-get', 'dnf', 'yum', 'zypper']) {
+    fs.writeFileSync(path.join(stubDir, name), `#!/bin/sh\necho "${name} $*"\n`, { mode: 0o755 });
+}
+afterAll(() => fs.rmSync(stubDir, { recursive: true, force: true }));
+
+function shellPath(p) {
+    return process.platform === 'win32'
+        ? p.replace(/^([A-Za-z]):/, (_, drive) => `/${drive.toLowerCase()}`).replace(/\\/g, '/')
+        : p;
+}
+
 function install(manager, options = {}) {
     const result = spawnSync(shell, ['-c', `
 set -eu
+PATH="$STUB_BIN:$PATH"
+export PATH
 command() {
     if [ "$1" = "-v" ]; then
         case "$2" in
@@ -30,10 +48,6 @@ gpg() {
     esac
 }
 rpm() { echo "rpm $*"; }
-apt-get() { echo "apt-get $*"; }
-dnf() { echo "dnf $*"; }
-yum() { echo "yum $*"; }
-zypper() { echo "zypper $*"; }
 install() {
     echo "install $*"
     case "$*" in
@@ -54,6 +68,7 @@ rm() {
         env: {
             ...process.env,
             INSTALLER: path.join(root, 'scripts', 'install-agent.sh'),
+            STUB_BIN: shellPath(stubDir),
             MOCK_PM: manager,
             MOCK_UID: options.uid || '0',
             MOCK_MACHINE: options.machine || 'x86_64',
