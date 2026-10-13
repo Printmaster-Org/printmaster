@@ -24,6 +24,25 @@ type ST2Status struct {
 	// Maintenance box status: map of box number -> status string
 	MaintenanceBoxes map[int]string
 
+	// MaintenanceTankFree holds per-box remaining capacity (0-100 %) from
+	// field 0x0d; -1 means unknown. TankIncompatible is set when the printer
+	// reports a box previously used in an incompatible printer ('u').
+	MaintenanceTankFree []int
+	TankIncompatible    bool
+
+	// MaintenanceBoxReplacements holds replacement counts from field 0x46.
+	MaintenanceBoxReplacements []int
+
+	// Paper counters from field 0x36; -1 when unsupported (0xFFFFFFFF).
+	TotalPages int
+	ColorPages int
+	MonoPages  int
+
+	SerialNumber string
+
+	// CISS is true when field 0x28 reports a continuous ink supply system.
+	CISS bool
+
 	// Raw data for debugging
 	RawFields map[int][]byte
 }
@@ -47,6 +66,7 @@ const (
 	st2FieldJobName          = 0x19 // Current job name
 	st2FieldTemperature      = 0x1c // Temperature info
 	st2FieldSerial           = 0x1f // Serial number
+	st2FieldPrinterInfo2     = 0x28 // Printer info 2 (CISS flag)
 	st2FieldPaperJam         = 0x35 // Paper jam error
 	st2FieldPaperCount       = 0x36 // Paper count info
 	st2FieldMaintenanceBox   = 0x37 // Maintenance box status
@@ -56,37 +76,63 @@ const (
 	st2FieldMaintBoxReplace  = 0x46 // Maintenance box replacement counter
 )
 
-// Ink color ID to name mapping (cartridge type from ST2 response)
+// Ink cartridge codes (first byte of each 0x0f entry), as interpreted by
+// Epson Device Admin. Codes below 64 are named from this table only.
 var inkColorIDs = map[byte]string{
-	0x01: "Black",
-	0x03: "Cyan",
-	0x04: "Magenta",
-	0x05: "Yellow",
-	0x06: "Light Cyan",
-	0x07: "Light Magenta",
-	0x0a: "Light Black",
-	0x0b: "Matte Black",
-	0x0f: "Light Light Black",
-	0x10: "Orange",
-	0x11: "Green",
+	1:  "Black",
+	3:  "Cyan",
+	4:  "Magenta",
+	5:  "Yellow",
+	6:  "Light Cyan",
+	7:  "Light Magenta",
+	8:  "Light Yellow",
+	9:  "Dark Yellow",
+	10: "Light Black",
+	11: "Matte Black",
+	12: "Red",
+	13: "Violet",
+	14: "Gloss Optimizer",
+	15: "Light Light Black",
+	16: "Orange",
+	17: "Green",
+	18: "White",
+	20: "Metallic Silver",
+	22: "Middle Light Black",
+	25: "Fluorescent Pink",
+	26: "Fluorescent Yellow",
 }
 
-// Secondary ink color mapping (ink color field)
+// All-in-one ink color table (second byte of each 0x0f entry), used by EDA
+// only when the cartridge code is 64 or above.
 var inkColorNames = map[byte]string{
-	0x00: "Black",
-	0x01: "Cyan",
-	0x02: "Magenta",
-	0x03: "Yellow",
-	0x04: "Light Cyan",
-	0x05: "Light Magenta",
-	0x06: "Dark Yellow",
-	0x07: "Grey",
-	0x08: "Light Black",
-	0x09: "Red",
-	0x0A: "Blue",
-	0x0B: "Gloss Optimizer",
-	0x0C: "Light Grey",
-	0x0D: "Orange",
+	0:  "Black",
+	1:  "Cyan",
+	2:  "Magenta",
+	3:  "Yellow",
+	4:  "Light Cyan",
+	5:  "Light Magenta",
+	6:  "Light Yellow",
+	7:  "Dark Yellow",
+	8:  "Light Black",
+	9:  "Red",
+	10: "Violet",
+	11: "Gloss Optimizer",
+	15: "White",
+	17: "Metallic Silver",
+}
+
+// st2InkName resolves an ink entry name using EDA's rule.
+func st2InkName(code, allInOne byte) string {
+	if code < 64 {
+		if name, ok := inkColorIDs[code]; ok {
+			return name
+		}
+		return fmt.Sprintf("Unknown %d", code)
+	}
+	if name, ok := inkColorNames[allInOne]; ok {
+		return name
+	}
+	return fmt.Sprintf("Unknown %d", code)
 }
 
 // Printer status codes
@@ -208,6 +254,9 @@ func ParseST2Response(data []byte) (*ST2Status, error) {
 		MaintenanceBoxes: make(map[int]string),
 		WarningCodes:     []string{},
 		RawFields:        make(map[int][]byte),
+		TotalPages:       -1,
+		ColorPages:       -1,
+		MonoPages:        -1,
 	}
 
 	// Parse TLV fields
@@ -269,16 +318,10 @@ func ParseST2Response(data []byte) (*ST2Status, error) {
 			offset := 1
 			for offset+colorLen <= len(item) {
 				colour := item[offset]
-				inkColor := item[offset+1] // Secondary color ID
+				inkColor := item[offset+1] // All-in-one color ID
 				level := int(item[offset+2])
 
-				// Map color ID to name - try primary ID first, then secondary
-				colorName := "Unknown"
-				if name, ok := inkColorIDs[colour]; ok {
-					colorName = name
-				} else if name, ok := inkColorNames[inkColor]; ok {
-					colorName = name
-				}
+				colorName := st2InkName(colour, inkColor)
 
 				// Normalize level (0-100 range, or -1 for unknown)
 				if level > 100 {
@@ -320,6 +363,49 @@ func ParseST2Response(data []byte) (*ST2Status, error) {
 			if len(item) >= 1 && item[0] == 0 {
 				status.SelfPrintCode = "Nozzle test printing"
 			}
+
+		case st2FieldTanks:
+			// One byte per maintenance box: remaining capacity percent.
+			for _, b := range item {
+				switch {
+				case b == 'u':
+					status.TankIncompatible = true
+					status.MaintenanceTankFree = append(status.MaintenanceTankFree, -1)
+				case b <= 100:
+					status.MaintenanceTankFree = append(status.MaintenanceTankFree, int(b))
+				default:
+					status.MaintenanceTankFree = append(status.MaintenanceTankFree, -1)
+				}
+			}
+
+		case st2FieldPaperCount:
+			// int32 little-endian slots: [4:8]=all, [8:12]=color, [12:16]=mono.
+			read := func(off int) int {
+				if len(item) < off+4 {
+					return -1
+				}
+				v := binary.LittleEndian.Uint32(item[off : off+4])
+				if v == 0xFFFFFFFF {
+					return -1
+				}
+				return int(v)
+			}
+			status.TotalPages = read(4)
+			status.ColorPages = read(8)
+			status.MonoPages = read(12)
+
+		case st2FieldSerialInfo:
+			status.SerialNumber = strings.TrimRight(string(item), "\x00 ")
+
+		case st2FieldMaintBoxReplace:
+			for _, b := range item {
+				status.MaintenanceBoxReplacements = append(status.MaintenanceBoxReplacements, int(b))
+			}
+
+		case st2FieldPrinterInfo2:
+			if len(item) >= 2 {
+				status.CISS = item[1]&0x01 != 0
+			}
 		}
 	}
 
@@ -349,9 +435,29 @@ func (s *ST2Status) ToMetrics() map[string]interface{} {
 		if level < 0 {
 			continue // Skip unknown levels
 		}
-		// Create normalized key: ink_black, ink_cyan, etc.
-		key := "ink_" + strings.ToLower(strings.ReplaceAll(color, " ", "_"))
-		result[key] = float64(level)
+		result[st2InkKey(color)] = float64(level)
+	}
+
+	// Paper counters (numeric, mergeable)
+	if s.TotalPages >= 0 {
+		result["total_pages"] = s.TotalPages
+	}
+	if s.ColorPages >= 0 {
+		result["color_pages"] = s.ColorPages
+	}
+	if s.MonoPages >= 0 {
+		result["mono_pages"] = s.MonoPages
+	}
+
+	// Maintenance box remaining capacity as supply levels
+	for i, free := range s.MaintenanceTankFree {
+		if free < 0 {
+			continue
+		}
+		result[st2MaintenanceKey("supply_maintenance_box", i)] = float64(free)
+	}
+	for i, n := range s.MaintenanceBoxReplacements {
+		result[st2MaintenanceKey("maintenance_box_replacements", i)] = n
 	}
 
 	// Maintenance box status
@@ -372,6 +478,19 @@ func (s *ST2Status) ToMetrics() map[string]interface{} {
 	}
 
 	return result
+}
+
+// st2InkKey builds a normalized ink key: ink_black, ink_light_cyan, etc.
+func st2InkKey(color string) string {
+	return "ink_" + strings.ToLower(strings.ReplaceAll(color, " ", "_"))
+}
+
+// st2MaintenanceKey returns base for the first box and base_N for others.
+func st2MaintenanceKey(base string, i int) string {
+	if i == 0 {
+		return base
+	}
+	return fmt.Sprintf("%s_%d", base, i+1)
 }
 
 // findBytes finds the index of needle in haystack, or -1 if not found.
