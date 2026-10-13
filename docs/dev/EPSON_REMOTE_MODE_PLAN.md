@@ -2,6 +2,15 @@
 
 This document captures the concrete steps required to land Epson remote-mode support in the agent while keeping the feature isolated behind a flag and reusing the new SNMP batching helper.
 
+> **Update (EDA reverse-engineering):** Epson Device Admin does not use remote-mode commands for status.
+> It reads the same `@BDC ST2` frame with a plain GET of epPrtDeviceStatus (`1.3.6.1.4.1.1248.1.2.2.1.1.1.4.1`).
+>
+> That OID is now part of `EpsonVendor.BaseOIDs()`, so every normal query receives the ST2 frame and `Parse()` decodes it. No flag or IP is needed.
+>
+> `EpsonRemoteClient.GetStatus` also tries that GET first. It falls back to the 44.x `st` command only when the GET fails.
+>
+> Remote-mode remains useful only for EEPROM (`||`) waste-counter reads. See `docs/dev/vendor/EPSON_OID_MAPPING.md` for the full EDA-derived mapping.
+
 ## Goals
 - Reuse the remote-mode command surface documented in `docs/SNMP_RESEARCH_NOTES.md` (commands `di`, `st`, `ia`, `ii`, `||`).
 - Surface reliable ink, maintenance-box, and alert data in `PrinterInfo`/metrics without relying on sparse Printer-MIB leaves.
