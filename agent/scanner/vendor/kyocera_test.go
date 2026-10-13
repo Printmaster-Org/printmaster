@@ -15,6 +15,13 @@ import (
 // OIDs the Kyocera module would actually request (GET scalars + walked tables).
 func loadKyoceraFixture(t *testing.T, name string) []gosnmp.SnmpPDU {
 	t.Helper()
+	return loadVendorFixture(t, name, &KyoceraVendor{})
+}
+
+// loadVendorFixture converts a captured SNMP walk into PDUs restricted to the
+// OIDs module would actually request (GET scalars + walked tables).
+func loadVendorFixture(t *testing.T, name string, v VendorModule) []gosnmp.SnmpPDU {
+	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "testdata", name))
 	if err != nil {
 		t.Skipf("fixture %s not available: %v", name, err)
@@ -28,13 +35,12 @@ func loadKyoceraFixture(t *testing.T, name string) []gosnmp.SnmpPDU {
 		t.Fatalf("parse %s: %v", name, err)
 	}
 
-	v := &KyoceraVendor{}
 	scalars := map[string]bool{}
 	for _, oid := range append(v.BaseOIDs(), v.MetricOIDs(nil)...) {
 		scalars[normalizeOID(oid)] = true
 	}
 	var roots []string
-	for _, root := range append(append(v.SupplyOIDs(), v.PaperTrayOIDs()...), v.MetricTableOIDs()...) {
+	for _, root := range append(append(v.SupplyOIDs(), v.PaperTrayOIDs()...), MetricTableOIDs(v)...) {
 		roots = append(roots, normalizeOID(root)+".")
 	}
 	requested := func(oid string) bool {

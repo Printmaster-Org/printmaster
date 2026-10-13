@@ -266,3 +266,32 @@ const (
 	// col 11 kcprtPunchStatus: 1=installed
 	KyoceraFinisherTable = "1.3.6.1.4.1.1347.43.9.1.1"
 )
+
+// Brother vendor-specific OIDs (Enterprise 2435)
+// Reference: Print Audit ICE BrotherCommon scan logic (docs/dev/vendor/PRINTAUDIT_ICE_FINDINGS.md),
+// cross-checked against captured blobs from the open-source bieniu/brother library.
+const (
+	// BrotherEnterprise is the Brother enterprise OID prefix
+	BrotherEnterprise = "1.3.6.1.4.1.2435"
+
+	// --- Identity ---
+	BrotherIEEE1284DeviceID = "1.3.6.1.4.1.2435.2.3.9.1.1.7.0"         // MFG:/MDL: device ID
+	BrotherSerialNumber     = "1.3.6.1.4.1.2435.2.3.9.4.2.1.5.5.1.0"   // brInfoSerialNumber
+	BrotherFirmwareVersion  = "1.3.6.1.4.1.2435.2.3.9.4.2.1.5.5.17.0"  // main firmware (newer models)
+	BrotherFirmwareLegacy   = "1.3.6.1.4.1.2435.2.4.3.1240.6.5.0"      // firmware (Print Audit)
+	BrotherPanelDisplay     = "1.3.6.1.4.1.2435.2.3.9.4.2.1.5.4.5.2.0" // front-panel status text
+
+	// --- Binary info blobs: records of <id><flag><len><len bytes big-endian>, 0xFF terminated ---
+	// brInfoCounter ids: 0x00=total, 0x01=mono, 0x02=color, 0x06=duplex
+	BrotherCounterInfo = "1.3.6.1.4.1.2435.2.3.9.4.2.1.5.5.10.0"
+	// brInfoMaintenance ids: toner/drum/fuser/belt remaining life (see brother.go)
+	BrotherMaintenanceInfo = "1.3.6.1.4.1.2435.2.3.9.4.2.1.5.5.8.0"
+
+	// --- Function counter table .52.21.1.<col>.<idx>: col 2=type code, col 3=count ---
+	// type codes: 1=print total, 2=fax total, 3=copy total, 4=copy color, 5=print color,
+	// 6=fax color, 7=print mono, 8=fax mono, 9=copy mono
+	BrotherFunctionCounterTable = "1.3.6.1.4.1.2435.2.3.9.4.2.1.5.5.52.21.1"
+	// --- Scan counter table .54.2.2.1.<col>.<idx>: col 1=type code, col 3=count ---
+	// type codes: 1=ADF simplex, 2=flatbed, 3=ADF duplex
+	BrotherScanCounterTable = "1.3.6.1.4.1.2435.2.3.9.4.2.1.5.5.54.2.2.1"
+)
