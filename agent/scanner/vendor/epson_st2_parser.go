@@ -39,6 +39,9 @@ type ST2Status struct {
 
 	// MaintenanceBoxReplacements holds replacement counts from field 0x46.
 	MaintenanceBoxReplacements []int
+	// InkReplacements holds per-ink replacement counts from field 0x45, one
+	// byte per ink in InkOrder (EDA "<Color>InkReplacements").
+	InkReplacements []int
 
 	// Paper counters from field 0x36; -1 when unsupported (0xFFFFFFFF).
 	TotalPages int
@@ -337,6 +340,11 @@ func ParseST2Response(data []byte) (*ST2Status, error) {
 				status.MaintenanceBoxReplacements = append(status.MaintenanceBoxReplacements, int(b))
 			}
 
+		case st2FieldInkReplacement:
+			for _, b := range item {
+				status.InkReplacements = append(status.InkReplacements, int(b))
+			}
+
 		case st2FieldPrinterInfo2:
 			if len(item) >= 2 {
 				status.CISS = item[1]&0x01 != 0
@@ -441,6 +449,17 @@ func (s *ST2Status) ToMetrics() map[string]interface{} {
 	}
 	for i, n := range s.MaintenanceBoxReplacements {
 		result[st2MaintenanceKey("maintenance_box_replacements", i)] = n
+	}
+	// Only map ink replacements when the counts line up with the ink list;
+	// otherwise the color assignment would be a guess.
+	if len(s.InkReplacements) > 0 && len(s.InkReplacements) == len(s.InkOrder) {
+		for i, n := range s.InkReplacements {
+			key := strings.ToLower(strings.ReplaceAll(s.InkOrder[i], " ", "_")) + "_ink_replacements"
+			if _, dup := result[key]; dup {
+				key = fmt.Sprintf("%s_%d", key, i+1)
+			}
+			result[key] = n
+		}
 	}
 
 	// Maintenance box status
