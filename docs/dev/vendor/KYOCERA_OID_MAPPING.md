@@ -1,297 +1,143 @@
 # Kyocera Enterprise OID Mapping
 
-**Device**: TASKalfa 6052ci (172.52.105.95)  
-**Serial**: W2D8303202  
-**Enterprise OID Base**: `1.3.6.1.4.1.1347.*`  
-**Analysis Date**: 2025-11-03  
-**Status**: ✅ VALIDATED - Complete OID structure decoded
+**Source of truth**: the MIB reads and derivations performed by Kyocera Net
+Device Manager (KDM): `def.dev.snmp-oid.xml` (OID names) plus the decompiled
+`KDM.AccessDevice.DeviceController.Operators` (how each value is computed and
+which model groups use which logic). Values were checked against real SNMP
+walks of a TASKalfa 4053ci (color MFP) and an ECOSYS P2040dw (mono printer).
 
----
+Implementation: `agent/scanner/vendor/kyocera.go`, constants in
+`common/snmp/oids/oids.go`. Fixture tests: `agent/scanner/vendor/kyocera_test.go`,
+which uses `agent/scanner/testdata/kyocera_{cs4053,p2040}_snmp.json`.
 
-## Summary
+All Kyocera OIDs below are relative to `1.3.6.1.4.1.1347.`.
 
-Kyocera devices provide **exceptional detail** via enterprise OIDs:
-- **Standard Printer-MIB** provides total impressions (432,951)
-- **Kyocera `.42.3.*` tree** provides complete function and color breakdown
-- **Direct OIDs available** for all major metrics (no calculation needed!)
-- **Best-in-class metrics** compared to other vendors
+## How values are collected
 
----
+| Kind | Query | Notes |
+|------|-------|-------|
+| Identity and counter scalars | batched GET (`BaseOIDs`, `MetricOIDs`) | Missing OIDs are ignored |
+| Index-dependent tables | WALK (`MetricTableOIDs`) | scan life count, media counters, coverage, maintenance kits, alerts, scanner error, finisher |
+| Toner | standard `prtMarkerSuppliesTable` walk | KDM uses the same table on most model groups |
 
-## Validated OID Mappings
+KDM assigns each model to a "device group" that selects a logic variant for
+each operator. Among the 409 groups, the counters below follow the majority
+logic. Minority variants are handled as fallbacks.
 
-### Page Count Totals
-| Metric | OID | Value | Validated |
-|--------|-----|-------|-----------|
-| **Total Impressions** | `1.3.6.1.2.1.43.10.2.1.4.1.1` | 432,951 | ✅ Standard Printer-MIB |
-| **Total Printed Pages** | `1.3.6.1.4.1.1347.43.10.1.1.12.1.1` | 424,405 | ✅ Kyocera Enterprise |
-| **Total B&W Printed** | *Calculated* | 241,538 | Sum of B&W functions |
-| **Total Color Printed** | *Calculated* | 182,867 | Sum of Color functions |
+## Identity (`kcprtGeneralTable`, `43.5.1.1.<col>.1`)
 
-### Kyocera Enterprise OID Structure (`.42.3.*`)
+| Key | OID | KDM name | Example (4053ci) |
+|-----|-----|----------|------------------|
+| `model_name` | `43.5.1.1.36.1` | kcprtAbsoluteModelName | `TASKalfa 4053ci` |
+| (fallback) | `43.5.1.1.1.1` | kcprtGeneralModelName | `CS 4053ci` |
+| `serial_number` | `43.5.1.1.28.1` | kcprtSerialNumber | `RH28Y00024` |
+| `asset_number` | `43.5.1.1.29.1` | kcprtAssetNumber | |
+| `firmware_version` | `43.5.4.1.5.1.1` | kcprtFirmwareVersion (system) | `2V8_S000.002.801` |
+| `engine_firmware_version` | `43.5.4.1.5.1.2` | kcprtFirmwareVersion (engine) | `2V8_1000.005.001` |
 
-#### Function Totals (`.42.3.1.1.1.*`)
-| Metric | OID | Value | Validated |
-|--------|-----|-------|-----------|
-| **Printer Total** | `1.3.6.1.4.1.1347.42.3.1.1.1.1` | 304,339 | ✅ |
-| **Copy Total** | `1.3.6.1.4.1.1347.42.3.1.1.1.2` | 116,254 | ✅ |
-| **Fax Total** | `1.3.6.1.4.1.1347.42.3.1.1.1.4` | 3,812 | ✅ |
+The agent's serial-number fallback (`agent/agent/snmp.go`) also uses
+`43.5.1.1.28.1`.
 
-#### Print Breakdown by Function and Color (`.42.3.1.2.1.1.*`)
-| Metric | OID | Value | Validated |
-|--------|-----|-------|-----------|
-| **Printer B&W** | `1.3.6.1.4.1.1347.42.3.1.2.1.1.1.1` | 163,915 | ✅ |
-| **Printer Color** | `1.3.6.1.4.1.1347.42.3.1.2.1.1.1.3` | 140,424 | ✅ |
-| **Copy B&W** | `1.3.6.1.4.1.1347.42.3.1.2.1.1.2.1` | 73,811 | ✅ |
-| **Copy Color** | `1.3.6.1.4.1.1347.42.3.1.2.1.1.2.3` | 42,443 | ✅ |
-| **Fax B&W** | `1.3.6.1.4.1.1347.42.3.1.2.1.1.4.1` | 3,812 | ✅ |
+**Do not use** (these were wrong in earlier mappings):
 
-#### Scan Counters (`.42.3.1.3.1.1.*`)
-| Metric | OID | Value | Validated |
-|--------|-----|-------|-----------|
-| **Copy Scans** | `1.3.6.1.4.1.1347.42.3.1.3.1.1.2` | 42,138 | ✅ |
-| **Fax Scans** | `1.3.6.1.4.1.1347.42.3.1.3.1.1.4` | 3,057 | ✅ |
-| **Other Scans** | `1.3.6.1.4.1.1347.42.3.1.4.1.1.1` | 43,441 | ✅ |
+- `40.10.1.1.5.1` is kmHostName (`KM65E2B9`), not the serial.
+- `40.1.1.1.1.1` is an integer index, not the model name.
+- `42.5.4.1.2.*` is kmFirmwareInfoType (1, 2, 51 ...), not counters.
+- `42.2.1.1.1.5.1` is a media dimension column.
 
-### Calculated Totals (Validation)
-```
-Total B&W Printed:
-  Printer B&W (163,915) + Copy B&W (73,811) + Fax B&W (3,812) = 241,538 ✅
+## Page totals
 
-Total Color Printed:
-  Printer Color (140,424) + Copy Color (42,443) + Fax Color (0) = 182,867 ✅
+| Key | Source | KDM logic |
+|-----|--------|-----------|
+| `page_count` / `total_pages` | `43.10.1.1.12.1.1` kcprtMarkerServiceCount | PageCount (5036) logic 2, used by 349 of 409 groups |
+| fallback | `1.3.6.1.2.1.43.10.2.1.4.1.1` prtMarkerLifeCount | Logic 1. Only used when `prtMarkerCounterUnit.1.1` is 7 (impressions) or 8 (sheets) |
+| last resort | sum of mono, single-color and full-color | |
 
-Total Printed:
-  Printer (304,339) + Copy (116,254) + Fax (3,812) = 424,405 ✅
+On the 4053ci the service count (76064) equals printer + copier + fax
+output, while prtMarkerLifeCount reads 76498.
 
-Total Scans:
-  Copy Scans (42,138) + Fax Scans (3,057) + Other Scans (43,441) = 88,636 ✅
-```
+## Function and color counters
 
-### Previously Found OIDs (Still Investigating)
+`kmMFPColorModeCounterItem` is `42.3.1.2.1.1.<function>.<mode>`.
 
-#### OID Pair 1: B&W vs Color Split
-| OID | Value | Likely Meaning |
-|-----|-------|----------------|
-| `.43.10.1.1.16.1.1` | 221,912 | B&W Total or Color Total? |
-| *Calculated* | 211,039 | Complementary (Total - 221,912) |
+- function: 1 = printer, 2 = copier, 3 = unused, 4 = fax
+- mode: 1 = mono, 2 = single color, 3 = full color
 
-**Math Check**: 221,912 + 211,039 = 432,951 ✅
+| Key | Derivation |
+|-----|------------|
+| `mono_pages` | sum of mode 1 over all functions (KDM MonoCount) |
+| `full_color_pages` | sum of mode 3 (KDM FullColorCount) |
+| `single_color_pages` | sum of mode 2 (KDM SingleColorCount 5038) |
+| `color_pages` | full color + single color |
+| `print_*`, `copy_*`, `fax_*` with `_mono_pages`, `_color_pages`, `_full_color_pages`, `_single_color_pages` | per function |
 
-#### OID Pair 2: Function Split (Copy/Print?)
-| OID | Value | Likely Meaning |
-|-----|-------|----------------|
-| `.43.8.1.1.8.1.4` | 170,078 | Copy or Print? |
-| *Calculated* | 262,873 | Complementary (Total - 170,078) |
+Printer-only models (KDM logic 2) expose `kmColorModeCounterItem` at
+`42.2.2.1.1.3.1.<mode>` (1 = mono, 2 = mono color, 3 = full color) instead.
+That table is used when the MFP table is absent.
 
-**Math Check**: 170,078 + 262,873 = 432,951 ✅
+Function totals come from `kmMFPCounterItem` `42.3.1.1.1.1.<n>`, which
+override the color-mode sums:
 
-#### OID Pair 3: Another Function Split
-| OID | Value | Likely Meaning |
-|-----|-------|----------------|
-| `.43.8.1.1.8.1.2` | 125,196 | Function counter? |
-| *Calculated* | 307,755 | Complementary (Total - 125,196) |
+| Key | n | Example (4053ci) |
+|-----|---|------------------|
+| `print_pages` | 1 | 40600 |
+| `copy_pages` | 2 | 32971 |
+| `fax_pages` | 4 (MFP layout), else 3 | 2493 |
 
-**Math Check**: 125,196 + 307,755 = 432,951 ✅
+## Scans
 
-#### Additional Counter (Not Adding to Total)
-| OID | Value | Likely Meaning |
-|-----|-------|----------------|
-| `.43.10.1.1.12.1.1` | 424,405 | Total minus something (432,951 - 8,546) |
+| Key | OID |
+|-----|-----|
+| `copy_scans` | `42.3.1.3.1.1.2` kmMFPScanCounterItem |
+| `fax_scans` | `42.3.1.3.1.1.4`, else `.3` |
+| `other_scans` | `42.3.1.4.1.1.1` kmMFPOtherScanCounterItem |
+| `scan_count` | `46.10.1.1.5.<hrDeviceIndex>` kmscnLifeCount (walked; index 3 on the 4053ci). Falls back to the sum of the three counters above |
 
----
+## Media-size counters (`kmMediaCounterTable`, `42.2.1.1.1.<col>.1.<row>`)
 
-## Web UI Validation ✅
+Columns: 2 = media name, 6 = total, 7 = mono, 8 = full color,
+9 = mono color, 10–12 = coverage low/medium/high. Column 3 is the unit and
+columns 4–5 are dimensions.
 
-Counters from TASKalfa 6052ci web interface (serial W2D8303202):
+Rows with a non-zero total produce `paper_<size>_pages`,
+`paper_<size>_mono_pages` and `paper_<size>_color_pages` (full + mono
+color), for example `paper_letter_pages`. On the 4053ci, Letter + Ledger +
+Legal equals the service count.
 
-**Printed Pages:**
-- Total: 424,405 ✅
-- B&W: 241,538 ✅  
-- Color: 182,867 ✅
-- Copy: 116,254 ✅
-- Printer: 304,339 ✅
-- Fax: 3,812 ✅
+## Coverage (`42.2.4.1.1.<1|2|3>.1.<hrDeviceIndex>`)
 
-**Scanned Pages:**
-- Copy: 42,138 ✅
-- Fax: 3,057 ✅
-- Other: 43,441 ✅
-- Total: 88,636 ✅
+The kmColorCoverage{Low,Medium,High}CoverageCounter values are summed across
+device indexes, as KDM does for copier + printer. They produce
+`coverage_low_pages`, `coverage_medium_pages` and `coverage_high_pages`.
+Neither fixture device exposes them.
 
-**All values perfectly match SNMP OID data!**
+## Maintenance kits (`kcprtMaintenanceKitTable`, `43.24.1.1.<col>.<idx>`)
 
----
+Columns: 2 = utilization, 3 = type, 4 = name, 5 = current counter,
+6 = preset counter. KDM passes these through without interpreting them, so
+PrintMaster reports them as raw meters:
+`maintenance_kit_<name>_count`, `_preset` and `_utilization`. No
+remaining-life percentage is derived until the semantics are confirmed on
+hardware. Neither fixture device exposes the table.
 
-## Implementation Strategy for Kyocera Vendor Module
+## Status
 
-### GetMetricsOIDs() - Core Counters
-```go
-return []string{
-    // Standard Printer-MIB (fallback)
-    "1.3.6.1.2.1.43.10.2.1.4.1.1", // Total impressions
-    "1.3.6.1.2.1.43.11.1.1.9.1",   // Toner levels
-    "1.3.6.1.2.1.43.11.1.1.6.1",   // Toner descriptions
-    
-    // Kyocera enterprise - Total printed
-    "1.3.6.1.4.1.1347.43.10.1.1.12.1.1", // Total printed pages
-    
-    // Function totals (.42.3.1.1.1.*)
-    "1.3.6.1.4.1.1347.42.3.1.1.1.1", // Printer total
-    "1.3.6.1.4.1.1347.42.3.1.1.1.2", // Copy total
-    "1.3.6.1.4.1.1347.42.3.1.1.1.4", // Fax total
-    
-    // Print breakdown by function and color (.42.3.1.2.1.1.*)
-    "1.3.6.1.4.1.1347.42.3.1.2.1.1.1.1", // Printer B&W
-    "1.3.6.1.4.1.1347.42.3.1.2.1.1.1.3", // Printer Color
-    "1.3.6.1.4.1.1347.42.3.1.2.1.1.2.1", // Copy B&W
-    "1.3.6.1.4.1.1347.42.3.1.2.1.1.2.3", // Copy Color
-    "1.3.6.1.4.1.1347.42.3.1.2.1.1.4.1", // Fax B&W
-    
-    // Scan counters (.42.3.1.3.* and .42.3.1.4.*)
-    "1.3.6.1.4.1.1347.42.3.1.3.1.1.2", // Copy scans
-    "1.3.6.1.4.1.1347.42.3.1.3.1.1.4", // Fax scans
-    "1.3.6.1.4.1.1347.42.3.1.4.1.1.1", // Other scans
-}
-```
+| Source | Result |
+|--------|--------|
+| `43.18.2.1.2.1.<n>` kcprtAlertStateDisplay (panel text) + `.3.1.<n>` kcprtAlertStateDisplayIndex (code) | `status_messages` entry such as `Sleeping (Kyocera code 35078)` |
+| Display code 50100 or 40070 | adds `Call for service` (KDM StatusOp) |
+| `46.18.1.1.2.<idx>` kmscnDeviceErrorState = 2 or bit 0x08 | `Scanner cover open` |
+| `43.9.1.1.8.1.1` kcprtStapler = 3 (installed) and `.9.1.1` kcprtStaplerConsumableState = -2 | `Add staples` |
 
-### ExtractMetrics() - Parsing Logic
-```go
-// Direct assignments (no calculation needed!)
-printerBW := getOIDValue("1.3.6.1.4.1.1347.42.3.1.2.1.1.1.1")
-printerColor := getOIDValue("1.3.6.1.4.1.1347.42.3.1.2.1.1.1.3")
-copyBW := getOIDValue("1.3.6.1.4.1.1347.42.3.1.2.1.1.2.1")
-copyColor := getOIDValue("1.3.6.1.4.1.1347.42.3.1.2.1.1.2.3")
-faxBW := getOIDValue("1.3.6.1.4.1.1347.42.3.1.2.1.1.4.1")
+`hrPrinterDetectedErrorState` (jam, door, toner, paper, service requested)
+is already decoded by the generic agent logic. KDM evaluates it with the
+same RFC 3805 bit order, so no Kyocera-specific handling is needed.
 
-// Calculate totals
-snapshot.MonoPages = printerBW + copyBW + faxBW
-snapshot.ColorPages = printerColor + copyColor
-snapshot.PageCount = snapshot.MonoPages + snapshot.ColorPages
+Other finisher values: kcprtStapler 4 = off and 5 = not present.
+kcprtStaplerConsumableState -3 = staples present. `43.9.1.1.11.1.1`
+kcprtPunchStatus 1 = punch installed.
 
-// Function-specific
-snapshot.CopyPages = copyBW + copyColor
-snapshot.FaxPages = faxBW
-snapshot.OtherPages = printerBW + printerColor // Print pages
+## Configuration (write) mechanisms
 
-// Scan counters
-snapshot.ScanCount = copyScan + faxScan + otherScan
-```
-
-### Capability-Aware Filtering
-```go
-func (v *KyoceraVendor) GetCapabilityAwareMetricsOIDs(caps *capabilities.DeviceCapabilities) []string {
-    oids := baseOIDs // Always include page counts and toner
-    
-    if caps.IsCopier {
-        oids = append(oids, copyOIDs...)
-    }
-    if caps.IsFax {
-        oids = append(oids, faxOIDs...)
-    }
-    if caps.IsScanner {
-        oids = append(oids, scanOIDs...)
-    }
-    
-    return oids
-}
-```
-
----
-
-## Comparison: Kyocera vs Epson vs HP
-
-### Kyocera (Best Metrics) 🏆
-```
-✅ Direct OIDs for EVERYTHING:
-   - Print B&W, Print Color
-   - Copy B&W, Copy Color
-   - Fax B&W, Fax Color (if available)
-   - Copy Scans, Fax Scans, Other Scans
-   
-✅ No calculation needed
-✅ Most detailed metrics of any vendor
-✅ Function separation (Print vs Copy vs Fax)
-✅ Scan counters available
-```
-
-### Epson (Good Metrics)
-```
-✅ Direct OIDs for:
-   - Total, B&W, Color
-   - Total Print Computer, Color Print Computer
-   - Total Copy, Color Copy
-   
-⚠️ Calculate:
-   - B&W Print = Total Print - Color Print
-   - B&W Copy = Total Copy - Color Copy
-   
-❌ No scan counters found
-❌ No fax counters
-```
-
-### HP (Moderate Metrics)
-```
-✅ Direct OIDs for:
-   - Total pages (multiple marker indices)
-   - Fax, duplex sheets
-   - Scan to host (ADF/Flatbed)
-   - Jam events
-   
-❌ No B&W vs Color breakdown
-❌ No function separation (Print vs Copy)
-```
-
-### Generic (Basic Metrics)
-```
-✅ Standard Printer-MIB only:
-   - Total pages
-   - Toner levels
-   - Serial number
-   
-❌ No B&W/Color breakdown
-❌ No function counters
-❌ No scan counters
-```
-
----
-
-## Next Steps
-
-### ✅ COMPLETED
-1. ✅ **Web UI validation** - All counters match SNMP data perfectly
-2. ✅ **OID structure decoded** - Complete `.42.3.*` tree mapped
-
-### 🔄 TODO
-1. **Create Kyocera vendor module** (`agent/scanner/vendor/kyocera.go`)
-   - Implement VendorModule interface
-   - Add all validated OIDs from `.42.3.*` tree
-   - Capability-aware filtering (copy/fax/scan)
-   - Register in vendor registry with enterprise 1347
-
-2. **Validate on second Kyocera device**
-   - Test on ECOSYS PA4000wx (172.52.105.114)
-   - Verify OID structure is consistent
-   - Check if mono-only device uses same OIDs (without color indices)
-
-3. **Deploy and test**
-   - Build agent with Kyocera vendor module
-   - Verify enhanced metrics appear in UI
-   - Monitor for any OID inconsistencies
-
-### 📊 Expected Impact
-- **20% additional coverage** (2 out of 10 devices)
-- **Best metrics in the industry** for Kyocera devices
-- **Complete function breakdown** (Print/Copy/Fax/Scan)
-- **Full B&W/Color separation** for all functions
-
----
-
-## Notes
-
-- Kyocera's enterprise number is 1347
-- OID structure is more complex than Epson
-- Multiple subtrees (`.42.*`, `.43.*`, `.47.*`)
-- Standard Printer-MIB total (432,951) is reliable
-- Need web UI to decode enterprise OID meanings
-- Single Color prints are ignored (focus on B&W, Full Color, Total only)
+See `DEVICE_CONFIGURATION_NOTES.md` for KDM's SNMP SET targets, the security
+unlock sequence and the KM-WSDL SOAP services.

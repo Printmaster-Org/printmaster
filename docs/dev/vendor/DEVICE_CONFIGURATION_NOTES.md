@@ -47,6 +47,46 @@ has been tested on real hardware:
 | Power management | `1.2.2.1.1.3.1.32.*` |
 | EOP keys and version | `1.2.2.8.2.11.1.1.*` |
 
+## Kyocera (from Kyocera Net Device Manager reverse-engineering)
+
+KDM uses two mechanisms:
+
+| Mechanism | Used for | Notes |
+|-----------|----------|-------|
+| SNMP SET (`TemplateOp`, `SetProperty` on operators) | Network, protocols, SNMP, SMTP, power and panel settings | Writable OIDs are listed in `def.dev.snmp-oid.xml` |
+| SOAP "KM-WSDL" on TCP 9090 (HTTP) / 9091 (HTTPS), paths `/ws/km-wsdl/...` | Device settings templates, address book, counters | `DeviceSettingService` covers about 895 properties |
+
+### SNMP SET targets (relative to `1.3.6.1.4.1.1347.`)
+
+| Area | OID subtree |
+|------|-------------|
+| TCP/IP and host name | `40.10.*` |
+| SNMP communities (read/write) | `40.26.2.1.3` / `40.26.2.1.4` |
+| SNMP trap destinations | `40.26.5.1.*` |
+| SMTP / e-mail | `40.24.1.1.*` |
+| Protocol enables: LPD, RAW, IPP, WSD, Bonjour, HTTP/HTTPS | `40.20`, `40.21`, `40.22` and `40.40`, `40.36`, `40.35`, `40.41`/`40.42` |
+| SNMPv3 users | `1347.1001.6.1.1.*` |
+| Sleep and low-power timers | `43.5.1.1.23`, `.33`, `.40` |
+| Operation panel settings | `42.5.1.1.*` |
+
+### Security unlock
+
+Before writing protected settings, KDM unlocks the device:
+
+1. SET `42.24.1.6.0` to the 15-character string `FFFFFFFFFFFFFFF`. Some
+   models use `42.24.1.16.0`.
+2. Read `42.23.1.8.0`. A value of 4 means the device is still locked, and
+   writes will be rejected.
+
+The SETs still need a write-capable community or SNMPv3 user.
+
+### SOAP counter mapping
+
+KM-WSDL counter responses mirror the SNMP counters. For example, KDM's
+PageCount (5036) maps to
+`counter_data.accounting_counter.accounting_print_total_counter.counter`.
+The SOAP path is an alternative when SNMP is disabled.
+
 ## Other vendors
 
 Not yet researched. Record findings here using the same structure:

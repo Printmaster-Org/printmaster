@@ -20,10 +20,10 @@ operations, ENPC and templates. Reference material for future cross-vendor
 configuration editing.
 
 ### KYOCERA_OID_MAPPING.md
-Kyocera-specific OID mappings and meter analysis.
-- Enterprise OID discovery
-- Counter mappings
-- Vendor-specific behaviors
+Kyocera-specific OID mappings derived from Kyocera Net Device Manager.
+- Enterprise OID base: `1.3.6.1.4.1.1347.*`
+- Counters (function, color mode, media size, coverage, scans), maintenance kits
+- Panel alert codes, scanner and finisher status
 
 ### VENDOR_METER_ANALYSIS.md
 Cross-vendor meter analysis and counter normalization strategies.
