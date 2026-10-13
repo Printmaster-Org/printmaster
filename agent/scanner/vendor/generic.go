@@ -89,6 +89,9 @@ func (v *GenericVendor) PaperTrayOIDs() []string {
 		oids.PrtInputStatus,       // Tray status
 		oids.PrtInputType,         // Tray type (manual feed, cassette, etc.)
 		oids.PrtInputDescription,  // Tray description
+		oids.PrtInputDimUnit,
+		oids.PrtInputMediaDimFeedDirDeclared,
+		oids.PrtInputMediaDimXFeedDirDeclared,
 	}
 }
 
@@ -334,6 +337,9 @@ func ParsePaperTrays(pdus []gosnmp.SnmpPDU) []PaperTray {
 	// prtInputTable OID structure: 1.3.6.1.2.1.43.8.2.1.<column>.<hrDeviceIndex>.<prtInputIndex>
 	// Column definitions:
 	//   2  = prtInputType
+	//   3  = prtInputDimUnit
+	//   4  = prtInputMediaDimFeedDirDeclared
+	//   5  = prtInputMediaDimXFeedDirDeclared
 	//   9  = prtInputMaxCapacity
 	//   10 = prtInputCurrentLevel
 	//   11 = prtInputStatus
@@ -349,6 +355,9 @@ func ParsePaperTrays(pdus []gosnmp.SnmpPDU) []PaperTray {
 		Status       int
 		TrayType     int
 		Description  string
+		DimUnit      int
+		DimFeed      int
+		DimXFeed     int
 	}
 
 	// Map of tray index -> entry
@@ -401,6 +410,12 @@ func ParsePaperTrays(pdus []gosnmp.SnmpPDU) []PaperTray {
 		switch column {
 		case 2: // prtInputType
 			entry.TrayType = coerceToInt(pdu.Value)
+		case 3: // prtInputDimUnit
+			entry.DimUnit = coerceToInt(pdu.Value)
+		case 4: // prtInputMediaDimFeedDirDeclared
+			entry.DimFeed = coerceToInt(pdu.Value)
+		case 5: // prtInputMediaDimXFeedDirDeclared
+			entry.DimXFeed = coerceToInt(pdu.Value)
 		case 9: // prtInputMaxCapacity
 			entry.MaxCapacity = coerceToInt(pdu.Value)
 		case 10: // prtInputCurrentLevel
@@ -439,6 +454,12 @@ func ParsePaperTrays(pdus []gosnmp.SnmpPDU) []PaperTray {
 			MaxCapacity:  entry.MaxCapacity,
 			TrayType:     entry.TrayType,
 			Description:  entry.Description,
+		}
+
+		// Many devices (e.g. Epson) leave prtInputMediaName empty but declare
+		// the loaded paper dimensions.
+		if tray.MediaType == "" {
+			tray.MediaType = paperSizeName(entry.DimUnit, entry.DimFeed, entry.DimXFeed)
 		}
 
 		// Generate name if not provided
@@ -550,4 +571,55 @@ func coerceToInt(value interface{}) int {
 		}
 	}
 	return -1
+}
+
+// standardPaperSizes lists common media sizes in millimetres (short x long).
+var standardPaperSizes = []struct {
+	name        string
+	short, long float64
+}{
+	{"Letter", 215.9, 279.4},
+	{"Legal", 215.9, 355.6},
+	{"Executive", 184.15, 266.7},
+	{"Statement", 139.7, 215.9},
+	{"11x17", 279.4, 431.8},
+	{"13x19", 330.2, 482.6},
+	{"4x6", 101.6, 152.4},
+	{"5x7", 127, 177.8},
+	{"A3", 297, 420},
+	{"A4", 210, 297},
+	{"A5", 148, 210},
+	{"A6", 105, 148},
+	{"SRA3", 320, 450},
+	{"B4", 257, 364},
+	{"B5", 182, 257},
+	{"Envelope #10", 104.8, 241.3},
+	{"Envelope DL", 110, 220},
+	{"Envelope C5", 162, 229},
+}
+
+// paperSizeName maps prtInputMediaDim* values to a common paper size name.
+// Units follow PrtMediaUnitTC: 3=tenThousandthsOfInches, 4=micrometers.
+// Orientation is ignored; unknown sizes are returned as "<w> x <h> mm".
+func paperSizeName(unit, feed, xfeed int) string {
+	if feed <= 0 || xfeed <= 0 {
+		return ""
+	}
+	var perMM float64
+	switch unit {
+	case 3:
+		perMM = 10000 / 25.4
+	case 4:
+		perMM = 1000
+	default:
+		return ""
+	}
+	a, b := float64(feed)/perMM, float64(xfeed)/perMM
+	short, long := math.Min(a, b), math.Max(a, b)
+	for _, s := range standardPaperSizes {
+		if math.Abs(short-s.short) <= 2 && math.Abs(long-s.long) <= 2 {
+			return s.name
+		}
+	}
+	return fmt.Sprintf("%.0f x %.0f mm", short, long)
 }

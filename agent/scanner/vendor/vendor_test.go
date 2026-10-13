@@ -395,3 +395,31 @@ func TestParsePaperTrays_Empty(t *testing.T) {
 		t.Errorf("Expected 0 trays, got %d", len(trays))
 	}
 }
+
+func TestParsePaperTraysDerivesMediaFromDimensions(t *testing.T) {
+	const in = "1.3.6.1.2.1.43.8.2.1."
+	pdus := []gosnmp.SnmpPDU{
+		// WF-C878R cassettes report micrometres with an empty media name.
+		{Name: in + "3.1.2", Value: 4}, {Name: in + "4.1.2", Value: 279400}, {Name: in + "5.1.2", Value: 215900},
+		{Name: in + "12.1.2", Type: gosnmp.OctetString, Value: []byte("")},
+		{Name: in + "3.1.3", Value: 4}, {Name: in + "4.1.3", Value: 431800}, {Name: in + "5.1.3", Value: 279400},
+		{Name: in + "3.1.4", Value: 4}, {Name: in + "4.1.4", Value: 257000}, {Name: in + "5.1.4", Value: 182000},
+		// Ten-thousandths of an inch, landscape A4.
+		{Name: in + "3.1.5", Value: 3}, {Name: in + "4.1.5", Value: 82677}, {Name: in + "5.1.5", Value: 116929},
+		// Unknown dimensions keep an explicit media name.
+		{Name: in + "3.1.6", Value: 4}, {Name: in + "4.1.6", Value: -2}, {Name: in + "5.1.6", Value: -2},
+		{Name: in + "12.1.6", Type: gosnmp.OctetString, Value: []byte("Plain")},
+		// Non-standard size.
+		{Name: in + "3.1.7", Value: 4}, {Name: in + "4.1.7", Value: 200000}, {Name: in + "5.1.7", Value: 100000},
+	}
+	want := map[int]string{2: "Letter", 3: "11x17", 4: "B5", 5: "A4", 6: "Plain", 7: "100 x 200 mm"}
+	trays := ParsePaperTrays(pdus)
+	if len(trays) != len(want) {
+		t.Fatalf("got %d trays, want %d", len(trays), len(want))
+	}
+	for _, tr := range trays {
+		if tr.MediaType != want[tr.Index] {
+			t.Errorf("tray %d media = %q, want %q", tr.Index, tr.MediaType, want[tr.Index])
+		}
+	}
+}
