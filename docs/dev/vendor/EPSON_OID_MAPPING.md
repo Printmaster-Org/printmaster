@@ -104,6 +104,22 @@ Inks come from the standard Printer-MIB (`43.11`). The maintenance box is
 
 Keys: `supply_<description>` (level), `maintenance_box_replacements`.
 
+### Paper feed rollers — `1.2.2.23.1.1.<col>.1.<idx>` (walk, epPrtInputTable)
+
+| Col | Meaning |
+|-----|---------|
+| 5 | Roller replacement count (−2 = n/a) |
+| 8 | Counter unit (8 = percent; level only used when 8) |
+| 9 | Roller life remaining (−2 = no roller counter) |
+| 13 | Roller part number (e.g. `S210049`) |
+| 14 | Sheet feed type: 6 = rear ASF; EDA maps 3/4/5 to feed rollers, the WF-C878R reports 101/201–203 for its cassettes |
+
+The first type-6 row is the rear feed roller. EDA only counts types 3/4/5 as
+feed rollers; PrintMaster counts every other row, numbered in table order, so
+newer models are covered. Keys: `supply_rear_feed_roller`,
+`supply_feed_roller_<n>` (level), `rear_feed_roller_replacements`,
+`feed_roller_<n>_replacements`.
+
 > `1.2.2.2.1.1` is the **firmware/version table** (col 2 = value, col 3 = name:
 > Main FW, Serial No, Network FW, FW Package, PS, PCL), not an ink table.
 
@@ -132,6 +148,7 @@ The frame has a `@BDC ST2\r\n` header, then a 16-bit little-endian length, then 
 | 0x36 | Paper counts: int32 LE; [4:8] all, [8:12] color, [12:16] mono; `FFFFFFFF` = unsupported |
 | 0x37 | Maintenance box state |
 | 0x40 | Serial |
+| 0x45 | Ink cartridge replacement count, one byte per ink in 0x0f order (inferred from the WF-C878R) |
 | 0x46 | Maintenance box replacement count |
 
 Field 0x0f layout: byte 0 = bytes per entry, then `[code][all-in-one][level]` per ink. A level above 100 means unknown.
@@ -154,6 +171,9 @@ ST2 values are used as fallbacks:
 - Inks only when the standard supplies table is empty.
 - Maintenance box only when the supplies table lacks it.
 - Mono/color/total only when the SNMP counters are missing.
+
+Field 0x45 is always emitted as `<color>_ink_replacements` (for example
+`cyan_ink_replacements`) when its length matches the 0x0f ink count.
 
 ### Status, error and warning codes
 
@@ -199,10 +219,18 @@ pages printed between the two reads:
 ST2 field 0x45 holds per-ink replacement counts (`[2,2,2,2]`), and 0x46
 holds maintenance-box replacements.
 
+These are reported as `cyan_ink_replacements` etc. and
+`maintenance_box_replacements`.
+
 Additional tables seen on this model:
-- **Maintenance rollers:** `1.2.2.23.1.1.<col>.1.<idx>`. Row 1 is the rear feeder and rows 2–5 are cassettes 1–4. Columns: 4 feed count, 9 level %, 13 part number (e.g. S210048).
-- **Parts:** `1.2.2.32.1.1` (row 1 "Maintenance Unit").
-- **Cassettes:** standard prtInput `43.8.2.1`. The media name is empty, so the paper size must be derived from the dimensions (columns 4 and 5, micrometres, unit 4).
+- **Feed rollers:** row 1 (rear ASF) has no counter; cassettes 1–4 report
+  95 / 95 / 100 / 100 %, exposed as `supply_feed_roller_1`..`4`. Column 4
+  looks like a feed count but is not used by EDA, so it is not collected.
+- **Parts:** `1.2.2.32.1.1` (row 1 "Maintenance Unit"); not collected yet.
+- **Cassettes:** standard prtInput `43.8.2.1`. The media name is empty, so
+  `ParsePaperTrays` derives it from the declared dimensions (columns 3–5;
+  unit 4 = micrometres, 3 = ten-thousandths of an inch): Letter, 11x17, B5.
+  Unrecognised sizes are shown as `<w> x <h> mm`.
 
 ## Verified example (ST-C8090, matches EDA UI)
 
