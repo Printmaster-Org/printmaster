@@ -4652,6 +4652,12 @@ func runInteractive(ctx context.Context, configFlag string) {
 		w.Write(data)
 	})
 
+	// Admin-only SNMP walk capture (downloadable gzipped JSON per device)
+	registerSNMPWalkRoutes(filepath.Join(dataDir, "snmpwalks"), map[string]string{
+		"agent_version": Version,
+		"agent_id":      agentConfig.Server.AgentID,
+	})
+
 	// POST /api/report - Submit a device data report to the proxy service
 	// This endpoint collects diagnostic data and forwards it to the cloud proxy
 	// which creates a GitHub Gist and returns URLs for the pre-filled issue.

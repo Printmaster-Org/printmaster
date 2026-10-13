@@ -77,6 +77,14 @@ func (w *gosnmpWrapper) Walk(root string, walkFn gosnmp.WalkFunc) error {
 	return w.snmp.Walk(root, walkFn)
 }
 
+// BulkWalk uses GETBULK on v2c/v3 and falls back to GETNEXT on v1.
+func (w *gosnmpWrapper) BulkWalk(root string, walkFn gosnmp.WalkFunc) error {
+	if w.snmp.Version == gosnmp.Version1 {
+		return w.snmp.Walk(root, walkFn)
+	}
+	return w.snmp.BulkWalk(root, walkFn)
+}
+
 func (w *gosnmpWrapper) Close() error {
 	if w.snmp != nil && w.snmp.Conn != nil {
 		_ = w.snmp.Conn.Close()
