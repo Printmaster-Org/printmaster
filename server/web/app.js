@@ -12966,6 +12966,34 @@ function getProgressiveDevice(device) {
     return enriched;
 }
 
+// Patches only changed child nodes so a focused control (and its ancestors) survives
+// late metric hydration; replacing innerHTML would drop keyboard focus to <body>.
+function patchDeviceCardChildren(current, updated) {
+    const focused = document.activeElement;
+    if (!focused || focused === document.body || !current.contains(focused)
+        || current.childNodes.length !== updated.childNodes.length) {
+        current.innerHTML = updated.innerHTML;
+        return;
+    }
+    const next = [...updated.childNodes];
+    [...current.childNodes].forEach((node, i) => {
+        const replacement = next[i];
+        if (node.isEqualNode(replacement)) return;
+        if (node.nodeType === Node.ELEMENT_NODE && node.contains(focused) && node.nodeName === replacement.nodeName) {
+            [...node.attributes].forEach(attr => { if (!replacement.hasAttribute(attr.name)) node.removeAttribute(attr.name); });
+            [...replacement.attributes].forEach(attr => {
+                if (node.getAttribute(attr.name) !== attr.value) node.setAttribute(attr.name, attr.value);
+            });
+            if (node !== focused || node.innerHTML !== replacement.innerHTML) {
+                if (node === focused) node.innerHTML = replacement.innerHTML;
+                else patchDeviceCardChildren(node, replacement);
+            }
+            return;
+        }
+        node.replaceWith(replacement.cloneNode(true));
+    });
+}
+
 function patchVisibleDeviceRows() {
     const container = document.getElementById(devicesVM.view === 'table' ? 'devices_table' : 'devices_cards');
     if (!container) return;
@@ -12993,7 +13021,7 @@ function patchVisibleDeviceRows() {
             ['.device-card-header', '.device-card-info'].forEach(selector => {
                 const current = element.querySelector(selector);
                 const updated = template.content.querySelector(selector);
-                if (current && updated && current.innerHTML !== updated.innerHTML) current.innerHTML = updated.innerHTML;
+                if (current && updated && current.innerHTML !== updated.innerHTML) patchDeviceCardChildren(current, updated);
             });
         }
     });
