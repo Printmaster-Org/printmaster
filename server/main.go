@@ -4902,6 +4902,13 @@ func handleAgentProxy(w http.ResponseWriter, r *http.Request) {
 	if len(parts) > 1 {
 		targetPath = "/" + parts[1]
 	}
+	if isAdminOnlyAgentProxyPath(targetPath) {
+		principal := getPrincipal(r)
+		if principal == nil || !principal.IsAdmin() {
+			http.Error(w, "administrator required", http.StatusForbidden)
+			return
+		}
+	}
 
 	// Add query string if present
 	if r.URL.RawQuery != "" {
@@ -4930,9 +4937,20 @@ func handleAgentProxy(w http.ResponseWriter, r *http.Request) {
 	case "discover", "discover_now":
 		proxyTimeout = 120 * time.Second
 	}
+	if strings.HasPrefix(requestPath, "api/diagnostics/") && strings.HasSuffix(requestPath, "/download") {
+		// SNMP walk files can be tens of MB; give the WebSocket transfer room.
+		proxyTimeout = 180 * time.Second
+	}
 
 	// Proxy the request through WebSocket
 	proxyThroughWebSocketWithTimeout(w, r, agentID, targetURL, proxyTimeout)
+}
+
+// isAdminOnlyAgentProxyPath reports whether an agent path is restricted to
+// server administrators (raw diagnostics such as full SNMP walks).
+func isAdminOnlyAgentProxyPath(requestPath string) bool {
+	clean := path.Clean("/" + requestPath)
+	return clean == "/api/diagnostics" || strings.HasPrefix(clean, "/api/diagnostics/")
 }
 
 // handleDeviceProxy proxies HTTP requests to device web UIs through agent WebSocket
