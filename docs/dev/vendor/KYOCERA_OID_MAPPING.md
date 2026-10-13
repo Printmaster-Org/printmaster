@@ -4,7 +4,16 @@
 Device Manager (KDM): `def.dev.snmp-oid.xml` (OID names) plus the decompiled
 `KDM.AccessDevice.DeviceController.Operators` (how each value is computed and
 which model groups use which logic). Values were checked against real SNMP
-walks of a TASKalfa 4053ci (color MFP) and an ECOSYS P2040dw (mono printer).
+walks of a TASKalfa 4053ci (color MFP) and an ECOSYS P2040dw (mono printer),
+and live against a second CS 4053ci.
+
+The Kyocera script in Print Audit Facilities Manager ICE (ECi) reads the same
+OIDs: `kcprtMarkerServiceCount`, `kmMFPCounterItem`,
+`kmMFPColorModeCounterItem`, the scan tables, `kcprtSerialNumber`, and the
+type-1 row of the firmware table. It counts large paper as A3 + B4 + Ledger
+from `kmMediaCounterTable`. Its fax/scanner scan split also changes when
+`42.3.1.4.1.1` (other scans) is present: newer firmware reports zero in the
+legacy fax column `.3`.
 
 Implementation: `agent/scanner/vendor/kyocera.go`, constants in
 `common/snmp/oids/oids.go`. Fixture tests: `agent/scanner/vendor/kyocera_test.go`,
@@ -104,12 +113,17 @@ Rows with a non-zero total produce `paper_<size>_pages`,
 color), for example `paper_letter_pages`. On the 4053ci, Letter + Ledger +
 Legal equals the service count.
 
+The A3, B4 and Ledger rows are also summed into `large_paper_pages`,
+`large_paper_mono_pages` and `large_paper_color_pages`, which are the
+"large" billing meters. When a row has no mono column (mono-only devices),
+its total counts as mono.
+
 ## Coverage (`42.2.4.1.1.<1|2|3>.1.<hrDeviceIndex>`)
 
 The kmColorCoverage{Low,Medium,High}CoverageCounter values are summed across
 device indexes, as KDM does for copier + printer. They produce
 `coverage_low_pages`, `coverage_medium_pages` and `coverage_high_pages`.
-Neither fixture device exposes them.
+Neither fixture device, nor the live CS 4053ci, exposes them.
 
 ## Maintenance kits (`kcprtMaintenanceKitTable`, `43.24.1.1.<col>.<idx>`)
 

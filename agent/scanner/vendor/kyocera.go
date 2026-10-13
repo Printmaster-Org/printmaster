@@ -305,9 +305,15 @@ func parseKyoceraScans(idx *pduIndex, pdus []gosnmp.SnmpPDU, result map[string]i
 	}
 }
 
-// parseKyoceraMediaCounters decodes kmMediaCounterTable into paper_<size>_* meters.
+// kyoceraLargePaperSizes are the media names billed as "large" (A3, B4, Ledger),
+// matching PrintAudit's Kyocera large-paper meters.
+var kyoceraLargePaperSizes = map[string]bool{"a3": true, "b4": true, "ledger": true}
+
+// parseKyoceraMediaCounters decodes kmMediaCounterTable into paper_<size>_* meters
+// and aggregates large sizes into large_paper_* meters.
 func parseKyoceraMediaCounters(pdus []gosnmp.SnmpPDU, result map[string]interface{}) {
 	table := epsonTable(pdus, oids.KyoceraMediaCounterTable)
+	largeMono, largeColor, haveLarge := 0, 0, false
 	for _, row := range tableRows(table, 2) {
 		total, ok := tableInt(table, 6, row)
 		if !ok || total <= 0 {
@@ -318,14 +324,29 @@ func parseKyoceraMediaCounters(pdus []gosnmp.SnmpPDU, result map[string]interfac
 			continue
 		}
 		result["paper_"+slug+"_pages"] = total
-		if n, ok := tableInt(table, 7, row); ok && n > 0 {
-			result["paper_"+slug+"_mono_pages"] = n
+		mono, hasMono := tableInt(table, 7, row)
+		if hasMono && mono > 0 {
+			result["paper_"+slug+"_mono_pages"] = mono
 		}
 		full, _ := tableInt(table, 8, row)
 		monoColor, _ := tableInt(table, 9, row)
 		if full+monoColor > 0 {
 			result["paper_"+slug+"_color_pages"] = full + monoColor
 		}
+		if kyoceraLargePaperSizes[slug] {
+			haveLarge = true
+			// Mono-only devices lack the color split, so the size total is all mono.
+			if !hasMono {
+				mono = total
+			}
+			largeMono += max(mono, 0)
+			largeColor += max(full, 0) + max(monoColor, 0)
+		}
+	}
+	if haveLarge && largeMono+largeColor > 0 {
+		result["large_paper_pages"] = largeMono + largeColor
+		result["large_paper_mono_pages"] = largeMono
+		result["large_paper_color_pages"] = largeColor
 	}
 }
 

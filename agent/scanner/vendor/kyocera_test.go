@@ -104,7 +104,11 @@ func TestKyoceraParse_TASKalfa4053ci(t *testing.T) {
 		"paper_letter_pages": 72237,
 		"paper_ledger_pages": 3498,
 		"paper_legal_pages":  329,
+		"large_paper_pages":  3498, // A3+B4+Ledger; only Ledger used on this unit
 	})
+	if result["large_paper_mono_pages"].(int)+result["large_paper_color_pages"].(int) != 3498 {
+		t.Errorf("large paper split = %v + %v", result["large_paper_mono_pages"], result["large_paper_color_pages"])
+	}
 	if _, ok := result["single_color_pages"]; ok {
 		t.Errorf("single_color_pages should be absent when zero, got %v", result["single_color_pages"])
 	}
@@ -165,6 +169,26 @@ func TestKyoceraParse_PrinterColorModeCounters(t *testing.T) {
 		"single_color_pages": 25,
 		"page_count":         1000,
 	})
+}
+
+func TestKyoceraParse_LargePaperMonoFallback(t *testing.T) {
+	m := ".1.3.6.1.4.1.1347.42.2.1.1.1."
+	pdus := []gosnmp.SnmpPDU{
+		{Name: m + "2.1.1", Value: []byte("A3")},
+		{Name: m + "6.1.1", Value: 40},
+		{Name: m + "2.1.2", Value: []byte("Letter")},
+		{Name: m + "6.1.2", Value: 900},
+		{Name: m + "2.1.3", Value: []byte("Ledger")},
+		{Name: m + "6.1.3", Value: 10},
+	}
+	result := (&KyoceraVendor{}).Parse(pdus)
+	expectInts(t, result, map[string]int{
+		"large_paper_pages":      50,
+		"large_paper_mono_pages": 50,
+	})
+	if n, _ := result["large_paper_color_pages"].(int); n != 0 {
+		t.Errorf("large_paper_color_pages = %v", n)
+	}
 }
 
 func TestKyoceraParse_LifeCountIgnoredForNonImpressionUnits(t *testing.T) {
