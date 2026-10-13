@@ -25,6 +25,12 @@ Kyocera-specific OID mappings derived from Kyocera Net Device Manager.
 - Counters (function, color mode, media size, coverage, scans), maintenance kits
 - Panel alert codes, scanner and finisher status
 
+### PRINTAUDIT_ICE_FINDINGS.md
+Facts about the vendor OIDs read by Print Audit Facilities Manager ICE's per-vendor scan scripts.
+- HP, Canon, Epson, Brother, Ricoh, Sharp, Toshiba, Xerox, Lexmark, Samsung, Konica Minolta, OKI and smaller vendors
+- Counter derivations (function, mono/color, large/small paper, three-tier billing) and generic Printer-MIB alert logic
+- Gap list against PrintMaster's vendor modules (HP needs validation)
+
 ### VENDOR_METER_ANALYSIS.md
 Cross-vendor meter analysis and counter normalization strategies.
 - Comparison of meter implementations across vendors
