@@ -349,13 +349,12 @@ test('viewer does not see admin tab', async ({ page }) => {
 });
 
 test('server filter drawers float over results and start closed', async ({ page }) => {
-  await loadApp(page, adminUser);
-  let finishVersionCheck;
-  const versionCheckGate = new Promise(resolve => { finishVersionCheck = resolve; });
-  await page.route('**/api/v1/releases/latest-agent-version', async route => {
-    await versionCheckGate;
-    await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+  // Auto-check changes the adjacent button's label and shifts the header;
+  // this test measures drawer hover geometry, not version-check rendering.
+  await page.addInitScript(() => {
+    localStorage.setItem('agents_check_updates_on_load', 'false');
   });
+  await loadApp(page, adminUser);
   const expectStationaryControl = async control => {
     if (isMobileViewport(page)) return;
     const beforeHover = await control.boundingBox();
@@ -379,14 +378,8 @@ test('server filter drawers float over results and start closed', async ({ page 
     await tab.click();
     await expect(tab).toHaveCSS('filter', 'none');
     if (drawerConfig.tab === 'agents') {
-      // loadAgents schedules an async version check after rendering. Its
-      // Checking… -> Check for Updates label changes header width, independently
-      // of hover. Measure hover geometry only after that operation completes.
-      const checkUpdates = page.locator('#agents_check_updates_btn');
-      await expect(checkUpdates).toHaveText('Checking…');
-      finishVersionCheck();
-      await expect(checkUpdates).toHaveText('Check for Updates');
-      await expect(checkUpdates).toBeEnabled();
+      await expect(page.locator('#agents_check_updates_toggle')).not.toBeChecked();
+      await expect(page.locator('#agents_check_updates_btn')).toBeEnabled();
     }
     const sidebar = page.locator(`#${drawerConfig.sidebar}`);
     const trigger = page.locator(`#${drawerConfig.trigger}`);
