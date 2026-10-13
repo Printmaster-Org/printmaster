@@ -17,6 +17,7 @@ import (
 	"printmaster/agent/scanner"
 	"printmaster/agent/scanner/vendor"
 	"printmaster/agent/supplies"
+	"printmaster/common/snmp/oids"
 	"printmaster/common/util"
 
 	"github.com/gosnmp/gosnmp"
@@ -775,7 +776,7 @@ func parsePDUs(scanIP string, vars []gosnmp.SnmpPDU, meta *ScanMeta, logFn func(
 		if v.Type == gosnmp.OctetString {
 			s := pduToString(v.Value)
 			ls := strings.ToLower(s)
-			if strings.Contains(ls, "error") || strings.Contains(ls, "toner") || strings.Contains(ls, "paper") || strings.Contains(ls, "ready") || strings.Contains(ls, "warning") {
+			if strings.HasPrefix(name, oids.PrtAlertDescription+".") || strings.Contains(ls, "error") || strings.Contains(ls, "toner") || strings.Contains(ls, "paper") || strings.Contains(ls, "ready") || strings.Contains(ls, "warning") {
 				statusMsgs = append(statusMsgs, s)
 			}
 		}
@@ -1518,6 +1519,7 @@ func MergeVendorMetricsWithContext(ctx context.Context, pi *PrinterInfo, pdus []
 	if len(metrics) == 0 {
 		return
 	}
+	pi.VendorMetrics = metrics
 
 	// Initialize maps if needed
 	if pi.Meters == nil {

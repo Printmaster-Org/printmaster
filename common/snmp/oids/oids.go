@@ -119,6 +119,7 @@ const (
 
 	// --- prtAlertTable (43.17) - Alerts ---
 	PrtAlertSeverityLevel = "1.3.6.1.2.1.43.17.6.1.2"
+	PrtAlertDescription   = "1.3.6.1.2.1.43.18.1.1.8"
 
 	// --- prtChannelTable (43.18) - Network channels ---
 	PrtChannelTable           = "1.3.6.1.2.1.43.18.1.1"

@@ -71,7 +71,9 @@ type PrinterInfo struct {
 	// Consumables lists supply descriptions discovered on the device
 	Consumables []string `json:"consumables,omitempty"`
 	// StatusMessages contains textual status lines reported via SNMP (if any)
-	StatusMessages []string `json:"status_messages,omitempty"`
+	StatusMessages []string               `json:"status_messages,omitempty"`
+	StatusObserved bool                   `json:"-"`
+	VendorMetrics  map[string]interface{} `json:"vendor_metrics,omitempty"`
 	// Firmware reported by device (if present)
 	Firmware string `json:"firmware,omitempty"`
 	// UptimeSeconds (if reported via sysUpTime or similar)

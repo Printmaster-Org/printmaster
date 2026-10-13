@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -222,7 +223,8 @@ func CollectMetricsWithOIDs(ctx context.Context, ip, serial, vendor string, time
 	return scannerAgentMetrics(pi), nil
 }
 func scannerAgentMetrics(pi agent.PrinterInfo) *agent.DeviceMetricsSnapshot {
-	snapshot := &agent.DeviceMetricsSnapshot{Serial: pi.Serial, TonerLevels: make(map[string]interface{})}
+	normalized := storage.PrinterInfoToMetricsSnapshot(pi)
+	snapshot := &agent.DeviceMetricsSnapshot{Serial: pi.Serial, TonerLevels: make(map[string]interface{}), Observation: &pi}
 	if pi.PageCount > 0 {
 		snapshot.PageCount = pi.PageCount
 	}
@@ -262,12 +264,28 @@ func scannerAgentMetrics(pi agent.PrinterInfo) *agent.DeviceMetricsSnapshot {
 		toner("magenta", pi.TonerLevelMagenta, pi.TonerDescMagenta)
 		toner("yellow", pi.TonerLevelYellow, pi.TonerDescYellow)
 	}
+	for key, level := range normalized.TonerLevels {
+		switch strings.TrimPrefix(strings.ToLower(key), "toner_") {
+		case "black":
+			key = "black"
+		case "cyan", "magenta", "yellow":
+			if isMono {
+				continue
+			}
+			key = strings.TrimPrefix(strings.ToLower(key), "toner_")
+		}
+		snapshot.TonerLevels[key] = level
+	}
 	return snapshot
 }
 
 // scannerStorageMetrics is the single agent→storage metrics conversion.
 func scannerStorageMetrics(a *agent.DeviceMetricsSnapshot, at time.Time) *storage.MetricsSnapshot {
 	s := &storage.MetricsSnapshot{}
+	s.Observation = a.Observation
+	if a.Observation != nil && !a.Observation.LastSeen.IsZero() {
+		at = a.Observation.LastSeen
+	}
 	s.Serial, s.Timestamp = a.Serial, at
 	s.PageCount, s.ColorPages, s.MonoPages, s.ScanCount, s.TonerLevels = a.PageCount, a.ColorPages, a.MonoPages, a.ScanCount, a.TonerLevels
 	s.FaxPages, s.CopyPages, s.OtherPages, s.CopyMonoPages = a.FaxPages, a.CopyPages, a.OtherPages, a.CopyMonoPages

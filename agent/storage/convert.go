@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"strings"
+
 	"printmaster/agent/agent"
 	"printmaster/agent/supplies"
 )
@@ -46,6 +48,8 @@ func PrinterInfoToDevice(pi agent.PrinterInfo, isSaved bool) *Device {
 	// Store additional info in RawData
 	device.RawData = map[string]interface{}{
 		"admin_contact":          pi.AdminContact,
+		"dns_servers":            pi.DNSServers,
+		"dhcp_server":            pi.DHCPServer,
 		"asset_id":               pi.AssetID,
 		"total_mono_impressions": pi.TotalMonoImpressions,
 		"black_impressions":      pi.BlackImpressions,
@@ -69,6 +73,8 @@ func PrinterInfoToDevice(pi agent.PrinterInfo, isSaved bool) *Device {
 		"duplex_supported":       pi.DuplexSupported,
 		"paper_tray_status":      pi.PaperTrayStatus,
 		"toner_alerts":           pi.TonerAlerts,
+		"paper_trays":            pi.PaperTrays,
+		"vendor_metrics":         pi.VendorMetrics,
 		"meters":                 pi.Meters,
 		"learned_oids":           pi.LearnedOIDs, // Store learned OIDs for efficient metrics
 		// Capabilities
@@ -110,6 +116,9 @@ func DeviceToPrinterInfo(device *Device) agent.PrinterInfo {
 
 	// Extract from RawData if present
 	if device.RawData != nil {
+		if value, ok := device.RawData["vendor_metrics"].(map[string]interface{}); ok {
+			pi.VendorMetrics = value
+		}
 		if v, ok := device.RawData["admin_contact"].(string); ok {
 			pi.AdminContact = v
 		}
@@ -298,6 +307,7 @@ func PrinterInfoToMetricsSnapshot(pi agent.PrinterInfo) *MetricsSnapshot {
 	snapshot.ColorPages = pi.ColorImpressions
 	snapshot.MonoPages = pi.MonoImpressions
 	snapshot.TonerLevels = normalizeTonerLevels(pi)
+	snapshot.ScanCount = pi.Meters["scans"]
 
 	return snapshot
 }
@@ -313,8 +323,10 @@ func normalizeTonerLevels(pi agent.PrinterInfo) map[string]interface{} {
 
 	for k, v := range pi.TonerLevels {
 		key := k
-		if normalized := supplies.NormalizeDescription(k); normalized != "" {
-			key = normalized
+		if !supplies.PreserveDescription(k) && !strings.HasPrefix(k, "ink_") && !strings.HasPrefix(k, "supply_maintenance_box") {
+			if normalized := supplies.NormalizeDescription(k); normalized != "" {
+				key = normalized
+			}
 		}
 		add(key, v)
 	}

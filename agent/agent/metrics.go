@@ -99,6 +99,7 @@ func GetMetricsSnapshot() MetricsSnapshot {
 
 // DeviceMetricsSnapshot represents a point-in-time snapshot of device metrics for historical tracking
 type DeviceMetricsSnapshot struct {
+	Observation *PrinterInfo           `json:"-"`
 	Serial      string                 `json:"serial"`
 	PageCount   int                    `json:"page_count"`
 	ColorPages  int                    `json:"color_pages"`

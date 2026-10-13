@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -705,6 +706,7 @@ func (w *UploadWorker) uploadDevices() error {
 			"status_messages":  dev.StatusMessages,
 			"last_seen":        dev.LastSeen,
 			"first_seen":       dev.FirstSeen,
+			"created_at":       dev.CreatedAt,
 			"discovery_method": dev.DiscoveryMethod,
 			"asset_number":     dev.AssetNumber,
 			"location":         dev.Location,
@@ -769,9 +771,15 @@ func (w *UploadWorker) uploadMetrics() error {
 
 	for _, dev := range devices {
 		metrics, err := w.store.GetLatestMetrics(ctx, dev.Serial)
-		if err != nil || metrics == nil {
+		if errors.Is(err, storage.ErrNotFound) {
 			// No metrics for this device yet, skip
 			continue
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read latest metrics: %w", err)
+		}
+		if metrics == nil {
+			return errors.New("latest metrics lookup returned no snapshot")
 		}
 
 		metricMap := map[string]interface{}{

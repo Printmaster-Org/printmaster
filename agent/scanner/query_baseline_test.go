@@ -39,9 +39,9 @@ func TestBaselineProfileOIDComposition(t *testing.T) {
 			case QueryMinimal:
 				want = appendUniqueOIDs([]string{oids.PrtGeneralSerialNumber}, VendorIDTargetOIDs()...)
 			case QueryEssential:
-				want = appendUniqueOIDs([]string{"base", "supply", "tray", oids.PrtMarkerLifeCount}, VendorIDTargetOIDs()...)
+				want = appendUniqueOIDs([]string{"base", "supply", "tray", oids.PrtMarkerLifeCount, oids.PrtAlertDescription}, VendorIDTargetOIDs()...)
 			case QueryMetrics:
-				want = []string{"base", "metric", "supply", "tray"}
+				want = []string{"base", "metric", "supply", "tray", oids.PrtAlertDescription}
 			}
 			if got := buildQueryOIDsWithModule(profile, caps, module); !reflect.DeepEqual(got, want) {
 				t.Fatalf("OIDs = %#v, want %#v", got, want)
@@ -94,6 +94,7 @@ func TestBaselineProfileQueryOperations(t *testing.T) {
 			} else {
 				tables := map[string]bool{}
 				if profile == QueryEssential || profile == QueryMetrics {
+					tables[oids.PrtAlertDescription] = true
 					for _, root := range append(module.SupplyOIDs(), module.PaperTrayOIDs()...) {
 						tables[root] = true
 					}

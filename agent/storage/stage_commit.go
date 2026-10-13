@@ -39,6 +39,7 @@ type DevicePatch struct {
 	DNSServers, Consumables, StatusMessages     *[]string
 	RawData                                     *map[string]interface{}
 	LastSeen                                    *time.Time
+	StatusObserved                              bool
 }
 
 var (
@@ -209,7 +210,15 @@ func (s *SQLiteStore) CommitScannerFacts(ctx context.Context, serial, expectedIP
 	}
 	list("dns_servers", patch.DNSServers)
 	list("consumables", patch.Consumables)
-	list("status_messages", patch.StatusMessages)
+	if patch.StatusObserved && patch.StatusMessages != nil && !locked["status_messages"] {
+		data, err := json.Marshal(*patch.StatusMessages)
+		if err != nil {
+			return err
+		}
+		add("status_messages", string(data))
+	} else {
+		list("status_messages", patch.StatusMessages)
+	}
 	if patch.LastSeen != nil && patch.LastSeen.After(lastSeen) {
 		add("last_seen", *patch.LastSeen)
 	}
@@ -228,6 +237,14 @@ func (s *SQLiteStore) CommitScannerFacts(ctx context.Context, serial, expectedIP
 		var incoming map[string]interface{}
 		if err = json.Unmarshal(data, &incoming); err != nil {
 			return err
+		}
+		if vendorMetrics, ok := incoming["vendor_metrics"].(map[string]interface{}); ok && patch.StatusObserved && vendorMetrics["epson_status"] != nil {
+			if oldMetrics, ok := previous["vendor_metrics"].(map[string]interface{}); ok {
+				// These optional status keys disappear when an Epson alert resolves.
+				for _, key := range []string{"epson_error", "epson_error_code", "epson_warnings"} {
+					delete(oldMetrics, key)
+				}
+			}
 		}
 		mergeScannerMetadata(previous, incoming)
 		data, err = json.Marshal(previous)

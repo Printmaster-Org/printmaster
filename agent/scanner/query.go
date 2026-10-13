@@ -273,6 +273,7 @@ func queryDeviceWithCapabilitiesAndClient(ctx context.Context, ip string, profil
 			// Also include paper tray OIDs as tables to walk
 			paperTrayOIDs := detectedVendor.PaperTrayOIDs()
 			tableOIDMap := make(map[string]bool)
+			tableOIDMap[oids.PrtAlertDescription] = true
 			for _, s := range supplyOIDs {
 				tableOIDMap[s] = true
 			}
@@ -467,6 +468,7 @@ func buildQueryOIDsWithModule(profile QueryProfile, caps *capabilities.DeviceCap
 		queryOIDs = append(queryOIDs, vendorModule.SupplyOIDs()...)
 		queryOIDs = append(queryOIDs, vendorModule.PaperTrayOIDs()...)
 		queryOIDs = append(queryOIDs, oids.PrtMarkerLifeCount)
+		queryOIDs = appendUniqueOIDs(queryOIDs, oids.PrtAlertDescription)
 		queryOIDs = appendUniqueOIDs(queryOIDs, VendorIDTargetOIDs()...)
 	case QueryFull:
 		// QueryFull intentionally returns nil because it uses SNMP walk operations
@@ -479,6 +481,7 @@ func buildQueryOIDsWithModule(profile QueryProfile, caps *capabilities.DeviceCap
 		queryOIDs = append(queryOIDs, vendorModule.SupplyOIDs()...)
 		queryOIDs = append(queryOIDs, vendorModule.PaperTrayOIDs()...)
 		queryOIDs = appendUniqueOIDs(queryOIDs, vendor.MetricTableOIDs(vendorModule)...)
+		queryOIDs = appendUniqueOIDs(queryOIDs, oids.PrtAlertDescription)
 	}
 	return queryOIDs
 }

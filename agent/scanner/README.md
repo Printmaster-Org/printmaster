@@ -89,6 +89,23 @@ ordering; coordinator race tests are mandatory.
 
 #### Partial persistence (`storage.CommitScannerFacts`)
 
+Regular metrics polls also query Printer-MIB alert descriptions and vendor
+status (including Epson ST2), retaining current status, vendor details, paper
+trays and distinct ink/maintenance supply names. The metrics conversion carries
+a transient observation into the same staged transaction; it does not add a
+new historical status schema. It preserves inventory capabilities, learned
+OIDs, user location/asset and saved/visible state.
+
+Decoded Epson status or an obtained zero-error standard error-state bitfield
+permits clearing resolved status messages; absent/failed status does not imply
+healthy. A new Epson status clears obsolete error/warning keys while merging
+other vendor facts, so sparse polling does not erase full-scan details.
+The uploader sends refreshed devices before latest metrics after successful
+commit/wake. Both observation and metric sample timestamps are retained by the
+Server; inventory raw metadata is stored directly, not nested in the upload
+envelope. Vendor details remain current inventory metadata, while existing
+historical metrics store counters and supply levels.
+
 `SQLiteStore.CommitScannerFacts` persists only facts a work item obtained, in one
 transaction: an optional device patch, optional scan snapshot, optional metrics
 snapshot. Nil/blank patch fields never erase stored facts; locked fields, user

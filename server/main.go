@@ -6638,9 +6638,9 @@ func handleDevicesBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		AgentID   string                   `json:"agent_id"`
-		Timestamp time.Time                `json:"timestamp"`
-		Devices   []map[string]interface{} `json:"devices"`
+		AgentID   string            `json:"agent_id"`
+		Timestamp time.Time         `json:"timestamp"`
+		Devices   []*storage.Device `json:"devices"`
 	}
 
 	if err := decodeJSONBody(r, &req); err != nil {
@@ -6658,67 +6658,20 @@ func handleDevicesBatch(w http.ResponseWriter, r *http.Request) {
 	// Store each device
 	ctx := r.Context()
 	stored := 0
-	for _, deviceMap := range req.Devices {
-		// Convert map to Device struct (simplified - in production, use proper unmarshaling)
-		device := &storage.Device{}
+	for _, device := range req.Devices {
+		if device == nil {
+			logWarn("Null device in batch, skipping", "agent_id", agent.AgentID)
+			continue
+		}
 		device.AgentID = agent.AgentID
-		device.LastSeen = req.Timestamp
-		device.FirstSeen = req.Timestamp
-		device.CreatedAt = req.Timestamp
-
-		// Extract fields from map
-		if v, ok := deviceMap["serial"].(string); ok {
-			device.Serial = v
+		if device.LastSeen.IsZero() {
+			device.LastSeen = req.Timestamp
 		}
-		if v, ok := deviceMap["ip"].(string); ok {
-			device.IP = v
+		if device.FirstSeen.IsZero() {
+			device.FirstSeen = req.Timestamp
 		}
-		if v, ok := deviceMap["manufacturer"].(string); ok {
-			device.Manufacturer = v
-		}
-		if v, ok := deviceMap["model"].(string); ok {
-			device.Model = v
-		}
-		if v, ok := deviceMap["hostname"].(string); ok {
-			device.Hostname = v
-		}
-		if v, ok := deviceMap["firmware"].(string); ok {
-			device.Firmware = v
-		}
-		if v, ok := deviceMap["mac_address"].(string); ok {
-			device.MACAddress = v
-		}
-		// Device classification fields (USB/spooler support)
-		if v, ok := deviceMap["device_type"].(string); ok {
-			device.DeviceType = v
-		}
-		if v, ok := deviceMap["source_type"].(string); ok {
-			device.SourceType = v
-		}
-		if v, ok := deviceMap["is_usb"].(bool); ok {
-			device.IsUSB = v
-		}
-		if v, ok := deviceMap["port_name"].(string); ok {
-			device.PortName = v
-		}
-		if v, ok := deviceMap["driver_name"].(string); ok {
-			device.DriverName = v
-		}
-		if v, ok := deviceMap["is_default"].(bool); ok {
-			device.IsDefault = v
-		}
-		if v, ok := deviceMap["is_shared"].(bool); ok {
-			device.IsShared = v
-		}
-		if v, ok := deviceMap["spooler_status"].(string); ok {
-			device.SpoolerStatus = v
-		}
-		if v, ok := deviceMap["usb_webui_available"].(bool); ok {
-			device.UsbWebUIAvailable = v
-		}
-		device.RawData = deviceMap
-		if value, ok := deviceMap["is_saved"].(bool); ok {
-			device.IsSaved = &value
+		if device.CreatedAt.IsZero() {
+			device.CreatedAt = req.Timestamp
 		}
 
 		if device.Serial == "" {
@@ -8000,9 +7953,9 @@ func handleMetricsBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		AgentID   string                   `json:"agent_id"`
-		Timestamp time.Time                `json:"timestamp"`
-		Metrics   []map[string]interface{} `json:"metrics"`
+		AgentID   string                     `json:"agent_id"`
+		Timestamp time.Time                  `json:"timestamp"`
+		Metrics   []*storage.MetricsSnapshot `json:"metrics"`
 	}
 
 	if err := decodeJSONBody(r, &req); err != nil {
@@ -8020,29 +7973,14 @@ func handleMetricsBatch(w http.ResponseWriter, r *http.Request) {
 	// Store each metric snapshot
 	ctx := r.Context()
 	stored := 0
-	for _, metricMap := range req.Metrics {
-		metric := &storage.MetricsSnapshot{}
+	for _, metric := range req.Metrics {
+		if metric == nil {
+			logWarn("Null metrics in batch, skipping", "agent_id", agent.AgentID)
+			continue
+		}
 		metric.AgentID = agent.AgentID
-		metric.Timestamp = req.Timestamp
-
-		// Extract fields
-		if v, ok := metricMap["serial"].(string); ok {
-			metric.Serial = v
-		}
-		if v, ok := metricMap["page_count"].(float64); ok {
-			metric.PageCount = int(v)
-		}
-		if v, ok := metricMap["color_pages"].(float64); ok {
-			metric.ColorPages = int(v)
-		}
-		if v, ok := metricMap["mono_pages"].(float64); ok {
-			metric.MonoPages = int(v)
-		}
-		if v, ok := metricMap["scan_count"].(float64); ok {
-			metric.ScanCount = int(v)
-		}
-		if v, ok := metricMap["toner_levels"].(map[string]interface{}); ok {
-			metric.TonerLevels = v
+		if metric.Timestamp.IsZero() {
+			metric.Timestamp = req.Timestamp
 		}
 
 		if metric.Serial == "" {

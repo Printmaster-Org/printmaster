@@ -194,6 +194,27 @@ test('Server Details uses uploaded saved state and never invokes Agent-local Sav
     expect(await page.locator('body').evaluate(el => el.style.overflow)).toBe('');
 });
 
+test('hydrated Epson inventory keeps inkjet capabilities and reported metadata', async ({ page }) => {
+    await open(page, { devices: [{
+        ...devices[0], manufacturer: 'Epson', model: 'AM-C550', asset_number: '05046',
+        location: "Joe's Office", web_ui_url: 'http://192.0.2.91',
+        raw_data: { is_inkjet: true, is_color: true, is_copier: true, device_type: 'Color MFP',
+            toner_desc_black: 'Black Ink Cartridge T08M1', toner_level_black: 1 },
+        toner_levels: { 'Black Ink Cartridge T08M1': 33 },
+    }] });
+    const card = cards(page).first();
+    await card.scrollIntoViewIfNeeded();
+    await expect(card).toHaveAttribute('data-hydrated', 'true');
+    await expect(card.locator('.capability-badge.tech')).toHaveText('Inkjet');
+    await expect(card.locator('.capability-badge.type')).toHaveText('Color MFP');
+    const device = await page.evaluate(() => getProgressiveDevice(devicesVM.items[0]));
+    expect(device.raw_data.toner_level_black).toBeUndefined();
+    expect(device.raw_data.toner_desc_black).toBe('Black Ink Cartridge T08M1');
+    expect(device.asset_number).toBe('05046');
+    expect(device.location).toBe("Joe's Office");
+    expect(device.web_ui_url).toBe('http://192.0.2.91');
+});
+
 test('saved Epson ink diagnostics show linked replacement names without toner wording', async ({ page }) => {
     await open(page, { devices: [] });
     await page.evaluate(fixture => {

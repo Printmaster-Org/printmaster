@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"printmaster/agent/agent"
 	commonstorage "printmaster/common/storage"
 	"strings"
 	"time"
@@ -1807,7 +1808,8 @@ func (s *SQLiteStore) ShowAll(ctx context.Context) (int, error) {
 
 // MetricsSnapshot represents a point-in-time snapshot of device metrics with agent-specific fields
 type MetricsSnapshot struct {
-	commonstorage.MetricsSnapshot // Embed common fields
+	commonstorage.MetricsSnapshot                    // Embed common fields
+	Observation                   *agent.PrinterInfo `json:"-"`
 
 	// HP-specific detailed impression counters (agent-specific)
 	FaxPages          int `json:"fax_pages,omitempty"`

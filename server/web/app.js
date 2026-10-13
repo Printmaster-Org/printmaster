@@ -12952,7 +12952,7 @@ function getProgressiveDevice(device) {
     // raw_data is inventory metadata, NOT a trustworthy latest supply snapshot.
     const merged = { ...device, ...row, raw_data: { ...(row?.raw_data || {}) }, toner_levels: metrics?.toner_levels || {} };
     for (const name of Object.keys(merged.raw_data)) {
-        if (/toner|ink|supply|consumable|color_pages|mono_pages|scan_count|copy_pages|print_pages|fax_pages|duplex_sheets/i.test(name)) delete merged.raw_data[name];
+        if (/^(?:toner_levels|toner_level_|ink_|supply_|consumables$|color_pages$|mono_pages$|scan_count$|copy_pages$|print_pages$|fax_pages$|duplex_sheets$)/i.test(name)) delete merged.raw_data[name];
     }
     if (metrics) Object.assign(merged.raw_data, metrics);
     const enriched = enrichSingleDevice(merged);

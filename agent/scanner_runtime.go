@@ -15,6 +15,7 @@ import (
 	"printmaster/agent/agent"
 	"printmaster/agent/scanner"
 	"printmaster/agent/storage"
+	"printmaster/common/snmp/oids"
 )
 
 // scannerRuntime owns the sole production coordinator.
@@ -318,6 +319,21 @@ func convertScannerResult(result scanner.Result, parse func(string, []gosnmp.Snm
 	if len(pdus) > 0 {
 		pi, _ = parse(result.Observation.IP.String(), pdus, &agent.ScanMeta{}, nil)
 		agent.MergeVendorMetrics(&pi, pdus, vendorHint)
+		for _, pdu := range pdus {
+			oid := strings.TrimPrefix(pdu.Name, ".")
+			if strings.HasPrefix(oid, oids.HrPrinterDetectedErrorState+".") && pdu.Type == gosnmp.OctetString {
+				if state, ok := pdu.Value.([]byte); ok && len(state) > 0 {
+					healthy := true
+					for _, bits := range state {
+						healthy = healthy && bits == 0
+					}
+					pi.StatusObserved = healthy
+				}
+			}
+		}
+		if _, ok := pi.VendorMetrics["epson_status"]; ok {
+			pi.StatusObserved = true
+		}
 	}
 	pi.IP, pi.Serial, pi.LastSeen = result.Observation.IP.String(), result.Serial, at
 	if method := scannerDiscoveryMethod(result); method != "" {
@@ -412,6 +428,15 @@ func (r *scannerRuntime) commit(ctx context.Context, result scanner.Result) erro
 		// Same normalized keys the legacy upsert wrote, so DeviceToPrinterInfo readers
 		// keep working; merge (not replace) preserves user-learned OIDs.
 		raw := storage.PrinterInfoToDevice(pi, false).RawData
+		hasCapabilities := false
+		for _, query := range result.Queries {
+			if query.Err == nil && query.Result != nil && query.Result.Capabilities != nil {
+				hasCapabilities = true
+			}
+		}
+		if !hasCapabilities {
+			removeUnobservedCapabilities(raw)
+		}
 		if evidence := scannerSourceEvidence(result.Observation); evidence != nil {
 			raw["discovery_evidence"] = evidence
 		}
@@ -421,6 +446,7 @@ func (r *scannerRuntime) commit(ctx context.Context, result scanner.Result) erro
 		patch.Manufacturer, patch.Model, patch.Hostname, patch.Firmware = &pi.Manufacturer, &pi.Model, &pi.Hostname, &pi.Firmware
 		patch.MACAddress, patch.SubnetMask, patch.Gateway, patch.DHCPServer = &pi.MAC, &pi.SubnetMask, &pi.Gateway, &pi.DHCPServer
 		patch.DNSServers, patch.Consumables, patch.StatusMessages = &pi.DNSServers, &pi.Consumables, &pi.StatusMessages
+		patch.StatusObserved = pi.StatusObserved
 		if result.Intent.Detail && result.Outcomes[scanner.StageDetail].Status == scanner.StatusSucceeded {
 			scan = storage.PrinterInfoToScanSnapshot(pi)
 		}
@@ -506,11 +532,30 @@ func saveScannerMetrics(ctx context.Context, ip string, snapshot *storage.Metric
 	if !ok {
 		return errors.New("staged scanner storage unavailable")
 	}
-	if err := store.CommitScannerFacts(ctx, snapshot.Serial, ip, storage.DevicePatch{}, nil, snapshot); err != nil {
+	patch := storage.DevicePatch{}
+	if pi := snapshot.Observation; pi != nil {
+		if pi.Serial != snapshot.Serial || pi.IP != ip {
+			return errors.New("metrics observation identity mismatch")
+		}
+		patch.ValidatedSerial, patch.LastSeen = &pi.Serial, &pi.LastSeen
+		raw := storage.PrinterInfoToDevice(*pi, false).RawData
+		// A metrics poll is not a complete inventory/capability observation.
+		removeUnobservedCapabilities(raw)
+		delete(raw, "learned_oids")
+		patch.RawData, patch.StatusMessages, patch.StatusObserved = &raw, &pi.StatusMessages, pi.StatusObserved
+		patch.Consumables = &pi.Consumables
+	}
+	if err := store.CommitScannerFacts(ctx, snapshot.Serial, ip, patch, nil, snapshot); err != nil {
 		return err
 	}
 	scannerUploadWake()
 	return nil
+}
+
+func removeUnobservedCapabilities(raw map[string]interface{}) {
+	for _, key := range []string{"is_color", "is_mono", "is_copier", "is_scanner", "is_fax", "is_laser", "is_inkjet", "has_duplex", "form_factor", "device_type"} {
+		delete(raw, key)
+	}
 }
 
 func productionScannerBackend() scanner.Backend {
