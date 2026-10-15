@@ -637,6 +637,24 @@ h1 {
   max-width: 200px;
 }
 
+.simple-table td .table-primary:has(> .pm-copy-value),
+.simple-table td .muted-text:has(> .pm-copy-value) {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.simple-table .pm-copy-value {
+  min-width: 0;
+  vertical-align: top;
+}
+
+.simple-table .pm-copy-value > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .simple-table thead th {
   font-size: 11px;
   letter-spacing: 0.05em;

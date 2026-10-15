@@ -945,6 +945,7 @@ function renderCopyableValue(value, label = 'value', placeholder = 'Not reported
     const missing = value === undefined || value === null || value === '';
     text.textContent = missing ? placeholder : String(value);
     if (missing) return text.outerHTML;
+    text.title = String(value);
     return `<span class="pm-copy-value">${text.outerHTML}${renderCopyButton(value, label)}</span>`;
 }
 

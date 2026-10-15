@@ -365,6 +365,9 @@ table column.
 Small copy buttons beside device and agent identifiers copy the raw value
 without selecting the row or opening its details. These controls are shared by
 the Agent and Server interfaces. Clipboard access requires HTTPS or localhost.
+In Server tables, long values truncate with an ellipsis to leave room for the
+copy button. Hover over the text to see the full value; copying still uses the
+complete value. Card and detail text keep their existing wrapping.
 Interface text is not selectable by default, but inputs, textareas, details
 values, logs, and code blocks remain selectable. Additional content can opt in
 with the shared `text-selectable` class.

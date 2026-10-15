@@ -36,6 +36,7 @@ describe('clipboard helpers', () => {
         const button = document.querySelector('.pm-copy-button');
         expect(button.dataset.copy).toBe(value);
         expect(button.getAttribute('aria-label')).toBe('Copy serial number');
+        expect(document.querySelector('.pm-copy-value > span').title).toBe(value);
         expect(document.querySelector('device')).toBeNull();
         button.click();
         await Promise.resolve(); await Promise.resolve();
