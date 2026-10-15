@@ -2,6 +2,9 @@
 # Enforces Conventional Commits subjects: type(scope)!: summary
 # Enable once per clone: git config core.hooksPath .githooks
 
+# A reader closing stderr early (e.g. `git commit | head`) must not kill the hook before it rejects.
+trap '' PIPE
+
 msg_file="$1"
 subject=$(sed -e 's/\r$//' -e '/^#/d' "$msg_file" | sed -n '/[^[:space:]]/{p;q;}')
 second=$(sed -e 's/\r$//' -e '/^#/d' "$msg_file" | sed -n '2p')
@@ -14,10 +17,12 @@ types='feat|fix|docs|test|refactor|perf|build|ci|chore|style|revert|ux'
 pattern="^($types)(\([a-z0-9][a-z0-9._/-]*\))?!?: [^ ].*[^.]$"
 
 fail() {
-    echo "commit-msg: $1" >&2
-    echo "  subject: $subject" >&2
-    echo "  expected: type(scope): summary   (types: $(echo "$types" | tr '|' ' '))" >&2
-    echo "  example:  fix(web): keep supplies visible during inventory refresh" >&2
+    {
+        echo "commit-msg: $1"
+        echo "  subject: $subject"
+        echo "  expected: type(scope): summary   (types: $(echo "$types" | tr '|' ' '))"
+        echo "  example:  fix(web): keep supplies visible during inventory refresh"
+    } >&2 2>/dev/null
     exit 1
 }
 
