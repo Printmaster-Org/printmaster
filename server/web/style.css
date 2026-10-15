@@ -650,6 +650,7 @@ h1 {
 }
 
 .simple-table .pm-copy-value > span {
+  min-width: 3ch; /* keep a visible fragment + ellipsis beside labels such as "Serial" */
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

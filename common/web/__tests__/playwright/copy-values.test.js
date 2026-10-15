@@ -22,17 +22,22 @@ test('table values truncate without covering copy controls and copy the full val
         ].map(value => `<td>${value}</td>`).join('');
     });
 
-    for (const width of [100, 130, 180]) {
-        await page.locator('table').evaluate((table, width) => {
+    // Font metrics differ between OSes (CI runs Linux); the wide font pass approximates DejaVu Sans.
+    const fonts = ['', '"DejaVu Sans", Verdana, sans-serif'];
+    const widths = [140, 180, 240];
+    for (const [font, width] of fonts.flatMap(font => widths.map(width => [font, width]))) {
+        await page.locator('table').evaluate((table, { width, font }) => {
             table.style.minWidth = '0';
             table.style.width = `${width * 4}px`;
-        }, width);
+            table.style.fontFamily = font;
+        }, { width, font });
         const values = page.locator('.pm-copy-value');
         for (const value of await values.all()) {
             const text = value.locator(':scope > span');
             const button = value.locator('button');
             const fullValue = await button.getAttribute('data-copy');
             await expect(text).toHaveAttribute('title', fullValue);
+            expect((await text.boundingBox()).width).toBeGreaterThan(10);
             await text.hover();
             await expect(button).toBeVisible();
             const geometry = await value.evaluate(element => {
@@ -54,7 +59,7 @@ test('table values truncate without covering copy controls and copy the full val
             expect(geometry.buttonRight).toBeLessThanOrEqual(geometry.cellRight + 1);
             expect(geometry.buttonWidth).toBeCloseTo(24, 2);
             expect(geometry.overflow).toBe('ellipsis');
-            if (width === 100) expect(geometry.truncated).toBe(true);
+            if (width === widths[0]) expect(geometry.truncated).toBe(true);
             await button.click();
             await expect.poll(() => page.evaluate(() => window.copiedValues.at(-1))).toBe(fullValue);
         }
