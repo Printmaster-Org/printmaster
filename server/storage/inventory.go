@@ -69,16 +69,16 @@ func inventoryWhere(scope InventoryScope, serials []string) (string, []interface
 }
 
 // Timescale can remove id. Persisted metric values deterministically break ties.
-const inventoryMetricOrder = "timestamp DESC, page_count DESC, color_pages DESC, mono_pages DESC, scan_count DESC, toner_levels DESC"
+const inventoryMetricOrder = "timestamp DESC, page_count DESC, agent_id ASC, color_pages DESC, mono_pages DESC, scan_count DESC, toner_levels DESC"
 
 func (s *BaseStore) inventoryMetricJoin() string {
 	if s.dialect.Name() == "postgres" {
-		return " LEFT JOIN LATERAL (SELECT serial, agent_id, timestamp, page_count, color_pages, mono_pages, scan_count, toner_levels FROM metrics_history WHERE serial=d.serial AND agent_id=d.agent_id ORDER BY " + inventoryMetricOrder + " LIMIT 1) m ON true "
+		return " LEFT JOIN LATERAL (SELECT serial, agent_id, timestamp, page_count, color_pages, mono_pages, scan_count, toner_levels FROM metrics_history WHERE serial=d.serial AND " + telemetryReporterSQL("d.agent_id", "metrics_history.agent_id") + " ORDER BY " + inventoryMetricOrder + " LIMIT 1) m ON true "
 	}
-	return " LEFT JOIN metrics_history m ON m.rowid=(SELECT rowid FROM metrics_history WHERE serial=d.serial AND agent_id=d.agent_id ORDER BY " + inventoryMetricOrder + " LIMIT 1) "
+	return " LEFT JOIN metrics_history m ON m.rowid=(SELECT rowid FROM metrics_history WHERE serial=d.serial AND " + telemetryReporterSQL("d.agent_id", "metrics_history.agent_id") + " ORDER BY " + inventoryMetricOrder + " LIMIT 1) "
 }
 
-const inventoryPageCount = "COALESCE((SELECT page_count FROM metrics_history WHERE serial=d.serial AND agent_id=d.agent_id ORDER BY timestamp DESC,page_count DESC LIMIT 1),0)"
+var inventoryPageCount = "COALESCE((SELECT page_count FROM metrics_history WHERE serial=d.serial AND " + telemetryReporterSQL("d.agent_id", "metrics_history.agent_id") + " ORDER BY timestamp DESC,page_count DESC,agent_id ASC LIMIT 1),0)"
 
 func (s *BaseStore) InventoryIndex(ctx context.Context, scope InventoryScope) ([]*DeviceIndex, error) {
 	where, args := inventoryWhere(scope, nil)

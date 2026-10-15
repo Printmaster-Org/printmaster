@@ -6636,16 +6636,23 @@ func handleDevicesBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		stored++
 
+		// A secondary same-tenant discovery is acknowledged without replacing
+		// owner-managed inventory. Publish the persisted record, not its claims.
+		persisted, err := serverStore.GetDevice(ctx, device.Serial)
+		if err != nil || persisted == nil {
+			logError("Failed to read stored device for update event", "serial", device.Serial, "error", err)
+			continue
+		}
 		// Broadcast device_updated event to UI via SSE
 		sseHub.Broadcast(SSEEvent{
 			Type: "device_updated",
 			Data: map[string]interface{}{
-				"agent_id":     device.AgentID,
-				"serial":       device.Serial,
-				"ip":           device.IP,
-				"manufacturer": device.Manufacturer,
-				"model":        device.Model,
-				"hostname":     device.Hostname,
+				"agent_id":     persisted.AgentID,
+				"serial":       persisted.Serial,
+				"ip":           persisted.IP,
+				"manufacturer": persisted.Manufacturer,
+				"model":        persisted.Model,
+				"hostname":     persisted.Hostname,
 			},
 		})
 	}
@@ -6821,7 +6828,7 @@ func enrichDevicesWithMetrics(ctx context.Context, devices []*storage.Device) []
 			continue
 		}
 		enriched := &storage.DeviceWithMetrics{Device: *d}
-		if m, ok := metricsMap[d.Serial]; ok && m != nil && m.AgentID == d.AgentID {
+		if m, ok := metricsMap[d.Serial]; ok && m != nil && m.Serial == d.Serial {
 			enriched.TonerLevels = m.TonerLevels
 			enriched.PageCount = m.PageCount
 			enriched.ColorPages = m.ColorPages

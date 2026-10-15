@@ -15,6 +15,7 @@ type tenantReportStore struct {
 	GeneratorStore
 	report       *storage.ReportDefinition
 	deviceOwners map[string]string
+	agentTenants map[string]string
 }
 
 func reportContains(ids []string, id string) bool {
@@ -127,21 +128,48 @@ func (s *tenantReportStore) GetAlertSummary(ctx context.Context) (*storage.Alert
 	return nil, fmt.Errorf("alert summary reports require administrator fleet scope")
 }
 
-func (s *tenantReportStore) metricAllowed(ctx context.Context, serial string, metric *storage.MetricsSnapshot) bool {
-	if metric == nil || metric.AgentID == "" {
-		return false
+func (s *tenantReportStore) metricAllowed(ctx context.Context, serial string, metric *storage.MetricsSnapshot) (bool, error) {
+	if metric == nil || metric.AgentID == "" || metric.Serial != serial {
+		return false, nil
 	}
 	if s.deviceOwners == nil {
 		if _, err := s.ListAllDevices(ctx); err != nil {
-			return false
+			return false, err
 		}
 	}
-	return s.deviceOwners[serial] == metric.AgentID
+	owner := s.deviceOwners[serial]
+	if owner == "" {
+		return false, nil
+	}
+	if owner == metric.AgentID {
+		return true, nil
+	}
+	if s.agentTenants == nil {
+		scoped, err := s.reportScopedStore()
+		if err != nil {
+			return false, err
+		}
+		// Agent/site selectors choose devices by management owner, not which
+		// same-tenant reporter supplied an observation for those devices.
+		agents, err := scoped.ListAgentsForReport(ctx, storage.ReportDataScope{TenantIDs: s.report.TenantIDs})
+		if err != nil {
+			return false, err
+		}
+		s.agentTenants = make(map[string]string, len(agents))
+		for _, agent := range agents {
+			s.agentTenants[agent.AgentID] = agent.TenantID
+		}
+	}
+	tenant := s.agentTenants[owner]
+	return tenant != "" && tenant == s.agentTenants[metric.AgentID], nil
 }
 
 func (s *tenantReportStore) GetLatestMetrics(ctx context.Context, serial string) (*storage.MetricsSnapshot, error) {
 	metric, err := s.GeneratorStore.GetLatestMetrics(ctx, serial)
-	if err != nil || !s.metricAllowed(ctx, serial, metric) {
+	if err != nil {
+		return nil, err
+	}
+	if allowed, err := s.metricAllowed(ctx, serial, metric); err != nil || !allowed {
 		return nil, err
 	}
 	return metric, nil
@@ -149,7 +177,10 @@ func (s *tenantReportStore) GetLatestMetrics(ctx context.Context, serial string)
 
 func (s *tenantReportStore) GetMetricsAtOrBefore(ctx context.Context, serial string, atTime time.Time) (*storage.MetricsSnapshot, error) {
 	metric, err := s.GeneratorStore.GetMetricsAtOrBefore(ctx, serial, atTime)
-	if err != nil || !s.metricAllowed(ctx, serial, metric) {
+	if err != nil {
+		return nil, err
+	}
+	if allowed, err := s.metricAllowed(ctx, serial, metric); err != nil || !allowed {
 		return nil, err
 	}
 	return metric, nil
@@ -162,7 +193,11 @@ func (s *tenantReportStore) GetMetricsHistory(ctx context.Context, serial string
 	}
 	result := make([]*storage.MetricsSnapshot, 0)
 	for _, metric := range metrics {
-		if s.metricAllowed(ctx, serial, metric) {
+		allowed, err := s.metricAllowed(ctx, serial, metric)
+		if err != nil {
+			return nil, err
+		}
+		if allowed {
 			result = append(result, metric)
 		}
 	}

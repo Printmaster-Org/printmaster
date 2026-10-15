@@ -15,6 +15,7 @@ func TestInventoryPostgres(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
 		defer rows.Close()
 		var plan strings.Builder
 		for rows.Next() {
@@ -27,8 +28,14 @@ func TestInventoryPostgres(t *testing.T) {
 		if err := rows.Err(); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(plan.String(), "idx_metrics_owner_latest") || !strings.Contains(plan.String(), "Limit") || strings.Contains(plan.String(), "Aggregate") {
+		if !strings.Contains(plan.String(), "idx_metrics_shared_latest") || !strings.Contains(plan.String(), "Limit") || strings.Contains(plan.String(), "Aggregate") {
 			t.Fatalf("expected indexed latest point, not history aggregation: %s", plan.String())
 		}
+	})
+}
+
+func TestSharedTelemetryPostgres(t *testing.T) {
+	WithPostgresStore(t, func(t *testing.T, s *PostgresStore) {
+		testSharedTelemetry(t, &s.BaseStore, s)
 	})
 }

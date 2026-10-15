@@ -534,6 +534,27 @@ func (s *BaseStore) UpsertDevice(ctx context.Context, device *Device) error {
 	if err := s.lockDeviceMetadata(ctx, tx, device.Serial); err != nil {
 		return err
 	}
+	// Secondary discoveries may advance liveness, but cannot overwrite the
+	// management owner's inventory, pins, credentials or network address.
+	observedAt := device.LastSeen
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	}
+	secondary, err := tx.ExecContext(ctx, s.query(`UPDATE devices AS d
+		SET last_seen = CASE WHEN last_seen < ? THEN ? ELSE last_seen END
+		WHERE d.serial = ? AND d.agent_id <> ?
+		AND `+telemetryReporterSQL("d.agent_id", "?")),
+		observedAt, observedAt, device.Serial, device.AgentID, device.AgentID, device.AgentID)
+	if err != nil {
+		return err
+	}
+	acknowledged, err := secondary.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if acknowledged == 1 {
+		return tx.Commit()
+	}
 	copyDevice := *device
 	copyDevice.RawData = make(map[string]interface{}, len(device.RawData)+3)
 	for key, value := range device.RawData {
@@ -1048,18 +1069,21 @@ func (s *BaseStore) SaveMetrics(ctx context.Context, metrics *MetricsSnapshot) e
 	if metrics == nil || metrics.Serial == "" || metrics.AgentID == "" {
 		return fmt.Errorf("%w: metric serial and agent ID are required", ErrOwnershipConflict)
 	}
-	tonerJSON, _ := json.Marshal(metrics.TonerLevels)
+	tonerJSON, err := json.Marshal(metrics.TonerLevels)
+	if err != nil {
+		return fmt.Errorf("encode metric toner levels: %w", err)
+	}
 
 	query := `
 		INSERT INTO metrics_history (serial, agent_id, timestamp, page_count, color_pages, mono_pages, scan_count, toner_levels)
 		SELECT ?, ?, ?, ?, ?, ?, ?, ?
-		WHERE EXISTS (SELECT 1 FROM devices WHERE serial = ? AND agent_id = ?)
-	`
+		WHERE EXISTS (SELECT 1 FROM devices d WHERE d.serial = ? AND ` +
+		telemetryReporterSQL("d.agent_id", "?") + `)`
 
 	result, err := s.execContext(ctx, query,
 		metrics.Serial, metrics.AgentID, metrics.Timestamp,
 		metrics.PageCount, metrics.ColorPages, metrics.MonoPages,
-		metrics.ScanCount, string(tonerJSON), metrics.Serial, metrics.AgentID)
+		metrics.ScanCount, string(tonerJSON), metrics.Serial, metrics.AgentID, metrics.AgentID)
 
 	if err != nil {
 		return err
@@ -1073,8 +1097,8 @@ func (s *BaseStore) GetLatestMetrics(ctx context.Context, serial string) (*Metri
 	query := `
 		SELECT serial, agent_id, timestamp, page_count, color_pages, mono_pages, scan_count, toner_levels
 		FROM metrics_history
-		WHERE serial = ?
-		ORDER BY timestamp DESC
+		WHERE serial = ? AND ` + metricEligibilitySQL() + `
+		ORDER BY ` + inventoryMetricOrder + `
 		LIMIT 1
 	`
 
@@ -1129,8 +1153,8 @@ func (s *BaseStore) GetMetricsHistory(ctx context.Context, serial string, since 
 	query := `
 		SELECT serial, agent_id, timestamp, page_count, color_pages, mono_pages, scan_count, toner_levels
 		FROM metrics_history
-		WHERE serial = ? AND timestamp >= ?
-		ORDER BY timestamp ASC
+		WHERE serial = ? AND timestamp >= ? AND ` + metricEligibilitySQL() + `
+		ORDER BY timestamp ASC, page_count ASC, agent_id DESC, color_pages ASC, mono_pages ASC, scan_count ASC, toner_levels ASC
 	`
 
 	rows, err := s.queryContext(ctx, query, serial, since)
@@ -1165,10 +1189,10 @@ func (s *BaseStore) GetMetricsBounds(ctx context.Context, serial string) (minTS,
 	query := `
 		SELECT MIN(timestamp), MAX(timestamp), COUNT(*)
 		FROM metrics_history
-		WHERE serial = ?
+		WHERE serial = ? AND ` + metricEligibilitySQL() + `
 	`
 
-	var minNullable, maxNullable sql.NullTime
+	var minNullable, maxNullable sql.NullString
 	var cnt int64
 
 	err = s.queryRowContext(ctx, query, serial).Scan(&minNullable, &maxNullable, &cnt)
@@ -1180,7 +1204,15 @@ func (s *BaseStore) GetMetricsBounds(ctx context.Context, serial string) (minTS,
 		return time.Time{}, time.Time{}, 0, sql.ErrNoRows
 	}
 
-	return minNullable.Time, maxNullable.Time, cnt, nil
+	minTS, err = parseMetricTimestamp(minNullable.String)
+	if err != nil {
+		return time.Time{}, time.Time{}, 0, fmt.Errorf("parse minimum metric timestamp: %w", err)
+	}
+	maxTS, err = parseMetricTimestamp(maxNullable.String)
+	if err != nil {
+		return time.Time{}, time.Time{}, 0, fmt.Errorf("parse maximum metric timestamp: %w", err)
+	}
+	return minTS, maxTS, cnt, nil
 }
 
 // GetMetricsAtOrBefore retrieves the latest metrics snapshot for a device at or before a given time.
@@ -1190,8 +1222,8 @@ func (s *BaseStore) GetMetricsAtOrBefore(ctx context.Context, serial string, at 
 	query := `
 		SELECT serial, agent_id, timestamp, page_count, color_pages, mono_pages, scan_count, toner_levels
 		FROM metrics_history
-		WHERE serial = ? AND timestamp <= ?
-		ORDER BY timestamp DESC
+		WHERE serial = ? AND timestamp <= ? AND ` + metricEligibilitySQL() + `
+		ORDER BY ` + inventoryMetricOrder + `
 		LIMIT 1
 	`
 
@@ -4562,18 +4594,44 @@ func (s *BaseStore) GetAggregatedMetrics(ctx context.Context, since time.Time, f
 
 	buckets := make(map[time.Time]*fleetMetricBucket)
 	lastValues := make(map[string]*MetricsSnapshot)
+	sharedCounters := make(map[string]*MetricsSnapshot)
+	sharedRows, err := s.queryContext(ctx, `
+		SELECT serial,
+			COALESCE(MAX(CASE WHEN timestamp < ? THEN page_count END), 0),
+			COALESCE(MAX(CASE WHEN timestamp < ? THEN color_pages END), 0),
+			COALESCE(MAX(CASE WHEN timestamp < ? THEN mono_pages END), 0),
+			COALESCE(MAX(CASE WHEN timestamp < ? THEN scan_count END), 0)
+		FROM metrics_history WHERE `+metricEligibilitySQL()+`
+		GROUP BY serial HAVING COUNT(DISTINCT agent_id) > 1`,
+		since.UTC(), since.UTC(), since.UTC(), since.UTC())
+	if err != nil {
+		return nil, err
+	}
+	for sharedRows.Next() {
+		var serial string
+		var counters MetricsSnapshot
+		if err := sharedRows.Scan(&serial, &counters.PageCount, &counters.ColorPages, &counters.MonoPages, &counters.ScanCount); err != nil {
+			sharedRows.Close()
+			return nil, err
+		}
+		if _, ok := serialMap[serial]; ok {
+			sharedCounters[serial] = &counters
+		}
+	}
+	if err := sharedRows.Err(); err != nil {
+		sharedRows.Close()
+		return nil, err
+	}
+	sharedRows.Close()
 
 	// Pre-seed lastValues with the most recent metric BEFORE the time window for each device
 	// This allows us to compute deltas for the first metric within the window
 	seedQuery := `
-		SELECT m.serial, m.timestamp, m.page_count, m.color_pages, m.mono_pages, m.scan_count
-		FROM metrics_history m
-		INNER JOIN (
-			SELECT serial, MAX(timestamp) as max_ts
-			FROM metrics_history
-			WHERE timestamp < ?
-			GROUP BY serial
-		) latest ON m.serial = latest.serial AND m.timestamp = latest.max_ts
+		SELECT serial, timestamp, page_count, color_pages, mono_pages, scan_count
+		FROM (
+			SELECT *, ROW_NUMBER() OVER (PARTITION BY serial ORDER BY ` + inventoryMetricOrder + `) AS metric_rank
+			FROM metrics_history WHERE timestamp < ? AND ` + metricEligibilitySQL() + `
+		) latest WHERE metric_rank = 1
 	`
 	seedRows, err := s.queryContext(ctx, seedQuery, since.UTC())
 	if err != nil {
@@ -4593,9 +4651,10 @@ func (s *BaseStore) GetAggregatedMetrics(ctx context.Context, since time.Time, f
 		if _, ok := serialMap[serial]; !ok {
 			continue
 		}
-		ts, err := time.Parse(time.RFC3339Nano, tsStr)
+		ts, err := parseMetricTimestamp(tsStr)
 		if err != nil {
-			continue
+			seedRows.Close()
+			return nil, fmt.Errorf("parse metric seed timestamp %q: %w", tsStr, err)
 		}
 		lastValues[serial] = &MetricsSnapshot{
 			Serial:     serial,
@@ -4606,15 +4665,19 @@ func (s *BaseStore) GetAggregatedMetrics(ctx context.Context, since time.Time, f
 			ScanCount:  int(sc),
 		}
 	}
+	if err := seedRows.Err(); err != nil {
+		seedRows.Close()
+		return nil, err
+	}
 	seedRows.Close()
 
 	// Build dynamic query with placeholder conversion
 	query := `
 		SELECT m.timestamp, m.serial, m.agent_id, m.page_count, m.color_pages, m.mono_pages, m.scan_count, m.toner_levels
 		FROM metrics_history m
-		JOIN agents a ON m.agent_id = a.agent_id
-		WHERE m.timestamp >= ?
-	`
+		JOIN devices d ON d.serial = m.serial
+		JOIN agents a ON d.agent_id = a.agent_id
+		WHERE m.timestamp >= ? AND ` + telemetryReporterSQL("d.agent_id", "m.agent_id")
 	args := []interface{}{since.UTC()}
 	if len(tenantIDs) > 0 {
 		query += ` AND a.tenant_id IN (` + s.buildPlaceholderListFrom(len(tenantIDs), len(args)+1) + `)`
@@ -4629,10 +4692,10 @@ func (s *BaseStore) GetAggregatedMetrics(ctx context.Context, since time.Time, f
 		query += ` AND m.serial = ` + s.dialect.Placeholder(len(args)+1)
 		args = append(args, filter.DeviceSerial)
 	} else if filter.AgentID != "" {
-		query += ` AND m.agent_id = ` + s.dialect.Placeholder(len(args)+1)
+		query += ` AND d.agent_id = ` + s.dialect.Placeholder(len(args)+1)
 		args = append(args, filter.AgentID)
 	}
-	query += ` ORDER BY m.timestamp ASC`
+	query += ` ORDER BY m.timestamp ASC, m.page_count ASC, m.agent_id DESC, m.color_pages ASC, m.mono_pages ASC, m.scan_count ASC, m.toner_levels ASC`
 
 	rows, err := s.queryContext(ctx, query, args...)
 	if err != nil {
@@ -4655,9 +4718,9 @@ func (s *BaseStore) GetAggregatedMetrics(ctx context.Context, since time.Time, f
 		if _, ok := serialMap[serial]; !ok {
 			continue
 		}
-		ts, err := time.Parse(time.RFC3339Nano, tsStr)
+		ts, err := parseMetricTimestamp(tsStr)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("parse metric timestamp %q: %w", tsStr, err)
 		}
 		bucketTime := ts.Truncate(time.Hour)
 		if _, ok := buckets[bucketTime]; !ok {
@@ -4666,6 +4729,9 @@ func (s *BaseStore) GetAggregatedMetrics(ctx context.Context, since time.Time, f
 		point := buckets[bucketTime]
 
 		if last, ok := lastValues[serial]; ok {
+			if highWater, shared := sharedCounters[serial]; shared {
+				last = highWater
+			}
 			if pc >= int64(last.PageCount) {
 				point.total += pc - int64(last.PageCount)
 			}
@@ -4678,6 +4744,14 @@ func (s *BaseStore) GetAggregatedMetrics(ctx context.Context, since time.Time, f
 			if sc >= int64(last.ScanCount) {
 				point.scan += sc - int64(last.ScanCount)
 			}
+		}
+		// Shared counters never lower their baseline when another reporter
+		// supplies a stale value. Single-reporter reset behavior is unchanged.
+		if highWater, shared := sharedCounters[serial]; shared {
+			highWater.PageCount = max(highWater.PageCount, int(pc))
+			highWater.ColorPages = max(highWater.ColorPages, int(cp))
+			highWater.MonoPages = max(highWater.MonoPages, int(mp))
+			highWater.ScanCount = max(highWater.ScanCount, int(sc))
 		}
 
 		var toner map[string]interface{}
@@ -4708,7 +4782,10 @@ func (s *BaseStore) GetAggregatedMetrics(ctx context.Context, since time.Time, f
 			continue
 		}
 		snapshot, err := s.GetLatestMetrics(ctx, d.Serial)
-		if err != nil || snapshot == nil {
+		if err != nil {
+			return nil, err
+		}
+		if snapshot == nil {
 			continue
 		}
 		lastValues[d.Serial] = snapshot

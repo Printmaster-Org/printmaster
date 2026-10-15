@@ -32,7 +32,7 @@ func TestInventorySQLite(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(plan.String(), "COVERING INDEX idx_metrics_owner_latest") || strings.Contains(plan.String(), "TEMP B-TREE") {
+	if !strings.Contains(plan.String(), "COVERING INDEX idx_metrics_shared_latest") || strings.Contains(plan.String(), "TEMP B-TREE") {
 		t.Fatalf("page count must be covering indexed point lookup: %s", plan.String())
 	}
 }

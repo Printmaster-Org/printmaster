@@ -246,11 +246,36 @@ continue with the latest local snapshots; this is not a historical retry
 queue or an exactly-once delivery guarantee. Transport failures retain the
 existing retry policy.
 
-Device-batch receipts and device/metrics ownership checks are unchanged.
-Same-tenant shared reporting, device-level site assignment and
-agent-independent device retirement are follow-up work, not enabled here.
+Device-batch receipts retain their existing semantics.
 See the canonical [machine protocol guide](https://docs.printmaster.work/api/protocol/#metrics-batch-receipts)
 for an example and mixed-version behavior.
+
+### Shared Tenant Telemetry
+
+Agents in the same nonempty tenant can report metrics for an existing device
+without taking over its management ownership. Each snapshot retains the actual
+reporting Agent ID. Cross-tenant and secondary unassigned-Agent uploads remain
+blocked; site rules are not enforced until devices have explicit site assignment.
+
+Secondary inventory uploads are acknowledged without replacing the original
+owner's inventory, address, status, saved state, credentials or metadata pins.
+Newer secondary device observations may advance `last_seen`; stale ones cannot
+regress it.
+New serials still belong to their discovering Agent. Latest/history/bounds,
+progressive inventory, legacy list enrichment and tenant reports accept eligible
+same-tenant sources; inventory Agent IDs still identify management owners.
+
+Fleet hourly counter deltas use per-counter high-water marks for devices with
+multiple eligible historical reporters. Repeated or stale lower observations
+do not inflate usage. Real shared-device counter resets conservatively undercount
+until the old high-water mark is exceeded; single-reporter reset handling stays
+unchanged. Latest displayed readings remain the freshest eligible observations.
+
+Replacement Agents can report while the original Agent is offline. Retain the
+original Agent record: deletion still cascades to owned devices/history.
+Safe retirement, independent device/site ownership, explicit counter epochs and
+exactly-once metric persistence are not implemented by this slice.
+See [shared telemetry](https://docs.printmaster.work/api/protocol/#shared-telemetry-within-a-tenant).
 
 ### WebSocket Connection
 

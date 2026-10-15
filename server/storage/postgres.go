@@ -250,6 +250,7 @@ func (s *PostgresStore) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_metrics_agent_id ON metrics_history(agent_id);
 	CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON metrics_history(timestamp);
 	CREATE INDEX IF NOT EXISTS idx_metrics_owner_latest ON metrics_history(serial, agent_id, timestamp DESC, page_count DESC);
+	CREATE INDEX IF NOT EXISTS idx_metrics_shared_latest ON metrics_history(serial, timestamp DESC, page_count DESC, agent_id);
 
 	-- Server metrics history for Netdata-style dashboards (tiered storage)
 	CREATE TABLE IF NOT EXISTS server_metrics_history (
