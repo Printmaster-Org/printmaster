@@ -60,7 +60,10 @@
                             localCache.set(key, item);
                             found.add(key);
                         });
-                        currentKeys.forEach(key => localStates.set(key, { ...localStates.get(key), status: found.has(key) ? 'ready' : 'missing' }));
+                        currentKeys.forEach(key => {
+                            if (!found.has(key)) localCache.delete(key);
+                            localStates.set(key, { ...localStates.get(key), status: found.has(key) ? 'ready' : 'missing' });
+                        });
                         emit(kind, currentKeys);
                     }).catch(error => {
                         if (epoch !== generation || signal.aborted) return;
@@ -134,7 +137,7 @@
                         for (const key of states[kind].keys()) {
                             if (!nextAuthorized.has(key) || changed.has(key)) {
                                 states[kind].delete(key);
-                                caches[kind].delete(key);
+                                if (!nextAuthorized.has(key)) caches[kind].delete(key);
                                 rendered.delete(key);
                             }
                         }

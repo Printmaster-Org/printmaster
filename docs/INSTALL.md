@@ -378,7 +378,10 @@ a stale-data notice with an explicit retry instead of repeatedly clearing the vi
 Loaded device rows and consumable snapshots stay cached while scrolling and
 switching Cards/Table, including inventories larger than 300 devices. Scrolling
 back does not reload supplies. Explicit reloads clear the cache; background
-device updates invalidate affected entries while retaining unchanged devices.
+device updates revalidate affected entries while retaining unchanged devices.
+Previously loaded supplies remain visible during background refreshes, including
+after scrolling away and back. Failed refreshes keep the last loaded values and
+show the existing retry/error notice; an explicit reload clears old values.
 
 ---
 

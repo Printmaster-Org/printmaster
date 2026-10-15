@@ -166,6 +166,34 @@ test('background refresh retains unchanged hydration, invalidates changed keys, 
     expect(options.fetchMetrics.mock.calls[0][0]).toEqual(['1']);
 });
 
+test('background refresh retains loaded supplies until replaced, including failures and missing results', async () => {
+    const gate = deferred();
+    const { loader, options } = fixture({
+        fetchMetrics: jest.fn()
+            .mockResolvedValueOnce([{ serial: '0', toner_levels: { black: 90 } }])
+            .mockImplementationOnce(() => gate.promise)
+            .mockRejectedValueOnce(new Error('offline'))
+            .mockResolvedValueOnce([]),
+    });
+    await loader.load(); loader.setDemand(['0']); await tick();
+    loader.markRendered(['0']); await tick();
+    const snapshot = loader.getMetrics('0');
+    await loader.refresh(['0']); await tick();
+    loader.markRendered(['0']); await tick();
+    expect(loader.getState('metrics', '0').status).toBe('loading');
+    expect(loader.getMetrics('0')).toBe(snapshot);
+    gate.resolve([{ serial: '0', toner_levels: { black: 70 } }]); await tick();
+    expect(loader.getMetrics('0').toner_levels.black).toBe(70);
+    await loader.refresh(['0']); await tick();
+    loader.markRendered(['0']); await tick();
+    expect(loader.getState('metrics', '0').status).toBe('error');
+    expect(loader.getMetrics('0').toner_levels.black).toBe(70);
+    loader.retry(['0']); await tick();
+    expect(loader.getState('metrics', '0').status).toBe('missing');
+    expect(loader.getMetrics('0')).toBeUndefined();
+    expect(options.fetchMetrics).toHaveBeenCalledTimes(4);
+});
+
 test('background refresh keeps slow unchanged requests alive without duplicate hydration', async () => {
     const gate = deferred();
     const { loader, options } = fixture({ fetchRows: jest.fn(() => gate.promise) });

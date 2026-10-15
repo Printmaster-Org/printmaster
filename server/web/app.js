@@ -12948,7 +12948,7 @@ function getProgressiveDevice(device) {
     const key = device.serial;
     const row = devicesLoader.getRow(key);
     const metrics = devicesLoader.getMetrics(key);
-    const metricState = devicesLoader.getState('metrics', key).status;
+    const metricState = metrics ? 'ready' : devicesLoader.getState('metrics', key).status;
     // raw_data is inventory metadata, NOT a trustworthy latest supply snapshot.
     const merged = { ...device, ...row, raw_data: { ...(row?.raw_data || {}) }, toner_levels: metrics?.toner_levels || {} };
     for (const name of Object.keys(merged.raw_data)) {

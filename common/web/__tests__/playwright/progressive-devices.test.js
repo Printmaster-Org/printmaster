@@ -548,6 +548,33 @@ test('index previews precede rows, metrics and directories; viewport bounds then
     } finally { index.release(); rows.release(); metrics.release(); directories.release(); }
 });
 
+test('40-device inventory retains displayed supplies during upload refresh and scrolling', async ({ page }) => {
+    const refreshMetrics = gate();
+    const options = { devices: devices.slice(0, 40) };
+    try {
+        const calls = await open(page, options);
+        await expect(cards(page).first().locator('.toner-bar')).toHaveCount(1);
+        const serial = await cards(page).first().getAttribute('data-serial');
+        const metricsBefore = stageCalls(calls, '/metrics/query').length;
+        options.metrics = refreshMetrics;
+        await page.evaluate(serial => window.testEventSource.listeners.device_updated({
+            data: JSON.stringify({ serial, agent_id: 'agent-1' })
+        }), serial);
+        await expect.poll(() => stageCalls(calls, '/metrics/query').length).toBeGreaterThan(metricsBefore);
+        const first = page.locator(`#devices_cards [data-serial="${serial}"]`);
+        await expect(first.locator('.toner-bar')).toHaveCount(1);
+        await expect(first).not.toContainText('Loading supplies');
+        await page.locator('#devices_load_more_sentinel').scrollIntoViewIfNeeded();
+        await expect(cards(page)).toHaveCount(40);
+        await first.scrollIntoViewIfNeeded();
+        await expect(first.locator('.toner-bar')).toHaveCount(1);
+        await expect(first).not.toContainText('Loading supplies');
+        options.devices = options.devices.map(device => ({ ...device, toner_levels: { black: 55 } }));
+        refreshMetrics.release();
+        await expect(first.locator('.toner-bar')).toHaveAttribute('aria-label', /55%/);
+    } finally { refreshMetrics.release(); }
+});
+
 test('loaded supplies survive a large inventory scan, scrolling and view changes', async ({ page }) => {
     const inventory = Array.from({ length: 360 }, (_, i) => ({
         ...devices[0], serial: `CACHE-${String(i).padStart(3, '0')}`,
