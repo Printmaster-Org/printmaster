@@ -4,6 +4,8 @@
 
 > **Docs site is mandatory**: Any change in this repo that affects behavior, configuration, APIs, vendor/SNMP mappings, or security must also update the relevant pages in the **docs.printmaster.work** repo (sibling checkout `../docs.printmaster.work`). Updating only this repo's `docs/` folder is not sufficient. See the section below.
 
+> **Commit format is mandatory**: Use Conventional Commits (`type(scope): summary`) as specified in [AGENTS.md](../AGENTS.md#commit-messages-required). The `.githooks/commit-msg` hook enforces it; never use `--no-verify`.
+
 ## Required: Keep Code and Documentation in Tandem
 
 - Every feature addition, behavior change, fix, removal, or deprecation requires a documentation-impact review before completion. Update affected docs in the same functional slice; do not defer documentation to a later cleanup.

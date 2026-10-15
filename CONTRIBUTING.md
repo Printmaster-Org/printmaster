@@ -100,18 +100,24 @@ Key documentation:
 
 ### Commit Messages
 
-Write clear, descriptive commit messages:
+Use [Conventional Commits](https://www.conventionalcommits.org/). Enable the enforcing hook once per clone:
 
 ```
-component: short description of change
+git config core.hooksPath .githooks
+```
+
+```
+type(scope): short imperative summary
 
 Longer explanation if needed. Explain the "why" not just the "what".
 ```
 
+Types: `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `build`, `ci`, `chore`, `style`, `revert`, `ux` (append `!` for breaking changes). The scope is optional and lowercase. Keep subjects at 100 characters or fewer, with no trailing period. See [AGENTS.md](AGENTS.md#commit-messages-required) for body and docs-pairing conventions.
+
 Examples:
-- `agent/scanner: add Brother MFC series support`
-- `server/api: fix pagination on device list endpoint`
-- `docs: update SNMP reference with new OIDs`
+- `feat(scanner): add Brother MFC series support`
+- `fix(api): correct pagination on device list endpoint`
+- `docs(snmp): update reference with new OIDs`
 
 ### Don't
 

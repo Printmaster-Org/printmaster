@@ -1,0 +1,27 @@
+#!/bin/sh
+# Enforces Conventional Commits subjects: type(scope)!: summary
+# Enable once per clone: git config core.hooksPath .githooks
+
+msg_file="$1"
+subject=$(sed -e 's/\r$//' -e '/^#/d' "$msg_file" | sed -n '/[^[:space:]]/{p;q;}')
+second=$(sed -e 's/\r$//' -e '/^#/d' "$msg_file" | sed -n '2p')
+
+case "$subject" in
+    "Merge "*|"Revert \""*|"fixup! "*|"squash! "*|"amend! "*) exit 0 ;;
+esac
+
+types='feat|fix|docs|test|refactor|perf|build|ci|chore|style|revert|ux'
+pattern="^($types)(\([a-z0-9][a-z0-9._/-]*\))?!?: [^ ].*[^.]$"
+
+fail() {
+    echo "commit-msg: $1" >&2
+    echo "  subject: $subject" >&2
+    echo "  expected: type(scope): summary   (types: $(echo "$types" | tr '|' ' '))" >&2
+    echo "  example:  fix(web): keep supplies visible during inventory refresh" >&2
+    exit 1
+}
+
+echo "$subject" | grep -Eq "$pattern" || fail "subject is not a Conventional Commit (lowercase type, optional lowercase scope, no trailing period)"
+[ "${#subject}" -le 100 ] || fail "subject is ${#subject} characters; keep it at 100 or fewer"
+[ -z "$second" ] || fail "leave a blank line between the subject and the body"
+exit 0

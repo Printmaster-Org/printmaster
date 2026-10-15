@@ -4,12 +4,12 @@
 .DESCRIPTION
     Runs build.ps1 both before attempting to commit. Only commits if the build succeeds.
 .PARAMETER Message
-    The commit message (required)
+    The commit message (required, Conventional Commits: type(scope): summary)
 .PARAMETER Push
     Optional switch to push after committing
 .EXAMPLE
-    .\commit.ps1 -Message "Fix scanner timeout issue"
-    .\commit.ps1 "Fix scanner timeout issue" -Push
+    .\commit.ps1 -Message "fix(scanner): handle SNMP timeout on slow devices"
+    .\commit.ps1 "fix(scanner): handle SNMP timeout on slow devices" -Push
 #>
 
 param(

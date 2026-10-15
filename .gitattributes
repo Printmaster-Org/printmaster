@@ -7,6 +7,7 @@
 
 # Shell scripts must stay LF for Linux runners/containers.
 *.sh text eol=lf
+.githooks/* text eol=lf
 
 # Source and module files should be consistent across platforms.
 *.go text eol=lf

@@ -9,6 +9,7 @@ PUSH=0
 usage() {
   cat <<EOF
 Usage: ./commit.sh <message> [--push]
+  <message> must be a Conventional Commit, e.g. "fix(scanner): handle SNMP timeout"
 EOF
 }
 
