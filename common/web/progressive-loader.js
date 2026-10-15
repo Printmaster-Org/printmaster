@@ -9,7 +9,6 @@
     function createLoader(options) {
         const keyOf = options.getKey || (item => item.serial);
         const batchSize = Math.max(1, Math.min(100, options.batchSize || 30));
-        const cacheLimit = Math.max(batchSize, options.cacheLimit || 300);
         const concurrency = Math.max(1, Math.min(4, options.concurrency || 2));
         const maxAttempts = Math.max(1, Math.min(3, options.maxAttempts || 2));
         let generation = 0, index = [], indexState = 'idle', indexError = null;
@@ -24,9 +23,7 @@
         const emit = (type, keys = []) => options.onChange?.({ type, keys, generation });
         const state = (kind, key) => states[kind].get(key) || { status: 'idle', attempts: 0 };
         function read(kind, key) {
-            const value = caches[kind].get(key);
-            if (value) { caches[kind].delete(key); caches[kind].set(key, value); }
-            return value;
+            return caches[kind].get(key);
         }
         function enqueue(kind, keys, retry = false) {
             for (const key of keys) {
@@ -64,7 +61,6 @@
                             found.add(key);
                         });
                         currentKeys.forEach(key => localStates.set(key, { ...localStates.get(key), status: found.has(key) ? 'ready' : 'missing' }));
-                        while (localCache.size > cacheLimit) localCache.delete(localCache.keys().next().value);
                         emit(kind, currentKeys);
                     }).catch(error => {
                         if (epoch !== generation || signal.aborted) return;

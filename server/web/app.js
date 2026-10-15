@@ -12864,7 +12864,7 @@ function initDevicesLoader() {
         fetchRows: (keys, context) => fetchDeviceInventory('rows', keys, context),
         fetchMetrics: (keys, context) => fetchDeviceInventory('metrics/query', keys, context),
         getKey: device => device.serial,
-        batchSize: 30, cacheLimit: 300, concurrency: 2,
+        batchSize: 30, concurrency: 2,
         onChange: event => {
             if (event.type === 'refresh-error') {
                 window.__pm_shared.error('Device refresh failed:', devicesLoader.getIndexState().error);

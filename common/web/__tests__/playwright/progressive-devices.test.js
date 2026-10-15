@@ -548,6 +548,42 @@ test('index previews precede rows, metrics and directories; viewport bounds then
     } finally { index.release(); rows.release(); metrics.release(); directories.release(); }
 });
 
+test('loaded supplies survive a large inventory scan, scrolling and view changes', async ({ page }) => {
+    const inventory = Array.from({ length: 360 }, (_, i) => ({
+        ...devices[0], serial: `CACHE-${String(i).padStart(3, '0')}`,
+        hostname: `cached-printer-${i}`, toner_levels: { black: 90 }
+    }));
+    const calls = await open(page, { devices: inventory });
+    const first = cards(page).first();
+    await expect(first.locator('.toner-bar')).toHaveCount(1);
+    const firstSerial = await first.getAttribute('data-serial');
+    await page.evaluate(() => {
+        devicesVM.filters.sortKey = 'consumables';
+        applyDeviceFilters(true);
+    });
+    await expect.poll(() => page.evaluate(() => deviceSupplyBands.size)).toBe(360);
+    await expect.poll(() => page.evaluate(() => devicesLoader.getCacheSizes().metrics)).toBe(360);
+    await page.evaluate(() => {
+        devicesVM.filters.sortKey = 'manufacturer';
+        applyDeviceFilters(true);
+    });
+    await page.locator('#devices_load_more_sentinel').scrollIntoViewIfNeeded();
+    await expect.poll(() => cards(page).count()).toBeGreaterThan(30);
+    await page.locator(`#devices_cards [data-serial="${firstSerial}"]`).scrollIntoViewIfNeeded();
+    await expect(page.locator(`#devices_cards [data-serial="${firstSerial}"] .toner-bar`)).toHaveCount(1);
+    await page.evaluate(() => {
+        devicesVM.view = 'table';
+        applyDeviceFilters();
+        renderDevicesTableHeader();
+    });
+    const row = page.locator(`#devices_table tr[data-serial="${firstSerial}"]`);
+    await row.scrollIntoViewIfNeeded();
+    await expect(row.locator('.toner-bar')).toHaveCount(1);
+    await expect(row).not.toContainText('Loading supplies');
+    expect(stageCalls(calls, '/metrics/query').flatMap(call => call.keys).filter(key => key === firstSerial)).toHaveLength(1);
+    expect(calls.every(call => call.keys.length <= 30)).toBe(true);
+});
+
 test('global distant search/sort; card/table switch uses caches; keyboard rows accessible', async ({ page }) => {
     const calls = await open(page);
     await expect(cards(page).first().locator('.toner-bar')).toHaveCount(1);

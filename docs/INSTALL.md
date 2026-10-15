@@ -375,6 +375,10 @@ with the shared `text-selectable` class.
 Device upload notifications refresh authorized inventory in the background.
 Unchanged visible rows/cards remain in place; failed background refreshes show
 a stale-data notice with an explicit retry instead of repeatedly clearing the view.
+Loaded device rows and consumable snapshots stay cached while scrolling and
+switching Cards/Table, including inventories larger than 300 devices. Scrolling
+back does not reload supplies. Explicit reloads clear the cache; background
+device updates invalidate affected entries while retaining unchanged devices.
 
 ---
 

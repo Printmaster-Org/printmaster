@@ -105,14 +105,27 @@ test.each([30, 500])('bounded batches/concurrency with configured size %s', asyn
     expect(Math.max(...options.fetchRows.mock.calls.map(call => call[0].length))).toBeLessThanOrEqual(Math.min(100, batchSize));
 });
 
-test('detail cache bounded; eviction refetches on demand without retaining full rows in index', async () => {
-    const { loader, options } = fixture({ batchSize: 5, cacheLimit: 10 });
-    await loader.load(); loader.setDemand(items(25).map(item => item.serial)); await tick();
-    expect(loader.getCacheSizes().rows).toBe(10);
+test('loaded rows and supplies survive scrolling beyond 300 devices without refetching', async () => {
+    const { loader, options } = fixture({ fetchIndex: jest.fn(async () => items(360)) });
+    await loader.load();
+    for (let offset = 0; offset < 360; offset += 30) {
+        const keys = items(360).slice(offset, offset + 30).map(item => item.serial);
+        loader.setDemand(keys); await tick();
+        loader.markRendered(keys); await tick();
+    }
+    expect(loader.getCacheSizes()).toEqual({ rows: 360, metrics: 360 });
     expect(loader.getIndex()[0].model).toBeUndefined();
-    loader.setDemand(['0']); await tick();
+    const row = loader.getRow('0'), metrics = loader.getMetrics('0');
+    options.fetchRows.mockClear(); options.fetchMetrics.mockClear();
+    loader.setDemand([]); loader.setDemand(['0']); loader.markRendered(['0']); await tick();
     expect(loader.getRow('0').model).toBe('Hydrated');
-    expect(options.fetchRows).toHaveBeenCalledTimes(6);
+    expect(loader.getRow('0')).toBe(row);
+    expect(loader.getMetrics('0')).toBe(metrics);
+    expect(loader.getState('metrics', '0').status).toBe('ready');
+    expect(options.fetchRows).not.toHaveBeenCalled();
+    expect(options.fetchMetrics).not.toHaveBeenCalled();
+    await loader.load();
+    expect(loader.getCacheSizes()).toEqual({ rows: 0, metrics: 0 });
 });
 
 test('replaced demand drops queued offscreen rows; explicit metrics scan remains bounded', async () => {
