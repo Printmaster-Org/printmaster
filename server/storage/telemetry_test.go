@@ -54,7 +54,8 @@ func testSharedTelemetry(t *testing.T, s *BaseStore, store Store) {
 	if _, err := s.EditDeviceMetadata(ctx, device.Serial, device.AgentID, map[string]interface{}{"location": "pinned"}, "", false); err != nil {
 		t.Fatal(err)
 	}
-	observedAt := time.Now().UTC().Add(time.Minute)
+	// PostgreSQL TIMESTAMPTZ stores microseconds.
+	observedAt := time.Now().UTC().Add(time.Minute).Truncate(time.Microsecond)
 	for _, id := range []string{"b", "c", "d", "e"} {
 		secondary := *device
 		secondary.AgentID, secondary.IP, secondary.Model, secondary.Location = "telemetry-"+id, "192.0.2.99", "overwritten", "untrusted"

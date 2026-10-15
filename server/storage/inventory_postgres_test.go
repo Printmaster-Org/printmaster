@@ -11,7 +11,18 @@ import (
 func TestInventoryPostgres(t *testing.T) {
 	WithPostgresStore(t, func(t *testing.T, s *PostgresStore) {
 		testInventoryScope(t, &s.BaseStore)
-		rows, err := s.queryContext(context.Background(), `EXPLAIN SELECT `+inventoryPageCount+` FROM devices d WHERE d.serial=?`, "device-a")
+		ctx := context.Background()
+		// Cost-based plans on near-empty tables prefer sorting a handful of
+		// rows; seed realistic history so the plan reflects production volume.
+		if _, err := s.execContext(ctx, `INSERT INTO metrics_history (serial, agent_id, timestamp, page_count)
+			SELECT d.serial, d.agent_id, NOW() - g * INTERVAL '1 minute', g
+			FROM devices d CROSS JOIN generate_series(1, 5000) g WHERE d.serial = ?`, "device-a"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.execContext(ctx, `ANALYZE metrics_history`); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := s.queryContext(ctx, `EXPLAIN SELECT `+inventoryPageCount+` FROM devices d WHERE d.serial=?`, "device-a")
 		if err != nil {
 			t.Fatal(err)
 		}
