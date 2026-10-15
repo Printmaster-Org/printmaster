@@ -21,7 +21,7 @@ func (c *ServerClient) DeviceMetadata(ctx context.Context) ([]*metadata.Record, 
 	var records []*metadata.Record
 	err := c.doRequest(ctx, http.MethodGet, "/api/v1/agents/device-metadata", nil, &records, true)
 	if err == nil && records == nil {
-		return nil, fmt.Errorf("Server metadata snapshot must be an array")
+		return nil, fmt.Errorf("server metadata snapshot must be an array")
 	}
 	return records, err
 }
@@ -37,7 +37,7 @@ func (c *ServerClient) EditDeviceMetadata(ctx context.Context, serial string, pa
 		return nil, err
 	}
 	if record.Serial != serial {
-		return nil, fmt.Errorf("Server metadata response does not match requested device")
+		return nil, fmt.Errorf("server metadata response does not match requested device")
 	}
 	return &record, nil
 }

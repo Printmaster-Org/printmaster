@@ -14,7 +14,8 @@ import (
 func testDeviceMetadata(t *testing.T, s *BaseStore) {
 	t.Helper()
 	ctx := context.Background()
-	now := time.Now().UTC()
+	// PostgreSQL timestamps retain microseconds, not nanoseconds.
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	if err := s.RegisterAgent(ctx, &Agent{AgentID: "metadata-owner", Token: "metadata-token", RegisteredAt: now, LastSeen: now}); err != nil {
 		t.Fatal(err)
 	}

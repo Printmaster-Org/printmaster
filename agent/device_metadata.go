@@ -79,14 +79,14 @@ func handleAgentMetadataUpdate(w http.ResponseWriter, r *http.Request, managed b
 		worker.metadataMu.Lock()
 		select {
 		case <-worker.stopCh:
-			err = errors.New("Server connection is stopping")
+			err = errors.New("server connection is stopping")
 		default:
 			record, err = worker.client.EditDeviceMetadata(ctx, serial, patch)
 		}
 		if err == nil {
 			err = store.SyncDeviceMetadata(ctx, worker.client.GetServerURL(), []*metadata.Record{record})
 			if err != nil {
-				err = fmt.Errorf("Server saved metadata but local synchronization failed: %w", err)
+				err = fmt.Errorf("server saved metadata but local synchronization failed: %w", err)
 			}
 		}
 		if err == nil && mainScanner != nil {
