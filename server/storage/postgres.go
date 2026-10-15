@@ -67,6 +67,10 @@ func NewPostgresStore(cfg *config.DatabaseConfig) (*PostgresStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("failed to initialize postgres schema: %w", err)
 	}
+	if err := store.InitDeviceMetadata(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to initialize device metadata: %w", err)
+	}
 
 	// Initialize TimescaleDB support (auto-detect or use config)
 	tsConfig := DefaultTimescaleConfig()

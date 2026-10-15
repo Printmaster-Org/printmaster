@@ -10,7 +10,7 @@ import (
 // gate any migration logic (all migrations run unconditionally and are
 // idempotent) - it's purely informational. Bump it here only; both dialects
 // read from this constant so they can't drift apart from each other.
-const currentSchemaVersion = 10
+const currentSchemaVersion = 11
 
 // Dialect abstracts database-specific SQL syntax differences.
 // This allows the same business logic to work across SQLite and PostgreSQL.

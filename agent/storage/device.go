@@ -10,11 +10,10 @@ type DeviceFilter = commonstorage.DeviceFilter
 
 // Device represents a printer device with agent-specific fields
 type Device struct {
-	commonstorage.Device // Embed common fields
+	commonstorage.Device                        // Embed common fields
+	ReportedMetadata     map[string]interface{} `json:"-"`
 
 	// Agent-specific fields
-	DNSServers   []string                  `json:"dns_servers,omitempty"`
-	DHCPServer   string                    `json:"dhcp_server,omitempty"`
 	IsSaved      bool                      `json:"is_saved"`
 	Visible      bool                      `json:"visible"` // false = hidden from UI (soft delete)
 	WalkFilename string                    `json:"walk_filename,omitempty"`

@@ -25,7 +25,8 @@ type ScanMeta struct {
 
 // PrinterInfo holds discovered printer details
 type PrinterInfo struct {
-	IP string `json:"ip"`
+	MetadataOverrides map[string]interface{} `json:"metadata_overrides,omitempty"`
+	IP                string                 `json:"ip"`
 	// Manufacturer is the human-friendly vendor name (e.g. "HP", "Canon").
 	Manufacturer string `json:"manufacturer,omitempty"`
 	Model        string `json:"model,omitempty"`

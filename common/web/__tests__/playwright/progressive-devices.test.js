@@ -194,6 +194,26 @@ test('Server Details uses uploaded saved state and never invokes Agent-local Sav
     expect(await page.locator('body').evaluate(el => el.style.overflow)).toBe('');
 });
 
+test('Server metadata pins disable Agent edits and Server unpin restores reported values immediately', async ({ page }) => {
+    const pinned = { ...devices[0], location: '', metadata_overrides: { location: '' } };
+    await open(page, { devices: [pinned] });
+    await page.evaluate(device => window.__pm_shared_cards.showPrinterDetailsData(device, 'saved'), pinned);
+    await expect(page.getByRole('button', { name: 'Edit Location', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Edit Model', exact: true })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Unpin Location', exact: true })).toHaveCount(0);
+    await page.evaluate(device => window.__pm_shared_cards.showPrinterDetailsData(device, 'saved', null, { server: true }), pinned);
+    await expect(page.getByRole('button', { name: 'Edit Location', exact: true })).toBeEnabled();
+    const requests = [];
+    await page.route('**/devices/unpin', route => {
+        requests.push(route.request().postDataJSON());
+        return route.fulfill({ json: { device: { ...devices[0], location: 'Reported room', metadata_overrides: {} } } });
+    });
+    await page.getByRole('button', { name: 'Unpin Location', exact: true }).click();
+    await expect(page.locator('#field_location_display')).toHaveText('Reported room');
+    await expect(page.getByRole('button', { name: 'Unpin Location', exact: true })).toHaveCount(0);
+    expect(requests).toEqual([{ serial: pinned.serial, field: 'location' }]);
+});
+
 test('hydrated Epson inventory keeps inkjet capabilities and reported metadata', async ({ page }) => {
     await open(page, { devices: [{
         ...devices[0], manufacturer: 'Epson', model: 'AM-C550', asset_number: '05046',

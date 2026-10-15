@@ -969,13 +969,21 @@
             const safeVal = (value === undefined || value === null) ? '' : String(value);
             const displayVal = safeVal ? escapeHtmlCards(safeVal) : '<span class="device-detail-empty">Not set</span>';
             const serial = p.serial || p.Serial || '';
+            const pins = p.metadata_overrides || p.raw_data?.metadata_overrides || {};
+            const pinned = Object.prototype.hasOwnProperty.call(pins, field);
 
             let row = '<div class="device-detail-field" data-field-row="' + field + '">';
             row += '<div class="device-detail-label">' + label + '</div>';
             row += '<div class="device-detail-value-group"><div class="device-detail-value" id="field_' + field + '_display">' + displayVal + '</div>';
             row += window.__pm_shared.renderCopyButton(safeVal, label);
             if (!opts.readonly) {
-                row += '<button class="edit-field-btn" data-field="' + field + '" data-serial="' + escapeHtmlCards(serial) + '" data-current="' + escapeHtmlCards(safeVal) + '" data-label="' + label + '" title="Edit ' + label + '" aria-label="Edit ' + label + '"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M16 3l5 5L8 21H3v-5L16 3zM14 5l5 5"/></svg></button>';
+                const blocked = !options.server && pinned;
+                const title = blocked ? 'Controlled by Server' : 'Edit ' + label;
+                row += '<button class="edit-field-btn" ' + (blocked ? 'disabled ' : '') + 'data-field="' + field + '" data-serial="' + escapeHtmlCards(serial) + '" data-current="' + escapeHtmlCards(safeVal) + '" data-label="' + label + '" title="' + title + '" aria-label="Edit ' + label + '"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M16 3l5 5L8 21H3v-5L16 3zM14 5l5 5"/></svg></button>';
+                if (pinned) {
+                    row += '<span class="muted-text">Server pinned</span>';
+                    if (options.server) row += '<button class="unpin-field-btn" data-field="' + field + '" aria-label="Unpin ' + label + '">Unpin</button>';
+                }
             }
             row += '</div>' + (opts.actions || '') + '</div>';
             return row;
@@ -1034,9 +1042,12 @@
     // Network Info (editable)
     let networkInfo = '<div class="device-info-fields">';
     networkInfo += renderEditableRow('IP Address', 'ip', p.ip || p.IP || '');
-    networkInfo += renderEditableRow('MAC Address', 'mac_address', p.mac || p.mac_address || '');
+    networkInfo += renderEditableRow('MAC Address', 'mac_address', p.mac_address || p.mac || '');
     networkInfo += renderEditableRow('Hostname', 'hostname', p.hostname);
     networkInfo += renderEditableRow('Subnet Mask', 'subnet_mask', p.subnet_mask);
+    networkInfo += renderEditableRow('Gateway', 'gateway', p.gateway);
+    networkInfo += renderEditableRow('DNS Servers', 'dns_servers', (p.dns_servers || []).join(', '));
+    networkInfo += renderEditableRow('DHCP Server', 'dhcp_server', p.dhcp_server);
     networkInfo += '</div>';
     html += renderInfoCard('Network', networkInfo, { className: 'device-network-card' });
 
@@ -1292,8 +1303,27 @@
         // Wire up edit field buttons
         try {
             bodyEl.onclick = async (e) => {
+                const unpin = e.target.closest && e.target.closest('.unpin-field-btn');
+                if (unpin && options.server) {
+                    try {
+                        const response = await fetch('/devices/unpin', {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ serial: p.serial, field: unpin.dataset.field })
+                        });
+                        if (!response.ok) throw new Error(await response.text());
+                        const result = await response.json();
+                        if (!isCurrent()) return;
+                        window.__pm_shared.showToast('Server pin removed', 'success');
+                        if (!result.device) throw new Error('Server did not return updated device metadata');
+                        showPrinterDetailsData(result.device, source, null, options);
+                    } catch (err) {
+                        window.__pm_shared.error('Metadata unpin failed', err);
+                        window.__pm_shared.showToast('Unpin failed: ' + err.message, 'error');
+                    }
+                    return;
+                }
                 const btn = e.target.closest && e.target.closest('.edit-field-btn');
-                if (!btn) return;
+                if (!btn || btn.disabled) return;
                 const field = btn.getAttribute('data-field');
                 const serial = btn.getAttribute('data-serial');
                 const current = btn.getAttribute('data-current') || '';
@@ -1309,13 +1339,16 @@
                     const r = await fetch('/devices/update', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ serial, [field]: newValue })
+                        body: JSON.stringify({ serial, [field]: field === 'dns_servers' ? newValue.split(',').map(ip => ip.trim()).filter(Boolean) : newValue })
                     });
                     if (!r.ok) {
                         const t = await r.text();
                         window.__pm_shared.showToast('Update failed: ' + t, 'error');
                         return;
                     }
+                    const result = await r.json();
+                    const overrides = result?.metadata?.overrides || result?.overrides;
+                    if (overrides) p.metadata_overrides = overrides;
                     window.__pm_shared.showToast('Field updated', 'success');
                     if (!isCurrent()) return;
 
@@ -1330,7 +1363,8 @@
                     // Update the data-current attribute for future edits
                     btn.setAttribute('data-current', newValue);
                     // Also update the device object in memory
-                    p[field] = newValue;
+                    p[field] = field === 'dns_servers' ? newValue.split(',').map(ip => ip.trim()).filter(Boolean) : newValue;
+                    if (overrides) showPrinterDetailsData(p, source, null, options);
                 } catch (err) {
                     window.__pm_shared.showToast('Failed to update field', 'error');
                     window.__pm_shared.error('Edit field error', err);
@@ -1353,7 +1387,7 @@
                     const { proposed } = await r.json();
                     if (!isCurrent()) return;
                     if (statusEl) statusEl.textContent = '';
-                    const fields = ['manufacturer', 'model', 'hostname', 'firmware', 'ip', 'subnet_mask', 'gateway', 'dns_servers', 'dhcp_server', 'asset_number', 'location', 'description', 'web_ui_url'];
+                    const fields = ['manufacturer', 'model', 'hostname', 'firmware', 'ip', 'mac_address', 'subnet_mask', 'gateway', 'dns_servers', 'dhcp_server', 'asset_number', 'location', 'description', 'web_ui_url'];
                     
                     // Clear any existing diff UI
                     const diffContainer = document.getElementById('diff_container');
@@ -1362,8 +1396,14 @@
                     // Build list of differences
                     let diffs = [];
                     fields.forEach(f => {
+                        const pins = p.metadata_overrides || p.raw_data?.metadata_overrides || {};
+                        if (Object.prototype.hasOwnProperty.call(pins, f)) return;
                         let currentVal = (f === 'dns_servers') ? (p.dns_servers || []).join(', ') : (p[f] || '');
                         let proposedVal = (f === 'dns_servers') ? (proposed[f] || []).join(', ') : (proposed[f] || '');
+                        if (f === 'mac_address') {
+                            currentVal = p.mac_address || p.mac || '';
+                            proposedVal = proposed.mac_address || proposed.mac || '';
+                        }
                         if (String(currentVal) !== String(proposedVal) && proposedVal !== '') {
                             diffs.push({ field: f, current: currentVal, proposed: proposedVal });
                         }
@@ -1408,7 +1448,7 @@
                                     const ur = await fetch('/devices/update', {
                                         method: 'POST',
                                         headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ serial: p.serial, [field]: value })
+                                        body: JSON.stringify({ serial: p.serial, [field]: field === 'dns_servers' ? value.split(',').map(ip => ip.trim()).filter(Boolean) : value })
                                     });
                                     if (!isCurrent()) return;
                                     if (!ur.ok) {
@@ -1418,6 +1458,9 @@
                                         applyBtn.textContent = 'Apply';
                                         return;
                                     }
+                                    const result = await ur.json();
+                                    const overrides = result?.metadata?.overrides || result?.overrides;
+                                    if (overrides) p.metadata_overrides = overrides;
                                     applyBtn.textContent = '✓';
                                     applyBtn.style.background = 'var(--success)';
                                     applyBtn.style.color = '#fff';
@@ -1426,7 +1469,17 @@
                                     if (displayEl) {
                                         displayEl.innerHTML = value ? escapeHtmlCards(value) : '<span style="color:var(--muted);font-style:italic">Not set</span>';
                                     }
-                                    p[field] = value;
+                                    p[field] = field === 'dns_servers' ? value.split(',').map(ip => ip.trim()).filter(Boolean) : value;
+                                    diffs = diffs.filter(diff => diff.field !== field);
+                                    const applyAll = document.getElementById('apply_all_btn');
+                                    if (applyAll) {
+                                        applyAll.disabled = diffs.length === 0;
+                                        applyAll.textContent = diffs.length ? 'Apply All (' + diffs.length + ')' : 'All updates applied';
+                                    }
+                                    if (overrides) {
+                                        const row = bodyEl.querySelector('[data-field-row="' + field + '"]');
+                                        if (row) row.outerHTML = renderEditableRow(row.querySelector('.device-detail-label').textContent, field, p[field]);
+                                    }
                                     window.__pm_shared.showToast(field.replace(/_/g, ' ') + ' updated', 'success');
                                 } catch (err) {
                                     window.__pm_shared.error('Scanned field update failed', { serial: p.serial, field, error: err });
@@ -1440,7 +1493,7 @@
                         // Wire up apply all button
                         document.getElementById('apply_all_btn')?.addEventListener('click', async () => {
                             const payload = { serial: p.serial };
-                            diffs.forEach(d => { payload[d.field] = d.proposed; });
+                            diffs.forEach(d => { payload[d.field] = d.field === 'dns_servers' ? d.proposed.split(',').map(ip => ip.trim()).filter(Boolean) : d.proposed; });
                             try {
                                 const ur = await fetch('/devices/update', {
                                     method: 'POST',
@@ -1452,14 +1505,13 @@
                                     window.__pm_shared.showToast('Update failed: ' + t, 'error');
                                     return;
                                 }
-                                window.__pm_shared.showToast('All updates applied', 'success');
-                                // Refresh the modal to show updated values
-                                await new Promise(res => setTimeout(res, 400));
+                                const result = await ur.json();
                                 if (!isCurrent()) return;
-                                const serialId = p.serial || p.Serial;
-                                if (serialId && window.__pm_shared && typeof window.__pm_shared.showPrinterDetails === 'function') {
-                                    window.__pm_shared.showPrinterDetails(serialId, source);
-                                }
+                                Object.assign(p, payload);
+                                const overrides = result?.metadata?.overrides || result?.overrides;
+                                if (overrides) p.metadata_overrides = overrides;
+                                window.__pm_shared.showToast('All updates applied', 'success');
+                                window.__pm_shared_cards.showPrinterDetailsData(result?.device || p, source, options);
                             } catch (err) {
                                 window.__pm_shared.error('Scanned updates failed', { serial: p.serial, error: err });
                                 window.__pm_shared.showToast('Update failed', 'error');

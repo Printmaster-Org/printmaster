@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"printmaster/common/metadata"
 	pmsettings "printmaster/common/settings"
 	commonstorage "printmaster/common/storage"
 	"regexp"
@@ -257,10 +258,14 @@ type Device struct {
 	IsSaved *bool  `json:"is_saved,omitempty"` // nil for Agents that have not reported saved state
 }
 
-func (d *Device) loadSavedState() {
+func (d *Device) loadSavedState() error {
+	if value, ok := d.RawData["metadata_overrides"].(map[string]interface{}); ok {
+		d.MetadataOverrides = value
+	}
 	if value, ok := d.RawData["is_saved"].(bool); ok {
 		d.IsSaved = &value
 	}
+	return metadata.NetworkFromRaw(&d.Device)
 }
 
 // DeviceWithMetrics extends Device with latest toner/consumable data for UI display

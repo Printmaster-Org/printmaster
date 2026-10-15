@@ -87,6 +87,32 @@ they exclude serials, protocol payloads, credentials and backend error strings.
 identity mismatch, metrics reuse, retries, cancellation, queue ownership and wake
 ordering; coordinator race tests are mandatory.
 
+#### Server-owned metadata
+
+Server device-detail edits are durable Server overrides, independent of Agent
+availability. Managed Agent edits on unpinned fields are submitted to the Server
+and become the same overrides; they do not create Agent-local field locks.
+Existing Server pins reject Agent edits atomically. Unavailable Servers reject
+managed edits without changing local values or queuing a replay.
+
+Authenticated metadata snapshots synchronize on heartbeat cadence. SQLite caches
+Server pins across restart/offline periods, separately from reported values.
+Scanner commits and generic writers preserve effective pins; uploads reconstruct
+reported values rather than echoing overrides. Server unpin restores the latest
+retained report. Explicit disconnect releases cached pins and refreshes the
+scanner index; a failed heartbeat does not. Older snapshot versions cannot undo
+newer edits, and invalid snapshots roll back without clearing cached pins.
+
+Standalone edits and existing local locks remain local; historical locks are not
+automatically promoted because their original source cannot be determined.
+Manual edits and lock changes do not advance printer `last_seen`. IP overrides
+do not bypass serial/target validation. DNS edits use JSON arrays, including `[]`
+for an explicit empty pin; blank text overrides are also intentional pins.
+
+This flow requires updated Agent and Server binaries. An older Server without
+the metadata endpoint cannot accept managed edits; failure is explicit, not a
+local-only fallback. See the canonical Agent-Server protocol and Devices guides.
+
 #### Partial persistence (`storage.CommitScannerFacts`)
 
 Regular metrics polls also query Printer-MIB alert descriptions and vendor

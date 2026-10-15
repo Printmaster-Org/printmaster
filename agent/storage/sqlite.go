@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"printmaster/agent/agent"
+	"printmaster/common/metadata"
 	commonstorage "printmaster/common/storage"
 	"strings"
 	"time"
@@ -406,6 +407,7 @@ var schemaMigrations = []schemaMigration{
 	{8, migrateSchemaV8},
 	{9, migrateSchemaV9},
 	{10, migrateSchemaV10},
+	{11, func(s *SQLiteStore) error { return s.metadataStore().Init() }},
 }
 
 // latestSchemaVersion returns the highest version defined in schemaMigrations.
@@ -1022,6 +1024,10 @@ func (s *SQLiteStore) Create(ctx context.Context, device *Device) error {
 
 // Get retrieves a device by serial
 func (s *SQLiteStore) Get(ctx context.Context, serial string) (*Device, error) {
+	return s.getDevice(ctx, s.db, serial)
+}
+
+func (s *SQLiteStore) getDevice(ctx context.Context, reader metadata.Reader, serial string) (*Device, error) {
 	if serial == "" {
 		return nil, ErrInvalidSerial
 	}
@@ -1048,7 +1054,7 @@ func (s *SQLiteStore) Get(ctx context.Context, serial string) (*Device, error) {
 	var initialPageCount sql.NullInt64
 	var lastScanID sql.NullInt64
 
-	err := s.db.QueryRowContext(ctx, query, serial).Scan(
+	err := reader.QueryRowContext(ctx, query, serial).Scan(
 		&device.Serial, &device.IP, &manufacturer, &model,
 		&hostname, &firmware, &macAddress, &subnetMask,
 		&gateway, &dnsJSON, &dhcpServer,
@@ -1140,6 +1146,12 @@ func (s *SQLiteStore) Get(ctx context.Context, serial string) (*Device, error) {
 		device.UsbWebUIAvailable = usbWebUIAvailable.Bool
 	}
 
+	record, err := s.metadataStore().Load(ctx, reader, serial)
+	if err != nil {
+		return nil, err
+	}
+	device.MetadataOverrides = record.Overrides
+	device.ReportedMetadata = record.Reported
 	return device, nil
 }
 
@@ -1150,6 +1162,20 @@ func (s *SQLiteStore) Update(ctx context.Context, device *Device) error {
 	}
 
 	device.LastSeen = time.Now()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "UPDATE devices SET serial=serial WHERE serial=?", device.Serial); err != nil {
+		return err
+	}
+	copyDevice := *device
+	device = &copyDevice
+	if err := s.protectMetadata(ctx, tx, device); err != nil {
+		return err
+	}
 
 	consumablesJSON, _ := json.Marshal(device.Consumables)
 	statusJSON, _ := json.Marshal(device.StatusMessages)
@@ -1171,7 +1197,7 @@ func (s *SQLiteStore) Update(ctx context.Context, device *Device) error {
 		WHERE serial = ?
 	`
 
-	result, err := s.db.ExecContext(ctx, query,
+	result, err := tx.ExecContext(ctx, query,
 		device.IP, device.Manufacturer, device.Model, device.Hostname, device.Firmware,
 		device.MACAddress, device.SubnetMask, device.Gateway, string(dnsJSON), device.DHCPServer,
 		string(consumablesJSON), string(statusJSON),
@@ -1193,16 +1219,12 @@ func (s *SQLiteStore) Update(ctx context.Context, device *Device) error {
 		return ErrNotFound
 	}
 
-	return nil
+	return tx.Commit()
 }
 
 // Upsert creates or updates a device using a single INSERT ... ON CONFLICT statement.
 // Preserves created_at, first_seen, is_saved, and locked_fields from the existing row.
 func (s *SQLiteStore) Upsert(ctx context.Context, device *Device) error {
-	if device.Serial == "" {
-		return ErrInvalidSerial
-	}
-
 	now := time.Now()
 	if device.CreatedAt.IsZero() {
 		device.CreatedAt = now
@@ -1213,79 +1235,19 @@ func (s *SQLiteStore) Upsert(ctx context.Context, device *Device) error {
 	if device.LastSeen.IsZero() {
 		device.LastSeen = now
 	}
-
-	consumablesJSON, _ := json.Marshal(device.Consumables)
-	statusJSON, _ := json.Marshal(device.StatusMessages)
-	dnsJSON, _ := json.Marshal(device.DNSServers)
-	rawJSON, _ := json.Marshal(device.RawData)
-	lockedFieldsJSON, _ := json.Marshal(device.LockedFields)
-
-	// Single-statement UPSERT: insert or update while preserving important fields from the existing row.
-	// On conflict (serial exists), we:
-	// - Keep created_at, first_seen, is_saved, locked_fields from the existing row (devices.*)
-	// - Update all other fields from incoming data (excluded.*)
-	query := `
-		INSERT INTO devices (
-			serial, ip, manufacturer, model, hostname, firmware,
-			mac_address, subnet_mask, gateway, dns_servers, dhcp_server,
-			consumables, status_messages,
-			last_seen, created_at, first_seen, is_saved, visible,
-			discovery_method, walk_filename, last_scan_id, raw_data,
-			asset_number, location, description, web_ui_url, locked_fields,
-			device_type, source_type, is_usb, initial_page_count,
-			port_name, driver_name, is_default, is_shared, spooler_status, usb_webui_available
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(serial) DO UPDATE SET
-			ip = excluded.ip,
-			manufacturer = excluded.manufacturer,
-			model = excluded.model,
-			hostname = excluded.hostname,
-			firmware = excluded.firmware,
-			mac_address = excluded.mac_address,
-			subnet_mask = excluded.subnet_mask,
-			gateway = excluded.gateway,
-			dns_servers = excluded.dns_servers,
-			dhcp_server = excluded.dhcp_server,
-			consumables = excluded.consumables,
-			status_messages = excluded.status_messages,
-			last_seen = excluded.last_seen,
-			visible = excluded.visible,
-			discovery_method = excluded.discovery_method,
-			walk_filename = excluded.walk_filename,
-			last_scan_id = excluded.last_scan_id,
-			raw_data = excluded.raw_data,
-			asset_number = excluded.asset_number,
-			location = excluded.location,
-			description = excluded.description,
-			web_ui_url = excluded.web_ui_url,
-			device_type = excluded.device_type,
-			source_type = excluded.source_type,
-			is_usb = excluded.is_usb,
-			port_name = excluded.port_name,
-			driver_name = excluded.driver_name,
-			is_default = excluded.is_default,
-			is_shared = excluded.is_shared,
-			spooler_status = excluded.spooler_status,
-			usb_webui_available = excluded.usb_webui_available
-			-- IMPORTANT: created_at, first_seen, is_saved, locked_fields, initial_page_count are NOT updated (preserved from existing row)
-	`
-
-	_, err := s.db.ExecContext(ctx, query,
-		device.Serial, device.IP, device.Manufacturer, device.Model,
-		device.Hostname, device.Firmware, device.MACAddress, device.SubnetMask,
-		device.Gateway, string(dnsJSON), device.DHCPServer,
-		string(consumablesJSON), string(statusJSON),
-		device.LastSeen, device.CreatedAt, device.FirstSeen, device.IsSaved, device.Visible,
-		device.DiscoveryMethod, device.WalkFilename, device.LastScanID, string(rawJSON),
-		device.AssetNumber, device.Location, device.Description, device.WebUIURL, string(lockedFieldsJSON),
-		device.DeviceType, device.SourceType, device.IsUSB, device.InitialPageCount,
-		device.PortName, device.DriverName, device.IsDefault, device.IsShared, device.SpoolerStatus,
-		device.UsbWebUIAvailable,
-	)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to upsert device: %w", err)
+		return err
 	}
-	return nil
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "UPDATE devices SET serial=serial WHERE serial=?", device.Serial); err != nil {
+		return err
+	}
+	copyDevice := *device
+	if err := s.upsertWithExecer(ctx, tx, &copyDevice); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // StoreDiscoveryAtomic persists a discovered device update as a single atomic unit:
@@ -1367,7 +1329,9 @@ func (s *SQLiteStore) List(ctx context.Context, filter DeviceFilter) ([]*Device,
 			   discovery_method, walk_filename, last_scan_id, raw_data,
 			   asset_number, location, description, web_ui_url, locked_fields,
 			   device_type, source_type, is_usb, initial_page_count,
-			   port_name, driver_name, is_default, is_shared, spooler_status, usb_webui_available
+			   port_name, driver_name, is_default, is_shared, spooler_status, usb_webui_available,
+			   (SELECT overrides FROM device_metadata WHERE device_metadata.serial=devices.serial),
+			   (SELECT reported FROM device_metadata WHERE device_metadata.serial=devices.serial)
 		FROM devices WHERE 1=1
 	`
 	args := []interface{}{}
@@ -1433,6 +1397,7 @@ func (s *SQLiteStore) List(ctx context.Context, filter DeviceFilter) ([]*Device,
 		var isUSB, isDefault, isShared, usbWebUIAvailable sql.NullBool
 		var initialPageCount sql.NullInt64
 		var lastScanID sql.NullInt64
+		var overridesJSON, reportedJSON sql.NullString
 
 		err := rows.Scan(
 			&device.Serial, &device.IP, &manufacturer, &model,
@@ -1444,9 +1409,20 @@ func (s *SQLiteStore) List(ctx context.Context, filter DeviceFilter) ([]*Device,
 			&assetNumber, &location, &description, &webUIURL, &lockedFieldsJSON,
 			&deviceType, &sourceType, &isUSB, &initialPageCount,
 			&portName, &driverName, &isDefault, &isShared, &spoolerStatus, &usbWebUIAvailable,
+			&overridesJSON, &reportedJSON,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan device: %w", err)
+		}
+		if overridesJSON.Valid {
+			if err := json.Unmarshal([]byte(overridesJSON.String), &device.MetadataOverrides); err != nil {
+				return nil, err
+			}
+		}
+		if reportedJSON.Valid {
+			if err := json.Unmarshal([]byte(reportedJSON.String), &device.ReportedMetadata); err != nil {
+				return nil, err
+			}
 		}
 
 		// Nullable TEXT columns (may be NULL for devices that never reported these fields)
@@ -1525,7 +1501,10 @@ func (s *SQLiteStore) List(ctx context.Context, filter DeviceFilter) ([]*Device,
 		devices = append(devices, device)
 	}
 
-	return devices, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return devices, nil
 }
 
 // TouchDeviceSeen records confirmed identity without rewriting scan data or
@@ -2011,6 +1990,13 @@ func (s *SQLiteStore) saveMetricsSnapshotWithExecer(ctx context.Context, ex exec
 }
 
 func (s *SQLiteStore) upsertWithExecer(ctx context.Context, ex execer, device *Device) error {
+	if tx, ok := ex.(*sql.Tx); ok {
+		copyDevice := *device
+		device = &copyDevice
+		if err := s.protectMetadata(ctx, tx, device); err != nil {
+			return err
+		}
+	}
 	if device.Serial == "" {
 		return ErrInvalidSerial
 	}

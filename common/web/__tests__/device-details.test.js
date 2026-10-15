@@ -121,6 +121,32 @@ describe('device details', () => {
         expect(document.querySelector('[aria-label="Edit Location"]').dataset.current).toBe('Finance');
     });
 
+    test('Server-pinned Agent fields disable edits, including blank overrides', () => {
+        render({ ...device, location: '', metadata_overrides: { location: '' } });
+        expect(document.querySelector('[aria-label="Edit Location"]').disabled).toBe(true);
+        expect(document.querySelector('[aria-label="Edit Location"]').title).toBe('Controlled by Server');
+        expect(document.querySelector('[aria-label="Unpin Location"]')).toBeNull();
+        expect(document.querySelector('[aria-label="Edit Model"]').disabled).toBe(false);
+    });
+
+    test('Server can edit and unpin a field without calling Agent lock routes', async () => {
+        window.__pm_shared.showPrinterDetails = jest.fn();
+        window.__pm_shared_cards.showPrinterDetailsData(
+            { ...device, metadata_overrides: { location: 'Reception' } }, 'saved', null, { server: true }
+        );
+        expect(document.querySelector('[aria-label="Edit Location"]').disabled).toBe(false);
+        await flush();
+        fetch.mockClear();
+        fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ device: { ...device, location: 'Reported' } }) });
+        document.querySelector('[aria-label="Unpin Location"]').click();
+        await flush();
+        expect(fetch).toHaveBeenCalledWith('/devices/unpin', expect.objectContaining({
+            body: JSON.stringify({ serial: device.serial, field: 'location' })
+        }));
+        expect(document.querySelector('#field_location_display').textContent).toBe('Reported');
+        expect(document.querySelector('[aria-label="Unpin Location"]')).toBeNull();
+    });
+
     test('cancelled and failed edits preserve the existing value', async () => {
         render();
         await flush();
@@ -204,6 +230,43 @@ describe('device details', () => {
         await flush();
         expect(document.getElementById('diff_container').textContent).toBe('');
         expect(document.getElementById('field_location_display').textContent).toBe('Reception');
+    });
+
+    test.each([false, true])('scanned DNS updates use arrays and exclude pinned fields (Apply All: %s)', async all => {
+        render({ ...device, mac: '00:11:22:33:44:55', dns_servers: ['192.0.2.53'], metadata_overrides: { model: device.model } });
+        await flush();
+        fetch.mockImplementation(async url => {
+            if (url === '/devices/preview') return {
+                ok: true,
+                json: async () => ({ proposed: { model: 'Ignored', mac: '00:11:22:33:44:66', location: 'Scanned', dns_servers: ['192.0.2.54', '192.0.2.55'] } })
+            };
+            if (url === '/devices/update') return {
+                ok: true,
+                json: async () => ({ metadata: { overrides: { model: device.model, location: 'Scanned', dns_servers: ['192.0.2.54', '192.0.2.55'] } } })
+            };
+            return { ok: true, json: async () => [] };
+        });
+        document.getElementById('refresh_data_btn').click();
+        await flush();
+        expect(document.querySelector('.apply-single-btn[data-field="model"]')).toBeNull();
+        if (all) {
+            document.getElementById('apply_all_btn').click();
+            await flush();
+        } else {
+            document.querySelector('.apply-single-btn[data-field="dns_servers"]').click();
+            await flush();
+            expect(document.getElementById('apply_all_btn').textContent).toBe('Apply All (2)');
+            document.querySelector('.apply-single-btn[data-field="location"]').click();
+            await flush();
+            document.querySelector('.apply-single-btn[data-field="mac_address"]').click();
+            await flush();
+            expect(document.getElementById('apply_all_btn').disabled).toBe(true);
+        }
+        const updates = fetch.mock.calls.filter(([url]) => url === '/devices/update').map(([, request]) => JSON.parse(request.body));
+        expect(updates.find(payload => payload.dns_servers)?.dns_servers).toEqual(['192.0.2.54', '192.0.2.55']);
+        expect(updates.find(payload => payload.mac_address)?.mac_address).toBe('00:11:22:33:44:66');
+        expect(updates.every(payload => !Object.prototype.hasOwnProperty.call(payload, 'model'))).toBe(true);
+        expect(document.querySelector('[aria-label="Edit DNS Servers"]').disabled).toBe(true);
     });
 
     test('color supplies are evidence of color capability but explicit monochrome still wins', () => {

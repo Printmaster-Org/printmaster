@@ -87,6 +87,7 @@ func TestTenantInventorySensitiveHandlers(t *testing.T) {
 	}{
 		{"preview", http.MethodPost, "/devices/preview", `{"serial":"SERIAL","ip":"192.0.2.2"}`, handleDevicePreviewProxy},
 		{"update", http.MethodPost, "/devices/update", `{"serial":"SERIAL","model":"changed"}`, handleDeviceUpdateProxy},
+		{"unpin", http.MethodPost, "/devices/unpin", `{"serial":"SERIAL","field":"model"}`, handleDeviceMetadataUnpin},
 		{"collect", http.MethodPost, "/devices/metrics/collect", `{"serial":"SERIAL","ip":"192.0.2.2"}`, handleDeviceMetricsCollectProxy},
 		{"delete-post", http.MethodPost, "/api/v1/devices/delete", `{"serial":"SERIAL","agent_id":"agent-a","delete_metrics":true,"delete_from_agent":true}`, handleDeviceDelete},
 		{"delete-delete", http.MethodDelete, "/api/v1/devices/delete", `{"serial":"SERIAL","delete_metrics":true}`, handleDeviceDelete},
@@ -443,12 +444,17 @@ func TestTenantInventoryDashboardIsolation(t *testing.T) {
 func TestTenantInventoryAuthorizedAccess(t *testing.T) {
 	store := tenantInventoryStore(t)
 	for _, user := range []*storage.User{NewTestUser(storage.RoleOperator, "tenant-a"), NewTestAdminUser()} {
-		for _, handler := range []http.HandlerFunc{handleDevicePreviewProxy, handleDeviceUpdateProxy, handleDeviceMetricsCollectProxy} {
+		for _, handler := range []http.HandlerFunc{handleDevicePreviewProxy, handleDeviceMetricsCollectProxy} {
 			rr := httptest.NewRecorder()
 			handler(rr, InjectTestUser(httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"serial":"device-a"}`)), user))
 			if rr.Code != http.StatusServiceUnavailable {
 				t.Errorf("authorized offline proxy: want 503, got %d: %s", rr.Code, rr.Body.String())
 			}
+		}
+		editResponse := httptest.NewRecorder()
+		handleDeviceUpdateProxy(editResponse, InjectTestUser(httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"serial":"device-a","model":"Manual"}`)), user))
+		if editResponse.Code != http.StatusOK {
+			t.Errorf("authorized Server metadata edit while Agent offline: want 200, got %d: %s", editResponse.Code, editResponse.Body.String())
 		}
 		for _, serial := range []string{"device-a", "device-b"} {
 			if user.Role != storage.RoleAdmin && serial == "device-b" {

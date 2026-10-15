@@ -2126,9 +2126,22 @@ func disconnectFromServer(agentCfg *AgentConfig, dataDir string) error {
 	uploadWorkerMu.Lock()
 	if uploadWorker != nil {
 		uploadWorker.Stop()
+		uploadWorker.metadataMu.Lock()
+		defer uploadWorker.metadataMu.Unlock()
 		uploadWorker = nil
 	}
 	uploadWorkerMu.Unlock()
+
+	if store, ok := deviceStore.(metadataStorage); ok {
+		if err := store.ReconcileDeviceMetadata(context.Background(), "", nil); err != nil {
+			return fmt.Errorf("failed to release Server device metadata: %w", err)
+		}
+		if mainScanner != nil {
+			if err := mainScanner.refreshIndex(context.Background()); err != nil {
+				return fmt.Errorf("failed to refresh released Server device metadata: %w", err)
+			}
+		}
+	}
 
 	if strings.TrimSpace(dataDir) != "" {
 		if err := DeleteServerToken(dataDir); err != nil {
@@ -5342,109 +5355,9 @@ func runInteractive(ctx context.Context, configFlag string) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "serial": result.Serial})
 	})
 
-	// Update device fields (now supports many fields; respects locked fields at the UI level)
+	// Managed metadata edits are committed by the Server, never pinned locally.
 	http.HandleFunc("/devices/update", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST only", http.StatusMethodNotAllowed)
-			return
-		}
-		var req struct {
-			Serial       string    `json:"serial"`
-			Manufacturer *string   `json:"manufacturer,omitempty"`
-			Model        *string   `json:"model,omitempty"`
-			Hostname     *string   `json:"hostname,omitempty"`
-			Firmware     *string   `json:"firmware,omitempty"`
-			IP           *string   `json:"ip,omitempty"`
-			SubnetMask   *string   `json:"subnet_mask,omitempty"`
-			Gateway      *string   `json:"gateway,omitempty"`
-			DNSServers   *[]string `json:"dns_servers,omitempty"`
-			DHCPServer   *string   `json:"dhcp_server,omitempty"`
-			AssetNumber  *string   `json:"asset_number,omitempty"`
-			Location     *string   `json:"location,omitempty"`
-			Description  *string   `json:"description,omitempty"`
-			WebUIURL     *string   `json:"web_ui_url,omitempty"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "bad json", http.StatusBadRequest)
-			return
-		}
-		req.Serial = strings.TrimSpace(req.Serial)
-		if req.Serial == "" {
-			http.Error(w, "serial required", http.StatusBadRequest)
-			return
-		}
-
-		// Get existing device
-		ctx := context.Background()
-		device, err := deviceStore.Get(ctx, req.Serial)
-		if err != nil {
-			http.Error(w, "device not found: "+err.Error(), http.StatusNotFound)
-			return
-		}
-
-		// Helper to check if field is locked
-		isFieldLocked := func(fieldName string) bool {
-			if device.LockedFields == nil {
-				return false
-			}
-			for _, lf := range device.LockedFields {
-				if strings.EqualFold(lf.Field, fieldName) {
-					return true
-				}
-			}
-			return false
-		}
-
-		// Update only provided fields (skip locked fields)
-		if req.Manufacturer != nil && !isFieldLocked("manufacturer") {
-			device.Manufacturer = *req.Manufacturer
-		}
-		if req.Model != nil && !isFieldLocked("model") {
-			device.Model = *req.Model
-		}
-		if req.Hostname != nil && !isFieldLocked("hostname") {
-			device.Hostname = *req.Hostname
-		}
-		if req.Firmware != nil && !isFieldLocked("firmware") {
-			device.Firmware = *req.Firmware
-		}
-		if req.IP != nil && !isFieldLocked("ip") {
-			device.IP = *req.IP
-		}
-		if req.SubnetMask != nil && !isFieldLocked("subnet_mask") {
-			device.SubnetMask = *req.SubnetMask
-		}
-		if req.Gateway != nil && !isFieldLocked("gateway") {
-			device.Gateway = *req.Gateway
-		}
-		if req.DNSServers != nil && !isFieldLocked("dns_servers") {
-			device.DNSServers = *req.DNSServers
-		}
-		if req.DHCPServer != nil && !isFieldLocked("dhcp_server") {
-			device.DHCPServer = *req.DHCPServer
-		}
-		if req.AssetNumber != nil && !isFieldLocked("asset_number") {
-			device.AssetNumber = *req.AssetNumber
-		}
-		if req.Location != nil && !isFieldLocked("location") {
-			device.Location = *req.Location
-		}
-		if req.Description != nil && !isFieldLocked("description") {
-			device.Description = *req.Description
-		}
-		if req.WebUIURL != nil && !isFieldLocked("web_ui_url") {
-			device.WebUIURL = *req.WebUIURL
-		}
-
-		// Save updated device
-		if err := deviceStore.Update(ctx, device); err != nil {
-			appLogger.Error("Device update failed", "serial", device.Serial, "error", err)
-			http.Error(w, "update failed: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "serial": device.Serial})
+		handleAgentMetadataUpdate(w, r, agentConfig != nil && agentConfig.Server.Enabled)
 	})
 
 	// Preview device updates: perform a live walk+parse but DO NOT write to DB; returns proposed fields
@@ -5514,6 +5427,10 @@ func runInteractive(ctx context.Context, configFlag string) {
 
 	// Toggle a field lock on a device
 	http.HandleFunc("/devices/lock", func(w http.ResponseWriter, r *http.Request) {
+		if agentConfig != nil && agentConfig.Server.Enabled {
+			http.Error(w, "Device metadata pins are managed on the Server", http.StatusConflict)
+			return
+		}
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
 			return
@@ -5595,16 +5512,18 @@ func runInteractive(ctx context.Context, configFlag string) {
 			}
 		}
 
-		if req.Lock {
-			if has == -1 {
-				device.LockedFields = append(device.LockedFields, storage.FieldLock{Field: req.Field, LockedAt: time.Now(), Reason: "user_locked"})
-			}
-		} else {
-			if has >= 0 {
-				device.LockedFields = append(device.LockedFields[:has], device.LockedFields[has+1:]...)
-			}
+		lockStore, ok := deviceStore.(interface {
+			SetLocalFieldLock(context.Context, string, string, bool, interface{}) error
+		})
+		if !ok {
+			http.Error(w, "field lock storage unavailable", http.StatusServiceUnavailable)
+			return
 		}
-		if err := deviceStore.Update(ctx, device); err != nil {
+		var learned interface{}
+		if foundOID != "" {
+			learned = device.RawData["learned_oids"]
+		}
+		if err := lockStore.SetLocalFieldLock(ctx, req.Serial, req.Field, req.Lock, learned); err != nil {
 			http.Error(w, "failed to update locks: "+err.Error(), http.StatusInternalServerError)
 			return
 		}

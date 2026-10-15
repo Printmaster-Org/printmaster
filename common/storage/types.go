@@ -42,26 +42,29 @@ type PaperTray struct {
 
 // Device represents a printer device with all its properties (base struct shared by agent and server)
 type Device struct {
-	Serial          string                 `json:"serial"`
-	IP              string                 `json:"ip"`
-	Manufacturer    string                 `json:"manufacturer,omitempty"`
-	Model           string                 `json:"model,omitempty"`
-	Hostname        string                 `json:"hostname,omitempty"`
-	Firmware        string                 `json:"firmware,omitempty"`
-	MACAddress      string                 `json:"mac_address,omitempty"`
-	SubnetMask      string                 `json:"subnet_mask,omitempty"`
-	Gateway         string                 `json:"gateway,omitempty"`
-	Consumables     []string               `json:"consumables,omitempty"`
-	StatusMessages  []string               `json:"status_messages,omitempty"`
-	LastSeen        time.Time              `json:"last_seen"`
-	CreatedAt       time.Time              `json:"created_at"`
-	FirstSeen       time.Time              `json:"first_seen"`
-	DiscoveryMethod string                 `json:"discovery_method,omitempty"`
-	AssetNumber     string                 `json:"asset_number,omitempty"` // User-defined asset tag/number
-	Location        string                 `json:"location,omitempty"`     // Physical location (room, building, etc)
-	Description     string                 `json:"description,omitempty"`  // Device description/notes
-	WebUIURL        string                 `json:"web_ui_url,omitempty"`   // HTTP/HTTPS URL to device web interface
-	RawData         map[string]interface{} `json:"raw_data,omitempty"`     // Additional fields as JSON for extensibility
+	DNSServers        []string               `json:"dns_servers,omitempty"`
+	DHCPServer        string                 `json:"dhcp_server,omitempty"`
+	MetadataOverrides map[string]interface{} `json:"metadata_overrides,omitempty"`
+	Serial            string                 `json:"serial"`
+	IP                string                 `json:"ip"`
+	Manufacturer      string                 `json:"manufacturer,omitempty"`
+	Model             string                 `json:"model,omitempty"`
+	Hostname          string                 `json:"hostname,omitempty"`
+	Firmware          string                 `json:"firmware,omitempty"`
+	MACAddress        string                 `json:"mac_address,omitempty"`
+	SubnetMask        string                 `json:"subnet_mask,omitempty"`
+	Gateway           string                 `json:"gateway,omitempty"`
+	Consumables       []string               `json:"consumables,omitempty"`
+	StatusMessages    []string               `json:"status_messages,omitempty"`
+	LastSeen          time.Time              `json:"last_seen"`
+	CreatedAt         time.Time              `json:"created_at"`
+	FirstSeen         time.Time              `json:"first_seen"`
+	DiscoveryMethod   string                 `json:"discovery_method,omitempty"`
+	AssetNumber       string                 `json:"asset_number,omitempty"` // User-defined asset tag/number
+	Location          string                 `json:"location,omitempty"`     // Physical location (room, building, etc)
+	Description       string                 `json:"description,omitempty"`  // Device description/notes
+	WebUIURL          string                 `json:"web_ui_url,omitempty"`   // HTTP/HTTPS URL to device web interface
+	RawData           map[string]interface{} `json:"raw_data,omitempty"`     // Additional fields as JSON for extensibility
 
 	// Device classification fields (for unified device view)
 	DeviceType        string `json:"device_type,omitempty"`         // network, usb, local, shared, virtual

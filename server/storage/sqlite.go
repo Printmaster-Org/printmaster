@@ -74,6 +74,10 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("failed to init schema: %w", err)
 	}
+	if err := store.InitDeviceMetadata(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to initialize device metadata: %w", err)
+	}
 
 	return store, nil
 }

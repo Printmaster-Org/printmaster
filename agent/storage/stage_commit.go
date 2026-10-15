@@ -155,7 +155,11 @@ func (s *SQLiteStore) CommitScannerFacts(ctx context.Context, serial, expectedIP
 	}
 	locked := make(map[string]bool, len(locks))
 	for _, lock := range locks {
-		locked[lock.Field] = true
+		locked[strings.ToLower(lock.Field)] = true
+	}
+	serverMetadata, err := s.metadataStore().Load(ctx, tx, serial)
+	if err != nil {
+		return err
 	}
 	if creating {
 		now := time.Now()
@@ -171,6 +175,10 @@ func (s *SQLiteStore) CommitScannerFacts(ctx context.Context, serial, expectedIP
 	var sets []string
 	var args []interface{}
 	add := func(column string, value interface{}) {
+		if _, pinned := serverMetadata.Overrides[column]; pinned {
+			serverMetadata.Reported[column] = value
+			return
+		}
 		if !locked[column] {
 			sets = append(sets, column+" = ?")
 			args = append(args, value)
@@ -204,6 +212,12 @@ func (s *SQLiteStore) CommitScannerFacts(ctx context.Context, serial, expectedIP
 			}
 		}
 		if len(nonempty) > 0 {
+			if column == "dns_servers" {
+				if _, pinned := serverMetadata.Overrides[column]; pinned {
+					serverMetadata.Reported[column] = nonempty
+					return
+				}
+			}
 			data, _ := json.Marshal(nonempty)
 			add(column, string(data))
 		}
@@ -254,6 +268,11 @@ func (s *SQLiteStore) CommitScannerFacts(ctx context.Context, serial, expectedIP
 		add("raw_data", string(data))
 	}
 	fields = len(sets)
+	if serverMetadata.Version != 0 {
+		if err := s.metadataStore().Write(ctx, tx, serverMetadata); err != nil {
+			return err
+		}
+	}
 	if fields > 0 {
 		args = append(args, serial)
 		if _, err = tx.ExecContext(ctx, "UPDATE devices SET "+strings.Join(sets, ", ")+" WHERE serial = ?", args...); err != nil {

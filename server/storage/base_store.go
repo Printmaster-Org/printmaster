@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"printmaster/common/metadata"
 	pmsettings "printmaster/common/settings"
 	"printmaster/common/updatepolicy"
 )
@@ -525,6 +526,54 @@ func (s *BaseStore) UpsertDevice(ctx context.Context, device *Device) error {
 	if device == nil || device.Serial == "" || device.AgentID == "" {
 		return fmt.Errorf("%w: device serial and agent ID are required", ErrOwnershipConflict)
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.lockDeviceMetadata(ctx, tx, device.Serial); err != nil {
+		return err
+	}
+	copyDevice := *device
+	copyDevice.RawData = make(map[string]interface{}, len(device.RawData)+3)
+	for key, value := range device.RawData {
+		copyDevice.RawData[key] = value
+	}
+	if err := metadata.NetworkFromRaw(&copyDevice.Device); err != nil {
+		return err
+	}
+	if err := s.metadataStore().Protect(ctx, tx, &copyDevice.Device, device.AgentID); err != nil {
+		return err
+	}
+	record, err := s.metadataStore().Load(ctx, tx, device.Serial)
+	if err != nil {
+		return err
+	}
+	copyDevice.MetadataOverrides = record.Overrides
+	if err := s.upsertDevice(ctx, tx, &copyDevice); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *BaseStore) upsertDevice(ctx context.Context, tx *sql.Tx, device *Device) error {
+	if device.RawData == nil {
+		device.RawData = make(map[string]interface{})
+	}
+	delete(device.RawData, "metadata_overrides")
+	if len(device.MetadataOverrides) > 0 {
+		device.RawData["metadata_overrides"] = device.MetadataOverrides
+	}
+	if device.DNSServers != nil {
+		device.RawData["dns_servers"] = device.DNSServers
+	} else {
+		delete(device.RawData, "dns_servers")
+	}
+	if device.DHCPServer != "" {
+		device.RawData["dhcp_server"] = device.DHCPServer
+	} else if _, ok := device.RawData["dhcp_server"]; ok {
+		device.RawData["dhcp_server"] = ""
+	}
 	// Serialize JSON fields
 	consumablesJSON, _ := json.Marshal(device.Consumables)
 	statusJSON, _ := json.Marshal(device.StatusMessages)
@@ -591,7 +640,7 @@ func (s *BaseStore) UpsertDevice(ctx context.Context, device *Device) error {
 		WHERE devices.agent_id = excluded.agent_id
 	`
 
-	result, err := s.execContext(ctx, query,
+	result, err := tx.ExecContext(ctx, s.query(query),
 		device.Serial, device.AgentID, device.IP, device.Manufacturer,
 		device.Model, device.Hostname, device.Firmware, device.MACAddress,
 		device.SubnetMask, device.Gateway, string(consumablesJSON),
@@ -624,6 +673,10 @@ func requireMachineWrite(result sql.Result, kind, id string) error {
 
 // GetDevice retrieves a device by serial number
 func (s *BaseStore) GetDevice(ctx context.Context, serial string) (*Device, error) {
+	return s.getDevice(ctx, s.db, serial)
+}
+
+func (s *BaseStore) getDevice(ctx context.Context, reader metadata.Reader, serial string) (*Device, error) {
 	query := `
 		SELECT serial, agent_id, ip, manufacturer, model, hostname, firmware,
 		       mac_address, subnet_mask, gateway, consumables, status_messages,
@@ -642,7 +695,7 @@ func (s *BaseStore) GetDevice(ctx context.Context, serial string) (*Device, erro
 	var discoveryMethod, assetNumber, location, description, webUIURL sql.NullString
 	var isUSB, isDefault, isShared, usbWebUIAvailable sql.NullBool
 
-	err := s.queryRowContext(ctx, query, serial).Scan(
+	err := reader.QueryRowContext(ctx, s.query(query), serial).Scan(
 		&device.Serial, &device.AgentID, &device.IP, &manufacturer,
 		&model, &hostname, &firmware, &macAddress,
 		&subnetMask, &gateway, &consumablesJSON, &statusJSON,
@@ -683,7 +736,9 @@ func (s *BaseStore) GetDevice(ctx context.Context, serial string) (*Device, erro
 	if rawDataJSON.Valid {
 		json.Unmarshal([]byte(rawDataJSON.String), &device.RawData)
 	}
-	device.loadSavedState()
+	if err := device.loadSavedState(); err != nil {
+		return nil, err
+	}
 
 	// Set USB/spooler fields
 	if deviceType.Valid {
@@ -876,7 +931,9 @@ func (s *BaseStore) scanDevices(rows *sql.Rows) ([]*Device, error) {
 		if rawDataJSON.Valid {
 			json.Unmarshal([]byte(rawDataJSON.String), &device.RawData)
 		}
-		device.loadSavedState()
+		if err := device.loadSavedState(); err != nil {
+			return nil, err
+		}
 
 		// Set USB/spooler fields
 		if deviceType.Valid {

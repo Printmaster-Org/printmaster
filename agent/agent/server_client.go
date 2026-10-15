@@ -598,7 +598,7 @@ func (c *ServerClient) doRequest(ctx context.Context, method, path string, reqBo
 	// Check status code
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		Error(fmt.Sprintf("Server returned non-2xx status %d for %s %s: %s", httpResp.StatusCode, method, url, string(respData)))
-		return fmt.Errorf("server returned status %d: %s", httpResp.StatusCode, string(respData))
+		return &HTTPStatusError{Status: httpResp.StatusCode, Body: string(respData)}
 	}
 
 	// Decode response if needed

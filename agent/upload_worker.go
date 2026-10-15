@@ -26,11 +26,12 @@ type Logger interface {
 
 // UploadWorker handles periodic uploads of device and metrics data to the server
 type UploadWorker struct {
-	client   *agent.ServerClient
-	store    storage.DeviceStore
-	settings *SettingsManager
-	logger   Logger
-	dataDir  string
+	metadataMu sync.Mutex
+	client     *agent.ServerClient
+	store      storage.DeviceStore
+	settings   *SettingsManager
+	logger     Logger
+	dataDir    string
 
 	// Version info to include in heartbeats
 	versionInfo *agent.AgentVersionInfo
@@ -513,6 +514,11 @@ func (w *UploadWorker) buildHeartbeatMetadata() map[string]interface{} {
 func (w *UploadWorker) sendHeartbeat() {
 	ctx, cancel := context.WithTimeout(w.workerContext(), 10*time.Second)
 	defer cancel()
+	defer func() {
+		if err := w.syncDeviceMetadata(ctx); err != nil {
+			w.logger.Warn("Server device metadata synchronization failed", "error", err)
+		}
+	}()
 
 	// Try WebSocket first if available
 	w.wsClientMu.RLock()
@@ -692,6 +698,12 @@ func (w *UploadWorker) uploadDevices() error {
 	// Convert devices to upload format
 	deviceMaps := make([]interface{}, 0, len(devices))
 	for _, dev := range devices {
+		if store, ok := w.store.(metadataStorage); ok {
+			dev, err = store.ReportedDevice(ctx, dev)
+			if err != nil {
+				return fmt.Errorf("failed to read reported device metadata: %w", err)
+			}
+		}
 		deviceMap := map[string]interface{}{
 			"serial":           dev.Serial,
 			"ip":               dev.IP,
@@ -702,6 +714,8 @@ func (w *UploadWorker) uploadDevices() error {
 			"mac_address":      dev.MACAddress,
 			"subnet_mask":      dev.SubnetMask,
 			"gateway":          dev.Gateway,
+			"dns_servers":      dev.DNSServers,
+			"dhcp_server":      dev.DHCPServer,
 			"consumables":      dev.Consumables,
 			"status_messages":  dev.StatusMessages,
 			"last_seen":        dev.LastSeen,
