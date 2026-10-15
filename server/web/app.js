@@ -337,7 +337,7 @@ const devicesVM = {
         agentId: '',
         tenantId: '',
         manufacturer: '',
-        statuses: new Set(DEVICE_STATUS_KEYS),
+        statuses: new Set(),
         consumables: new Set(DEVICE_CONSUMABLE_KEYS),
         sortKey: DEVICES_DEFAULT_SORT_KEY || 'last_seen',
         sortDir: DEVICES_DEFAULT_SORT_DIR || 'desc',
@@ -12600,6 +12600,19 @@ function initDevicesUI() {
         });
     }
 
+    const stats = document.getElementById('devices_stats');
+    if (stats) {
+        stats.addEventListener('click', (event) => {
+            const btn = event.target.closest('button');
+            if (!btn) return;
+            if (btn.hasAttribute('data-status')) {
+                toggleStatusFilter(btn.dataset.status);
+            } else if (btn.hasAttribute('data-clear-statuses')) {
+                handleFilterChipRemove('statuses');
+            }
+        });
+    }
+
     const consumableFilter = document.getElementById('devices_consumable_filter');
     if (consumableFilter) {
         consumableFilter.addEventListener('click', (event) => {
@@ -13659,19 +13672,20 @@ function renderDevicesStats() {
     if (!container) return;
     const total = devicesVM.stats.total || 0;
     const filtered = devicesVM.stats.filtered || 0;
-    const statuses = devicesVM.stats.filteredStatuses || {};
+    const statuses = devicesVM.stats.totalStatuses || {};
+    const selected = devicesVM.filters.statuses;
+    const focused = container.contains(document.activeElement) ? document.activeElement : null;
+    const focusSelector = focused?.hasAttribute('data-status') ? `[data-status="${focused.dataset.status}"]` :
+        focused?.hasAttribute('data-clear-statuses') ? '[data-clear-statuses]' : null;
     container.innerHTML = `
         <div><strong>Total:</strong> ${formatNumber(total)}</div>
         <div><strong>Showing:</strong> ${formatNumber(filtered)}</div>
-        <div>
-            <span class="status-pill healthy">Healthy ${formatNumber(statuses.healthy || 0)}</span>
-            <span class="status-pill warning">Warning ${formatNumber(statuses.warning || 0)}</span>
-            <span class="status-pill error">Error ${formatNumber(statuses.error || 0)}</span>
-            <span class="status-pill jam">Jam ${formatNumber(statuses.jam || 0)}</span>
-            <span class="status-pill offline">Offline ${formatNumber(statuses.offline || 0)}</span>
-            <span class="status-pill unknown">Unknown ${formatNumber(statuses.unknown || 0)}</span>
+        <div class="devices-status-tags" role="group" aria-label="Filter devices by status">
+            ${DEVICE_STATUS_KEYS.map(key => `<button type="button" class="status-pill ${key}" data-status="${key}" aria-pressed="${selected.has(key)}">${key} ${formatNumber(statuses[key] || 0)}</button>`).join('')}
+            <button type="button" class="secondary small" data-clear-statuses ${selected.size === 0 ? 'disabled' : ''}>Clear tag filters</button>
         </div>
     `;
+    if (focusSelector) container.querySelector(focusSelector)?.focus();
 }
 
 function renderDevicesActiveFilters() {
@@ -13693,7 +13707,7 @@ function renderDevicesActiveFilters() {
     if (filters.manufacturer) {
         chips.push(buildFilterChip('Manufacturer', filters.manufacturer, 'manufacturer'));
     }
-    if (filters.statuses.size > 0 && filters.statuses.size < DEVICE_STATUS_KEYS.length) {
+    if (filters.statuses.size > 0) {
         chips.push(buildFilterChip('Status', Array.from(filters.statuses).join(', '), 'statuses'));
     }
     if (filters.consumables.size > 0 && filters.consumables.size < DEVICE_CONSUMABLE_KEYS.length) {
@@ -13739,7 +13753,7 @@ function handleFilterChipRemove(filterKey) {
             break;
         }
         case 'statuses':
-            devicesVM.filters.statuses = new Set(DEVICE_STATUS_KEYS);
+            devicesVM.filters.statuses = new Set();
             break;
         case 'consumables':
             devicesVM.filters.consumables = new Set(DEVICE_CONSUMABLE_KEYS);
@@ -13754,8 +13768,9 @@ function syncDeviceQuickFilters() {
     const statusSet = devicesVM.filters.statuses;
     document.querySelectorAll('#devices_status_filter [data-status]').forEach(btn => {
         const key = btn.getAttribute('data-status');
-        const active = !statusSet || statusSet.has(key);
+        const active = statusSet.has(key);
         btn.classList.toggle('active', active);
+        btn.setAttribute('aria-pressed', String(active));
         const baseLabel = btn.getAttribute('data-label') || btn.textContent.trim();
         const count = devicesVM.stats.totalStatuses?.[key] || 0;
         btn.innerHTML = `${escapeHtml(baseLabel)} <span class="pill-count">${formatNumber(count)}</span>`;
@@ -13773,14 +13788,11 @@ function syncDeviceQuickFilters() {
 
 function toggleStatusFilter(statusKey) {
     if (!DEVICE_STATUS_KEYS.includes(statusKey)) return;
-    const set = new Set(devicesVM.filters.statuses || DEVICE_STATUS_KEYS);
+    const set = new Set(devicesVM.filters.statuses);
     if (set.has(statusKey)) {
         set.delete(statusKey);
     } else {
         set.add(statusKey);
-    }
-    if (set.size === 0) {
-        DEVICE_STATUS_KEYS.forEach(key => set.add(key));
     }
     devicesVM.filters.statuses = set;
     applyDeviceFilters();
@@ -13806,7 +13818,7 @@ function resetDeviceFilters() {
     devicesVM.filters.agentId = '';
     devicesVM.filters.tenantId = '';
     devicesVM.filters.manufacturer = '';
-    devicesVM.filters.statuses = new Set(DEVICE_STATUS_KEYS);
+    devicesVM.filters.statuses = new Set();
     devicesVM.filters.consumables = new Set(DEVICE_CONSUMABLE_KEYS);
     const searchInput = document.getElementById('devices_search');
     if (searchInput) searchInput.value = '';

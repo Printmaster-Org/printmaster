@@ -29,6 +29,109 @@ function setup(names, globals = {}) {
     return { context, document: dom.window.document };
 }
 
+describe('device status tag filtering', () => {
+    const keys = ['healthy', 'warning', 'error', 'jam', 'offline', 'unknown'];
+    const escapeHtml = value => String(value);
+
+    function statusSetup(view = 'table') {
+        const devicesVM = {
+            loaded: true, uiInitialized: false, view,
+            filters: {
+                statuses: new Set(), consumables: new Set(['high']), query: '',
+                agentId: '', tenantId: '', manufacturer: '', sortKey: 'last_seen', sortDir: 'desc',
+            },
+            items: keys.slice(0, -1).map(code => ({
+                serial: code, agent_id: 'agent-1', manufacturer: 'Epson',
+                __meta: { status: { code }, search: `${code} epson`, tenantId: 'tenant-1' },
+            })),
+            stats: {}, render: { displayed: 0, pageSize: 30 },
+        };
+        const { context, document } = setup([
+            'initDevicesUI', 'applyDeviceFilters', 'matchesDeviceFilters', 'createStatusCountMap',
+            'toggleStatusFilter', 'renderDevicesStats', 'renderDevicesActiveFilters',
+            'buildFilterChip', 'handleFilterChipRemove', 'syncDeviceQuickFilters', 'resetDeviceFilters',
+        ], {
+            devicesVM, DEVICE_STATUS_KEYS: keys, DEVICE_CONSUMABLE_KEYS: ['high'],
+            devicesLoader: null, formatNumber: String, escapeHtml,
+            hasDeviceSupplyFilter: () => false, sortDevices: list => list,
+            initDevicesTableCustomizer: jest.fn(), initFilterDrawer: jest.fn(), debounce: fn => fn,
+            syncDevicesViewToggle: jest.fn(), syncDeviceSortControls: jest.fn(),
+            syncDevicesAgentFilterOptions: jest.fn(), refreshDeviceFilters: jest.fn(),
+            renderDevicesOverview: jest.fn(), syncTenantFilterOptions: jest.fn(),
+            renderDeviceTable: jest.fn(), renderDeviceCards: jest.fn(),
+            updateDeviceSelectionUI: jest.fn(), renderDeviceLoadingStatus: jest.fn(),
+            syncDeviceTableSortIndicators: jest.fn(),
+            getAgentInfo: () => null, formatTenantDisplay: id => id,
+        });
+        context.initDevicesUI();
+        context.applyDeviceFilters();
+        const tag = key => document.querySelector(`#devices_stats [data-status="${key}"]`);
+        return { context, document, devicesVM, tag };
+    }
+
+    test.each(['table', 'cards'])('%s view selects, combines and deselects tags through actual controls', view => {
+        const { context, document, devicesVM, tag } = statusSetup(view);
+        const visible = () => devicesVM.filtered.map(device => device.serial);
+        expect(visible()).toEqual(keys.slice(0, -1));
+        expect(tag('warning').getAttribute('aria-pressed')).toBe('false');
+        tag('warning').focus();
+        tag('warning').click();
+        expect(visible()).toEqual(['warning']);
+        expect(document.activeElement).toBe(tag('warning'));
+        expect(tag('warning').getAttribute('aria-pressed')).toBe('true');
+        expect(document.querySelector('#devices_status_filter [data-status="warning"]').classList.contains('active')).toBe(true);
+        tag('error').click();
+        expect(visible()).toEqual(['warning', 'error']);
+        expect(tag('healthy').textContent).toBe('healthy 1');
+        tag('warning').click();
+        expect(visible()).toEqual(['error']);
+        tag('error').click();
+        expect(visible()).toEqual(keys.slice(0, -1));
+        expect(document.querySelector('[data-clear-statuses]').disabled).toBe(true);
+        expect(context[view === 'table' ? 'renderDeviceTable' : 'renderDeviceCards'])
+            .toHaveBeenLastCalledWith(devicesVM.filtered);
+    });
+
+    test('sidebar shares selection and clear preserves unrelated filters', () => {
+        const { context, document, devicesVM, tag } = statusSetup();
+        Object.assign(devicesVM.filters, {
+            query: 'epson', agentId: 'agent-1', tenantId: 'tenant-1', manufacturer: 'Epson',
+        });
+        document.querySelector('#devices_status_filter [data-status="jam"]').click();
+        expect(devicesVM.filtered.map(device => device.serial)).toEqual(['jam']);
+        expect(tag('jam').getAttribute('aria-pressed')).toBe('true');
+        tag('warning').click();
+        document.querySelector('[data-clear-statuses]').click();
+        expect(devicesVM.filters.statuses.size).toBe(0);
+        expect(devicesVM.filters).toMatchObject({
+            query: 'epson', agentId: 'agent-1', tenantId: 'tenant-1', manufacturer: 'Epson',
+        });
+        expect(devicesVM.filtered).toHaveLength(5);
+        tag('error').click();
+        context.handleFilterChipRemove('statuses');
+        expect(devicesVM.filters.statuses.size).toBe(0);
+        tag('error').click();
+        context.resetDeviceFilters();
+        expect(devicesVM.filters.statuses.size).toBe(0);
+        expect(devicesVM.filters.query).toBe('');
+    });
+
+    test('zero-count tags, all tags and invalid statuses behave consistently', () => {
+        const { context, document, devicesVM, tag } = statusSetup();
+        tag('unknown').click();
+        expect(devicesVM.filtered).toHaveLength(0);
+        expect(tag('unknown').getAttribute('aria-pressed')).toBe('true');
+        keys.slice(0, -1).forEach(key => tag(key).click());
+        expect(devicesVM.filtered).toHaveLength(5);
+        expect(document.querySelector('#devices_active_filters [data-filter="statuses"]')).not.toBeNull();
+        context.toggleStatusFilter('invalid');
+        expect(devicesVM.filters.statuses.size).toBe(keys.length);
+        keys.forEach(key => tag(key).click());
+        expect(devicesVM.filters.statuses.size).toBe(0);
+        expect(devicesVM.filtered).toHaveLength(5);
+    });
+});
+
 describe('Server device details ownership', () => {
     test('shared Details action uses scoped full rows, latest metrics, and saved state', async () => {
         const showDetails = jest.fn();

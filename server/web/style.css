@@ -5136,6 +5136,31 @@ select:focus {
   color: var(--success);
 }
 
+.devices-status-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.devices-status-tags .status-pill {
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.devices-status-tags .status-pill[aria-pressed="true"] {
+  background: var(--panel);
+  box-shadow: 0 0 0 2px currentColor;
+  font-weight: 700;
+}
+
+.devices-status-tags .status-pill:hover,
+.devices-status-tags .status-pill:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
 .status-pill.warning {
   border-color: var(--warning);
   color: var(--warning);
