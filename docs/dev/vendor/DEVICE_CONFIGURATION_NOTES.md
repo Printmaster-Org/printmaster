@@ -4,6 +4,10 @@ These notes record what we know about **changing** printer settings remotely.
 They are reference material for a future PrintMaster feature to edit
 configuration across vendors. PrintMaster does not write device settings yet.
 
+See the [configuration research section](configuration/README.md) and
+[Epson investigation](configuration/EPSON.md) for evidence levels, artifact
+identities, newly traced control paths, and unresolved field contracts.
+
 ## Epson (from Epson Device Admin reverse-engineering)
 
 EDA uses three mechanisms:
@@ -12,7 +16,7 @@ EDA uses three mechanisms:
 |-----------|----------|-------|
 | SNMP SET | Operation and maintenance settings | Confirmed below |
 | ENPC / EpsonNet (UDP 3289, `BoronCustomClient`) | Discovery, community name and network settings | Proprietary. The packet schema is not exposed in the managed code |
-| Configuration templates | Bulk settings | Applied as collections of `NdSettingItem`, then written via the channels above |
+| Configuration templates | Bulk settings | Managed client delegates to native `ENConfig.exe`; `NdSettingItem` describes target devices/results, not individual setting values. Exact per-field transport remains under investigation |
 
 ### Confirmed SNMP SET pattern: operation table
 
@@ -32,8 +36,9 @@ by walking `21.1.1.2` before writing anything.
 - EDA supports these SNMPv3 auth algorithms: MD5 and SHA-1/224/256/384/512.
 - EDA keeps device admin passwords in its own password manager, keyed by
   MAC or device ID. It does not read them from the device.
-- No SNMP OIDs were found for changing the admin password, community,
-  IP address or Web Config forms. EDA uses ENPC or Web Config (HTTP) for those.
+- This research has not resolved numeric SNMP OIDs for changing the admin
+  password, community, or IP address. ENPC and Web Config are candidate paths;
+  the exact transport and contract must be established per setting.
 
 ### Other writable-looking Epson subtrees (unverified)
 
