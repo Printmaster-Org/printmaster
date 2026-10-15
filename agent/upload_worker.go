@@ -847,6 +847,11 @@ func (w *UploadWorker) retryWithBackoff(fn func() error) error {
 			return nil // Success
 		}
 
+		var batchErr *agent.MetricsBatchError
+		if errors.As(err, &batchErr) {
+			return err
+		}
+
 		lastErr = err
 
 		// Don't retry on the last attempt

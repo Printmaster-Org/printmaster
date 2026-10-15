@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"printmaster/common/config"
 	"printmaster/common/logger"
+	"printmaster/common/protocol"
 	commonupdatepolicy "printmaster/common/updatepolicy"
 	commonutil "printmaster/common/util"
 	sharedweb "printmaster/common/web"
@@ -7922,10 +7923,13 @@ func handleMetricsBatch(w http.ResponseWriter, r *http.Request) {
 
 	// Store each metric snapshot
 	ctx := r.Context()
-	stored := 0
-	for _, metric := range req.Metrics {
-		if metric == nil {
-			logWarn("Null metrics in batch, skipping", "agent_id", agent.AgentID)
+	result := protocol.MetricsBatchResult{Received: len(req.Metrics)}
+	for index, metric := range req.Metrics {
+		if metric == nil || metric.Serial == "" {
+			logWarn("Invalid metrics record in batch", "agent_id", agent.AgentID, "index", index)
+			result.Failures = append(result.Failures, protocol.MetricsBatchFailure{
+				Index: index, Code: protocol.MetricsInvalidRecord,
+			})
 			continue
 		}
 		metric.AgentID = agent.AgentID
@@ -7933,18 +7937,22 @@ func handleMetricsBatch(w http.ResponseWriter, r *http.Request) {
 			metric.Timestamp = req.Timestamp
 		}
 
-		if metric.Serial == "" {
-			continue
-		}
-
 		if err := serverStore.SaveMetrics(ctx, metric); err != nil {
 			logError("Failed to store metrics", "serial", metric.Serial, "error", err)
+			code := protocol.MetricsStorageError
+			if errors.Is(err, storage.ErrOwnershipConflict) {
+				code = protocol.MetricsOwnershipConflict
+			}
+			result.Failures = append(result.Failures, protocol.MetricsBatchFailure{
+				Index: index, Serial: metric.Serial, Code: code,
+			})
 			continue
 		}
-		stored++
+		result.Stored++
 	}
+	result.Success = result.Stored == result.Received
 
-	logInfo("Metrics stored", "agent_id", agent.AgentID, "stored", stored, "total", len(req.Metrics))
+	logInfo("Metrics stored", "agent_id", agent.AgentID, "stored", result.Stored, "total", result.Received, "rejected", len(result.Failures))
 
 	// Log audit entry for metrics upload
 	clientIP := extractClientIP(r)
@@ -7954,20 +7962,17 @@ func handleMetricsBatch(w http.ResponseWriter, r *http.Request) {
 		ActorName: agent.Name,
 		TenantID:  agent.TenantID,
 		Action:    "upload_metrics",
-		Details:   fmt.Sprintf("Uploaded %d metric snapshots (%d stored)", len(req.Metrics), stored),
+		Details:   fmt.Sprintf("Uploaded %d metric snapshots (%d stored)", result.Received, result.Stored),
 		Metadata: map[string]interface{}{
-			"received": len(req.Metrics),
-			"stored":   stored,
+			"received": result.Received,
+			"stored":   result.Stored,
+			"rejected": len(result.Failures),
 		},
 		IPAddress: clientIP,
 	})
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":  true,
-		"received": len(req.Metrics),
-		"stored":   stored,
-	})
+	json.NewEncoder(w).Encode(result)
 }
 
 // Web UI handlers

@@ -3,14 +3,18 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	agentpkg "printmaster/agent/agent"
 	"printmaster/agent/storage"
+	"printmaster/common/protocol"
 	pmsettings "printmaster/common/settings"
 )
 
@@ -102,12 +106,86 @@ func TestUploadWorkerSendsRichInventoryBeforeMetrics(t *testing.T) {
 			t.Errorf("incomplete metrics: %+v", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"success":true,"stored":1}`))
+		_, _ = w.Write([]byte(`{"success":true,"received":1,"stored":1}`))
 	}))
 	defer server.Close()
 	worker := NewUploadWorker(agentpkg.NewServerClient(server.URL, "agent-1", "test-token"), store, stubLogger{}, nil, UploadWorkerConfig{}, "")
 	worker.doUpload()
 	if len(routes) != 2 || routes[0] != "/api/v1/devices/batch" || routes[1] != "/api/v1/metrics/batch" {
 		t.Fatalf("upload order = %v", routes)
+	}
+}
+
+func TestUploadWorkerMetricsReceipt(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		response   string
+		transient  bool
+		wantCalls  int32
+		wantReject bool
+	}{
+		{"partial receipt", `{"success":false,"received":2,"stored":1,"failures":[{"index":1,"serial":"printer-2","code":"ownership_conflict"}]}`, false, 1, true},
+		{"legacy partial receipt", `{"success":true,"received":2,"stored":1}`, false, 1, true},
+		{"all rejected", `{"success":false,"received":2,"stored":0}`, false, 1, true},
+		{"transport retry", `{"success":true,"received":2,"stored":2}`, true, 2, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "metrics.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			ctx := context.Background()
+			for i := 1; i <= 2; i++ {
+				device := &storage.Device{Serial: fmt.Sprintf("printer-%d", i), IP: fmt.Sprintf("192.0.2.%d", i), Visible: true}
+				if err := store.Create(ctx, device); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.SaveMetricsSnapshot(ctx, &storage.MetricsSnapshot{Serial: device.Serial, Timestamp: time.Now(), PageCount: 100}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if calls.Add(1) == 1 && tc.transient {
+					http.Error(w, "unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.response))
+			}))
+			defer server.Close()
+			client := agentpkg.NewServerClient(server.URL, "agent-1", "test-token")
+			worker := NewUploadWorker(client, store, stubLogger{}, nil, UploadWorkerConfig{}, "")
+			worker.retryAttempts, worker.retryBackoff = 3, time.Millisecond
+			err = worker.uploadMetrics()
+			var rejected *agentpkg.MetricsBatchError
+			if errors.As(err, &rejected) != tc.wantReject || (err != nil && !tc.wantReject) {
+				t.Fatalf("upload error=%v, want rejection=%v", err, tc.wantReject)
+			}
+			if calls.Load() != tc.wantCalls {
+				t.Fatalf("requests=%d, want %d", calls.Load(), tc.wantCalls)
+			}
+			for name, stats := range map[string]map[string]interface{}{"worker": worker.GetStats(), "client": client.GetStats()} {
+				if stats["last_metrics_upload"].(time.Time).IsZero() != tc.wantReject {
+					t.Fatalf("%s last success=%v, want rejection=%v", name, stats["last_metrics_upload"], tc.wantReject)
+				}
+			}
+		})
+	}
+}
+
+func TestUploadWorkerDoesNotReplayWrappedMetricsRejection(t *testing.T) {
+	worker := &UploadWorker{logger: stubLogger{}, retryAttempts: 3, retryBackoff: time.Millisecond, stopCh: make(chan struct{})}
+	rejection := &agentpkg.MetricsBatchError{Result: protocol.MetricsBatchResult{Received: 2, Stored: 1}}
+	calls := 0
+	err := worker.retryWithBackoff(func() error {
+		calls++
+		return fmt.Errorf("wrapped: %w", rejection)
+	})
+	if calls != 1 || !errors.Is(err, rejection) {
+		t.Fatalf("calls=%d error=%v", calls, err)
 	}
 }

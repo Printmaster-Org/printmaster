@@ -223,6 +223,7 @@ func TestServerClient_UploadMetrics(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success":  true,
 			"received": len(metrics),
+			"stored":   len(metrics),
 		})
 	}))
 	defer server.Close()

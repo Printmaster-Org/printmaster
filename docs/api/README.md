@@ -225,6 +225,33 @@ Content-Type: application/json
 }
 ```
 
+### Agent Metrics Upload Receipts
+
+`POST /api/v1/metrics/batch` uses the Agent bearer token, not a user
+session. The payload `agent_id` must match the authenticated Agent.
+
+An authenticated, decoded batch returns HTTP `200` with `received`, `stored`,
+and `success`. For metrics, `success` is true only when every snapshot was
+stored. Rejected records appear in `failures` with a zero-based `index`,
+an optional submitted `serial`, and a `code`: `invalid_record`,
+`ownership_conflict`, or `storage_error`. Missing and foreign-owned devices
+share the ownership-conflict code; database error details are not returned.
+An empty batch succeeds with both counts zero.
+
+The Agent checks persistence counts even with older Servers that return
+`success: true` for partial batches. Rejections do not advance the last
+successful metrics-upload time or trigger immediate whole-batch retries,
+which would duplicate already accepted snapshots. Normal upload cycles
+continue with the latest local snapshots; this is not a historical retry
+queue or an exactly-once delivery guarantee. Transport failures retain the
+existing retry policy.
+
+Device-batch receipts and device/metrics ownership checks are unchanged.
+Same-tenant shared reporting, device-level site assignment and
+agent-independent device retirement are follow-up work, not enabled here.
+See the canonical [machine protocol guide](https://docs.printmaster.work/api/protocol/#metrics-batch-receipts)
+for an example and mixed-version behavior.
+
 ### WebSocket Connection
 
 #### Agent WebSocket

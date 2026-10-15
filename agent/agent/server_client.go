@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"printmaster/common/protocol"
 	pmsettings "printmaster/common/settings"
 	"printmaster/common/updatepolicy"
 )
@@ -443,7 +444,22 @@ func (c *ServerClient) UploadDevices(ctx context.Context, devices []interface{})
 	return nil
 }
 
-// UploadMetrics sends device metrics to the server
+// MetricsBatchError is an acknowledged rejection; replaying the whole batch
+// immediately would duplicate snapshots that the server already stored.
+type MetricsBatchError struct {
+	Result protocol.MetricsBatchResult
+}
+
+func (e *MetricsBatchError) Error() string {
+	message := fmt.Sprintf("metrics batch rejected: %d of %d snapshots stored", e.Result.Stored, e.Result.Received)
+	if len(e.Result.Failures) > 0 {
+		first := e.Result.Failures[0]
+		message += fmt.Sprintf("; first failure at index %d (serial %q): %s", first.Index, first.Serial, first.Code)
+	}
+	return message
+}
+
+// UploadMetrics sends device metrics and requires a complete persistence receipt.
 func (c *ServerClient) UploadMetrics(ctx context.Context, metrics []interface{}) error {
 	type MetricsBatchRequest struct {
 		AgentID   string        `json:"agent_id"`
@@ -457,9 +473,15 @@ func (c *ServerClient) UploadMetrics(ctx context.Context, metrics []interface{})
 		Metrics:   metrics,
 	}
 
-	var resp map[string]interface{}
+	var resp protocol.MetricsBatchResult
 	if err := c.doRequest(ctx, "POST", "/api/v1/metrics/batch", req, &resp, true); err != nil {
 		return fmt.Errorf("metrics upload failed: %w", err)
+	}
+	if resp.Received != len(metrics) || resp.Stored < 0 || resp.Stored > resp.Received {
+		return fmt.Errorf("invalid metrics batch receipt: received=%d stored=%d sent=%d", resp.Received, resp.Stored, len(metrics))
+	}
+	if !resp.Success || resp.Stored != resp.Received || len(resp.Failures) != 0 {
+		return &MetricsBatchError{Result: resp}
 	}
 
 	c.mu.Lock()
