@@ -505,9 +505,13 @@ test('last-seen aging marks temporary printers offline; filters, table and recov
     expect(await page.evaluate(() => devicesVM.stats.totalStatuses.offline)).toBe(3);
 
     await openFilters(page);
+    // Status tags are an inclusive selection: choosing Offline shows only offline devices.
     await page.locator('#devices_status_filter [data-status="offline"]').click();
-    await expect(card('REMOVED')).not.toBeVisible();
+    await expect(page.locator('#devices_status_filter [data-status="offline"]')).toHaveAttribute('aria-pressed', 'true');
+    await expect(card('REMOVED')).toBeVisible();
+    await expect(card('LIVE')).not.toBeVisible();
     await page.locator('#devices_status_filter [data-status="offline"]').click();
+    await expect(card('LIVE')).toBeVisible();
     await expect(card('REMOVED')).toBeVisible();
     await page.locator('#devices_sidebar_toggle').click();
     await page.evaluate(() => { devicesVM.view = 'table'; applyDeviceFilters(true); });
@@ -688,11 +692,19 @@ test('row/metric errors preserve identities, explicit retry bounded; index retry
     await expect(cards(page)).toHaveCount(2);
     await expect(page.locator('#devices_retry_loading')).toBeVisible();
     expect(stageCalls(calls, '/rows')).toHaveLength(1);
+    const failedKeys = stageCalls(calls, '/rows')[0].keys;
     failing = false;
     await page.locator('#devices_retry_loading').click();
     await expect(cards(page).first().locator('.toner-bar')).toHaveCount(1);
     await expect(page.locator('#devices_retry_loading')).toBeHidden();
-    expect(stageCalls(calls, '/rows')).toHaveLength(2);
+    // Rows load per viewport, so cards below the fold may hydrate in later
+    // requests; retry must re-request only failed keys, each exactly once.
+    const rowCalls = stageCalls(calls, '/rows');
+    expect(rowCalls[1].keys).toEqual(failedKeys);
+    const requested = rowCalls.flatMap(call => call.keys);
+    for (const key of new Set(requested)) {
+        expect(requested.filter(k => k === key)).toHaveLength(failedKeys.includes(key) ? 2 : 1);
+    }
     expect(calls.some(call => call.path.endsWith('/list'))).toBe(false);
 });
 
