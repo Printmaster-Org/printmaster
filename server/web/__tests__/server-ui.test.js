@@ -29,6 +29,59 @@ function setup(names, globals = {}) {
     return { context, document: dom.window.document };
 }
 
+describe('ordered agent update lifecycle', () => {
+    let context, agentsVM, toast;
+    const event = (sequence, status, progress, run = 'one', started = '2026-10-16T18:00:00.000Z') => ({
+        agent_id: 'agent-1', run_id: run, run_started_at: started, sequence, status, progress,
+        target_version: '1.1.0', message: status,
+    });
+    beforeEach(() => {
+        jest.useFakeTimers();
+        agentsVM = { items: [{ agent_id: 'agent-1', name: 'Remote office', version: '1.0.0' }], updateState: {} };
+        toast = jest.fn();
+        ({ context } = setup(['handleAgentUpdateProgress', 'getSmoothedUpdateProgress', 'handleAgentReconnectAfterUpdate'], {
+            agentsVM, setTimeout, window: { __pm_shared: { showToast: toast } },
+            refreshAgentVersionCell: jest.fn(), startUpdateProgressAnimation: jest.fn(),
+            loadAgents: jest.fn(), fetchSingleAgent: jest.fn().mockResolvedValue({ version: '1.1.0' }),
+        }));
+    });
+    afterEach(() => jest.useRealTimers());
+
+    test('completion cannot regress, replay cannot notify twice, and old runs cannot overwrite new ones', () => {
+        context.handleAgentUpdateProgress(event(2, 'restarting', 80));
+        context.handleAgentUpdateProgress(event(4, 'succeeded', 100));
+        context.handleAgentUpdateProgress(event(3, 'restarting', 80));
+        context.handleAgentUpdateProgress(event(5, 'restarting', 80));
+        context.handleAgentUpdateProgress(event(4, 'succeeded', 100));
+        expect(agentsVM.updateState['agent-1'].status).toBe('complete');
+        expect(toast.mock.calls.filter(([message]) => message.includes('complete'))).toHaveLength(1);
+        context.handleAgentUpdateProgress(event(1, 'downloading', 10, 'two', '2026-10-16T18:01:00.000Z'));
+        context.handleAgentUpdateProgress(event(100, 'succeeded', 100));
+        jest.advanceTimersByTime(5000);
+        expect(agentsVM.updateState['agent-1'].runId).toBe('two');
+        expect(agentsVM.updateState['agent-1'].status).toBe('downloading');
+    });
+
+    test('a persisted snapshot restores silently and uses the agent percentage without rescaling', () => {
+        context.handleAgentUpdateProgress(event(8, 'downloading', 45), { silent: true });
+        expect(toast).not.toHaveBeenCalled();
+        expect(context.getSmoothedUpdateProgress('agent-1', 'downloading', agentsVM.updateState['agent-1'])).toBe(45);
+        context.handleAgentUpdateProgress(event(7, 'downloading', 30));
+        expect(agentsVM.updateState['agent-1'].progress).toBe(45);
+        context.handleAgentUpdateProgress({ agent_id: 'agent-1', status: 'failed', error: 'legacy error' });
+        expect(agentsVM.updateState['agent-1'].status).toBe('downloading');
+    });
+
+    test('a reconnect and a UI timeout never manufacture completion or clear an unresolved run', async () => {
+        context.handleAgentUpdateProgress(event(2, 'restarting', 80));
+        await context.handleAgentReconnectAfterUpdate('agent-1', agentsVM.updateState['agent-1']);
+        expect(agentsVM.updateState['agent-1'].status).toBe('restarting');
+        jest.advanceTimersByTime(30000);
+        expect(agentsVM.updateState['agent-1'].message).toContain('outcome is not yet known');
+        expect(toast.mock.calls.some(([message]) => message.includes('complete'))).toBe(false);
+    });
+});
+
 describe('Server session monitoring', () => {
     function sessionSetup(status) {
         const replace = jest.fn();

@@ -8,6 +8,7 @@ import (
 	"printmaster/common/metadata"
 	pmsettings "printmaster/common/settings"
 	commonstorage "printmaster/common/storage"
+	"printmaster/common/updatepolicy"
 	"regexp"
 	"sort"
 	"strings"
@@ -134,18 +135,19 @@ func NormalizeTenantDomain(value string) string {
 
 // Agent represents a registered PrintMaster agent
 type Agent struct {
-	ID              int64     `json:"id"`
-	AgentID         string    `json:"agent_id"` // Stable UUID identifier
-	Name            string    `json:"name"`     // User-friendly name (defaults to hostname)
-	Hostname        string    `json:"hostname"`
-	IP              string    `json:"ip"`
-	Platform        string    `json:"platform"`         // windows, linux, darwin
-	Version         string    `json:"version"`          // Agent version
-	ProtocolVersion string    `json:"protocol_version"` // Protocol compatibility
-	Token           string    `json:"token"`            // Bearer token for authentication
-	RegisteredAt    time.Time `json:"registered_at"`
-	LastSeen        time.Time `json:"last_seen"`
-	Status          string    `json:"status"` // active, inactive, offline
+	UpdateProgress  *updatepolicy.ProgressSnapshot `json:"update_progress,omitempty"`
+	ID              int64                          `json:"id"`
+	AgentID         string                         `json:"agent_id"` // Stable UUID identifier
+	Name            string                         `json:"name"`     // User-friendly name (defaults to hostname)
+	Hostname        string                         `json:"hostname"`
+	IP              string                         `json:"ip"`
+	Platform        string                         `json:"platform"`         // windows, linux, darwin
+	Version         string                         `json:"version"`          // Agent version
+	ProtocolVersion string                         `json:"protocol_version"` // Protocol compatibility
+	Token           string                         `json:"token"`            // Bearer token for authentication
+	RegisteredAt    time.Time                      `json:"registered_at"`
+	LastSeen        time.Time                      `json:"last_seen"`
+	Status          string                         `json:"status"` // active, inactive, offline
 
 	// Additional metadata
 	OSVersion       string    `json:"os_version,omitempty"`        // Detailed OS version
@@ -674,6 +676,7 @@ type Store interface {
 	UpdateAgentInfo(ctx context.Context, agent *Agent) error
 	// UpdateAgentName updates the user-friendly name for an agent
 	UpdateAgentName(ctx context.Context, agentID string, name string) error
+	SaveAgentUpdateProgress(ctx context.Context, agentID string, progress updatepolicy.ProgressSnapshot) (bool, error)
 	DeleteAgent(ctx context.Context, agentID string) error
 
 	// Device management

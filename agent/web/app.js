@@ -181,10 +181,12 @@ const AUTO_UPDATE_STATUS_CLASS_MAP = {
     staging: 'status-active',
     applying: 'status-active',
     restarting: 'status-active',
+    verifying: 'status-active',
     succeeded: 'status-success',
     failed: 'status-error',
     skipped: 'status-muted',
     rolled_back: 'status-error',
+    cancelled: 'status-muted',
 };
 
 const AUTO_UPDATE_STATUS_COPY = {
@@ -195,13 +197,15 @@ const AUTO_UPDATE_STATUS_COPY = {
     staging: 'Staging files before install...',
     applying: 'Applying update...',
     restarting: 'Restarting the agent service...',
+    verifying: 'Validating the running agent version...',
     succeeded: 'Last update completed successfully.',
     failed: 'Last update failed - check logs for details.',
     skipped: 'Update skipped per policy window.',
     rolled_back: 'Rolled back to previous version.',
+    cancelled: 'Update cancelled; a new attempt can be started.',
 };
 
-const AUTO_UPDATE_BUSY_STATUSES = new Set(['checking', 'pending', 'downloading', 'staging', 'applying', 'restarting']);
+const AUTO_UPDATE_BUSY_STATUSES = new Set(['checking', 'pending', 'downloading', 'staging', 'applying', 'restarting', 'verifying']);
 const AUTO_UPDATE_STATUS_POLL_MS = 45000;
 let autoUpdateStatusIntervalId = null;
 
@@ -214,10 +218,24 @@ const updateProgressState = {
     error: '',
     timestamp: 0
 };
+let updateProgressSnapshot = null;
 
 // Handle real-time update progress events from SSE
-function handleUpdateProgress(data) {
-    const status = data.status || 'unknown';
+function handleUpdateProgress(data, { silent = false } = {}) {
+    if (data.run_id) {
+        if (updateProgressSnapshot) {
+            if (data.run_id === updateProgressSnapshot.run_id) {
+                if (['idle', 'succeeded', 'failed', 'skipped', 'rolled_back', 'cancelled'].includes(updateProgressSnapshot.status) ||
+                    data.sequence <= updateProgressSnapshot.sequence) return;
+            } else if (Date.parse(data.run_started_at) <= Date.parse(updateProgressSnapshot.run_started_at)) {
+                return;
+            }
+        }
+        updateProgressSnapshot = data;
+    } else if (updateProgressSnapshot) {
+        return;
+    }
+    const status = ({ succeeded: 'complete', staging: 'ready', applying: 'ready', verifying: 'restarting' })[data.status] || data.status || 'unknown';
     const progress = data.progress || 0;
     const message = data.message || '';
     const targetVersion = data.target_version || '';
@@ -230,11 +248,14 @@ function handleUpdateProgress(data) {
     updateProgressState.targetVersion = targetVersion;
     updateProgressState.error = errorMsg;
     updateProgressState.timestamp = Date.now();
+    const eventState = { runId: data.run_id, sequence: data.sequence };
+    updateProgressState.event = eventState;
     
     // Update UI elements
     updateAutoUpdateButtonsFromProgress(status, progress, message, targetVersion, errorMsg);
     
     // Show toast for key events
+    if (silent) return;
     switch (status) {
         case 'downloading':
             if (progress === 0) {
@@ -251,6 +272,7 @@ function handleUpdateProgress(data) {
             window.__pm_shared.showToast('Update complete!', 'success');
             // Reset state after delay
             setTimeout(() => {
+                if (updateProgressState.event !== eventState) return;
                 updateProgressState.status = 'idle';
                 updateProgressState.progress = 0;
                 resetAutoUpdateButtons();
@@ -260,6 +282,7 @@ function handleUpdateProgress(data) {
         case 'failed':
             window.__pm_shared.showToast('Update failed: ' + (errorMsg || message), 'error');
             setTimeout(() => {
+                if (updateProgressState.event !== eventState) return;
                 updateProgressState.status = 'idle';
                 resetAutoUpdateButtons();
                 refreshAutoUpdateStatus();
@@ -280,7 +303,7 @@ function updateAutoUpdateButtonsFromProgress(status, progress, message, targetVe
     const badge = document.getElementById('autoupdate_status_badge');
     const copy = document.getElementById('autoupdate_status_copy');
     
-    const isBusy = ['checking', 'downloading', 'ready', 'restarting'].includes(status);
+    const isBusy = ['checking', 'pending', 'downloading', 'ready', 'restarting'].includes(status);
     const canCancel = ['checking', 'downloading'].includes(status);
     
     if (checkBtn) {
@@ -500,6 +523,7 @@ async function refreshAutoUpdateStatus(triggeredByButton = false) {
 }
 
 function applyAutoUpdateStatusToUI(data) {
+    if (data?.update_progress) handleUpdateProgress(data.update_progress, { silent: true });
     const badge = document.getElementById('autoupdate_status_badge');
     const copy = document.getElementById('autoupdate_status_copy');
     const disabledNotice = document.getElementById('autoupdate_disabled_notice');
@@ -515,7 +539,7 @@ function applyAutoUpdateStatusToUI(data) {
 
     badge.textContent = isEnabled ? formatAutoUpdateStatusLabel(status) : 'Disabled';
     badge.className = 'autoupdate-status-pill ' + (isEnabled ? statusClassForAutoUpdate(status) : 'status-disabled');
-    copy.textContent = isEnabled ? describeAutoUpdateCopy(status, data || {}) : disabledReason;
+    copy.textContent = isEnabled ? (data.update_progress?.error || data.update_progress?.message || describeAutoUpdateCopy(status, data || {})) : disabledReason;
 
     if (disabledNotice) {
         if (isEnabled) {

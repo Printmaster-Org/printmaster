@@ -42,6 +42,7 @@ const (
 
 // PendingUpdateState stores information about an in-progress update for post-restart validation.
 type PendingUpdateState struct {
+	RunID         string    `json:"run_id,omitempty"`
 	TargetVersion string    `json:"target_version"`
 	FromVersion   string    `json:"from_version"`
 	StartedAt     time.Time `json:"started_at"`
@@ -77,6 +78,7 @@ type Options struct {
 	PolicyProvider   PolicyProvider
 	TelemetrySink    TelemetrySink
 	ProgressCallback ProgressCallback
+	SnapshotCallback func(updatepolicy.ProgressSnapshot)
 }
 
 // UpdateClient abstracts the server communication needed for updates.
@@ -125,6 +127,10 @@ type Manager struct {
 	restartFn        func() error
 	launchHelperFn   func(helperPath string) error // For testing: allows mocking the helper launch
 	progressCallback ProgressCallback
+	snapshotCallback func(updatepolicy.ProgressSnapshot)
+	progressMu       sync.Mutex
+	progress         updatepolicy.ProgressSnapshot
+	progressErr      error
 	keyPins          *signingKeyPinStore // Log-only manifest signing key pin.
 
 	// Package manager support (Linux dpkg/apt/dnf/rpm)
@@ -138,15 +144,16 @@ type Manager struct {
 
 	// operationMu owns the entire check/install lifecycle, including pending
 	// transitions where status alone does not indicate exclusive ownership.
-	operationMu    sync.Mutex
-	mu             sync.RWMutex
-	status         Status
-	lastCheck      time.Time
-	nextCheck      time.Time
-	latestVersion  string
-	latestManifest *UpdateManifest
-	currentRun     *UpdateRun
-	cancelled      bool
+	operationMu     sync.Mutex
+	mu              sync.RWMutex
+	status          Status
+	lastCheck       time.Time
+	nextCheck       time.Time
+	latestVersion   string
+	latestManifest  *UpdateManifest
+	currentRun      *UpdateRun
+	cancelled       bool
+	operationCancel context.CancelFunc
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -284,6 +291,7 @@ func NewManager(opts Options) (*Manager, error) {
 		policyProvider:    opts.PolicyProvider,
 		telemetry:         opts.TelemetrySink,
 		progressCallback:  opts.ProgressCallback,
+		snapshotCallback:  opts.SnapshotCallback,
 		usePackageManager: usePackageManager,
 		packageName:       packageName,
 		packageManager:    packageManager,
@@ -294,6 +302,9 @@ func NewManager(opts Options) (*Manager, error) {
 	}
 
 	mgr.restartFn = mgr.restartService
+	if err := mgr.restoreProgress(); err != nil {
+		return nil, err
+	}
 
 	return mgr, nil
 }
@@ -333,6 +344,7 @@ func (m *Manager) Status() ManagerStatus {
 	}
 
 	return ManagerStatus{
+		Progress:          m.progressSnapshotLocked(),
 		Enabled:           m.enabled,
 		DisabledReason:    m.disabledReason,
 		CurrentVersion:    m.currentVersion,
@@ -355,14 +367,6 @@ func (m *Manager) Status() ManagerStatus {
 
 // CheckNow triggers an immediate update check.
 func (m *Manager) CheckNow(ctx context.Context) error {
-	m.mu.Lock()
-	if m.status != StatusIdle && m.status != StatusPending {
-		status := m.status
-		m.mu.Unlock()
-		return fmt.Errorf("update operation already in progress: %s", status)
-	}
-	m.mu.Unlock()
-
 	return m.performCheck(ctx)
 }
 
@@ -376,15 +380,10 @@ type manualUpdateChannelKey struct{}
 
 // ForceInstallLatestFromChannel selects a channel for this operation only.
 // Scheduled policy and the configured channel are not changed by a manual install.
-func (m *Manager) ForceInstallLatestFromChannel(ctx context.Context, reason, channel string) error {
+func (m *Manager) ForceInstallLatestFromChannel(ctx context.Context, reason, channel string) (operationErr error) {
 	channel = strings.ToLower(strings.TrimSpace(channel))
 	if channel != "" && !isKnownChannel(channel) {
 		return fmt.Errorf("invalid update channel: %s", channel)
-	}
-	if err := m.validateExplicitChannel(channel); err != nil {
-		m.logWarn("Rejected manual update channel", "channel", channel, "error", err)
-		m.reportTelemetry(ctx, StatusFailed, ErrCodeChannelUnsupported, err.Error())
-		return err
 	}
 	if channel != "" {
 		ctx = context.WithValue(ctx, manualUpdateChannelKey{}, channel)
@@ -394,6 +393,13 @@ func (m *Manager) ForceInstallLatestFromChannel(ctx context.Context, reason, cha
 		return err
 	}
 	defer m.operationMu.Unlock()
+	ctx, endOperation := m.operationContext(ctx)
+	defer endOperation()
+
+	if err := m.beginOperation(ctx); err != nil {
+		return err
+	}
+	defer func() { operationErr = m.finishOperation(operationErr) }()
 
 	if !m.enabled {
 		if m.disabledReason != "" {
@@ -406,23 +412,12 @@ func (m *Manager) ForceInstallLatestFromChannel(ctx context.Context, reason, cha
 		return fmt.Errorf("update client not configured")
 	}
 
-	m.mu.Lock()
-	if m.status != StatusIdle && m.status != StatusPending {
-		status := m.status
-		m.mu.Unlock()
-		return fmt.Errorf("update operation already in progress: %s", status)
+	if err := m.validateExplicitChannel(channel); err != nil {
+		m.logWarn("Rejected manual update channel", "channel", channel, "error", err)
+		m.setStatusWithError(StatusFailed, ErrCodeChannelUnsupported, err.Error())
+		m.reportTelemetry(ctx, StatusFailed, ErrCodeChannelUnsupported, err.Error())
+		return err
 	}
-	m.status = StatusChecking
-	m.mu.Unlock()
-
-	defer func() {
-		m.mu.RLock()
-		currentStatus := m.status
-		m.mu.RUnlock()
-		if currentStatus == StatusChecking {
-			m.setStatus(StatusIdle)
-		}
-	}()
 
 	manifest, err := m.fetchManifest(ctx)
 	if err != nil {
@@ -432,6 +427,9 @@ func (m *Manager) ForceInstallLatestFromChannel(ctx context.Context, reason, cha
 	if manifest == nil {
 		return fmt.Errorf("no manifest available")
 	}
+	if m.IsCancelled() {
+		return context.Canceled
+	}
 	if channel != "" && manifest.Channel != channel {
 		return fmt.Errorf("manifest channel %q does not match requested channel %q", manifest.Channel, channel)
 	}
@@ -440,6 +438,7 @@ func (m *Manager) ForceInstallLatestFromChannel(ctx context.Context, reason, cha
 	m.lastCheck = m.clock()
 	m.latestVersion = manifest.Version
 	m.latestManifest = manifest
+	m.currentRun.TargetVersion = manifest.Version
 	m.mu.Unlock()
 
 	if reason == "" {
@@ -510,22 +509,22 @@ func (m *Manager) timeUntilNextCheck() time.Duration {
 	return until
 }
 
-func (m *Manager) performCheck(ctx context.Context) error {
+func (m *Manager) performCheck(ctx context.Context) (operationErr error) {
 	if err := m.acquireOperation(); err != nil {
 		return err
 	}
 	defer m.operationMu.Unlock()
+	ctx, endOperation := m.operationContext(ctx)
+	defer endOperation()
 
-	m.setStatus(StatusChecking)
-	defer func() {
-		m.mu.RLock()
-		status := m.status
-		m.mu.RUnlock()
-		if status == StatusChecking {
-			m.setStatus(StatusIdle)
-		}
-	}()
+	if err := m.beginOperation(ctx); err != nil {
+		return err
+	}
+	defer func() { operationErr = m.finishOperation(operationErr) }()
 
+	if !m.enabled || m.client == nil {
+		return fmt.Errorf("auto-update unavailable: %s", m.disabledReason)
+	}
 	// Check if we're within maintenance window
 	if !m.isInMaintenanceWindow() {
 		m.logDebug("Skipping update check - outside maintenance window")
@@ -549,11 +548,18 @@ func (m *Manager) performCheck(ctx context.Context) error {
 		m.reportTelemetry(ctx, StatusFailed, manifestErrorCode(err), err.Error())
 		return fmt.Errorf("failed to fetch manifest: %w", err)
 	}
+	if manifest == nil {
+		return fmt.Errorf("no manifest available")
+	}
+	if m.IsCancelled() {
+		return context.Canceled
+	}
 
 	m.mu.Lock()
 	m.lastCheck = m.clock()
 	m.latestVersion = manifest.Version
 	m.latestManifest = manifest
+	m.currentRun.TargetVersion = manifest.Version
 	m.mu.Unlock()
 
 	// Check if update is needed
@@ -579,6 +585,13 @@ func (m *Manager) performCheck(ctx context.Context) error {
 // Status is presentation state, not an operation lock (pending is admissible).
 func (m *Manager) acquireOperation() error {
 	if m.operationMu.TryLock() {
+		m.mu.RLock()
+		status := m.status
+		m.mu.RUnlock()
+		if status == StatusRestarting || status == StatusVerifying {
+			m.operationMu.Unlock()
+			return fmt.Errorf("update operation already in progress: %s", status)
+		}
 		return nil
 	}
 	m.mu.RLock()
@@ -594,7 +607,7 @@ func (m *Manager) executeUpdate(ctx context.Context, manifest *UpdateManifest) e
 	}
 
 	run := &UpdateRun{
-		ID:             fmt.Sprintf("run-%d", m.clock().UnixNano()),
+		ID:             m.Progress().RunID,
 		Status:         StatusDownloading,
 		RequestedAt:    m.clock(),
 		CurrentVersion: m.currentVersion,
@@ -607,7 +620,6 @@ func (m *Manager) executeUpdate(ctx context.Context, manifest *UpdateManifest) e
 
 	m.mu.Lock()
 	m.currentRun = run
-	m.cancelled = false // Reset cancelled flag for new run
 	m.mu.Unlock()
 
 	// Download phase
@@ -711,11 +723,18 @@ func (m *Manager) executeUpdate(ctx context.Context, manifest *UpdateManifest) e
 		// Continue anyway - new install may still work
 	}
 
+	updateMethod := "binary"
+	if strings.HasSuffix(stagingPath, ".msi") {
+		updateMethod = "msi"
+	}
 	// Apply phase - NO CANCELLATION AFTER THIS POINT (65-80% of overall progress)
 	m.setStatusWithProgress(StatusApplying, 68, "Applying update (cannot cancel)...")
 	run.Status = StatusApplying
 	m.reportTelemetry(ctx, StatusApplying, "", "")
 
+	if err := m.writePendingUpdateState(manifest.Version, updateMethod); err != nil {
+		return err
+	}
 	if err := m.applyUpdate(stagingPath); err != nil {
 		run.Status = StatusFailed
 		run.ErrorCode = ErrCodeApplyFailed
@@ -730,22 +749,11 @@ func (m *Manager) executeUpdate(ctx context.Context, manifest *UpdateManifest) e
 		return err
 	}
 
-	// Success - about to restart (80% of overall progress, new agent will continue from 85%)
-	run.Status = StatusSucceeded
-	run.CompletedAt = m.clock()
+	run.Status = StatusRestarting
 	m.setStatusWithProgress(StatusRestarting, 80, "Restarting agent...")
-	m.reportTelemetry(ctx, StatusSucceeded, "", "")
+	m.reportTelemetry(ctx, StatusRestarting, "", "")
 
 	m.logInfo("Update applied successfully", "from", m.currentVersion, "to", manifest.Version)
-
-	// Write pending update state for post-restart validation
-	updateMethod := "binary"
-	if strings.HasSuffix(stagingPath, ".msi") {
-		updateMethod = "msi"
-	}
-	if err := m.writePendingUpdateState(manifest.Version, updateMethod); err != nil {
-		m.logWarn("Failed to write pending update state (update will proceed)", "error", err)
-	}
 
 	// Trigger restart (this function likely won't return outside of tests)
 	if m.restartFn != nil {
@@ -818,7 +826,7 @@ func validateManifestFormat(manifest *UpdateManifest, requested updatepolicy.Art
 // This skips download/staging phases since the package manager handles everything.
 func (m *Manager) executeUpdateViaPackageManager(ctx context.Context, manifest *UpdateManifest) error {
 	run := &UpdateRun{
-		ID:             fmt.Sprintf("run-%d", m.clock().UnixNano()),
+		ID:             m.Progress().RunID,
 		Status:         StatusApplying,
 		RequestedAt:    m.clock(),
 		CurrentVersion: m.currentVersion,
@@ -830,7 +838,6 @@ func (m *Manager) executeUpdateViaPackageManager(ctx context.Context, manifest *
 
 	m.mu.Lock()
 	m.currentRun = run
-	m.cancelled = false
 	m.mu.Unlock()
 
 	run.StartedAt = m.clock()
@@ -845,7 +852,7 @@ func (m *Manager) executeUpdateViaPackageManager(ctx context.Context, manifest *
 
 	// Progress callback for package manager phases
 	progressFn := func(percent int, message string) {
-		m.setStatusWithProgress(StatusApplying, percent, message)
+		m.setStatusWithProgress(StatusApplying, percent*80/100, message)
 	}
 
 	// Initial status
@@ -853,6 +860,9 @@ func (m *Manager) executeUpdateViaPackageManager(ctx context.Context, manifest *
 	run.Status = StatusApplying
 	m.reportTelemetry(ctx, StatusApplying, "", "")
 
+	if err := m.writePendingUpdateState(manifest.Version, m.packageManager); err != nil {
+		return err
+	}
 	if err := m.applyUpdateViaPackageManager(manifest.Version, progressFn); err != nil {
 		run.Status = StatusFailed
 		run.ErrorCode = ErrCodeApplyFailed
@@ -863,19 +873,12 @@ func (m *Manager) executeUpdateViaPackageManager(ctx context.Context, manifest *
 		return err
 	}
 
-	// Success - about to restart (80% of overall progress, new agent will continue from 85%)
-	run.Status = StatusSucceeded
-	run.CompletedAt = m.clock()
+	run.Status = StatusRestarting
 	m.setStatusWithProgress(StatusRestarting, 80, "Restarting agent...")
-	m.reportTelemetry(ctx, StatusSucceeded, "", "")
+	m.reportTelemetry(ctx, StatusRestarting, "", "")
 
 	m.logInfo("Update applied successfully via package manager",
 		"from", m.currentVersion, "to", manifest.Version, "package", m.packageName, "manager", m.packageManager)
-
-	// Write pending update state for post-restart validation
-	if err := m.writePendingUpdateState(manifest.Version, m.packageManager); err != nil {
-		m.logWarn("Failed to write pending update state (update will proceed)", "error", err)
-	}
 
 	// The package's postinst script should restart the service,
 	// but we explicitly restart to ensure we're running the new version
@@ -1428,7 +1431,14 @@ func (m *Manager) rollback(backupPath string) error {
 // writePendingUpdateState saves the expected target version before restart.
 // This allows the new version to validate the update was successful on startup.
 func (m *Manager) writePendingUpdateState(targetVersion, method string) error {
+	m.mu.RLock()
+	journalErr := m.progressErr
+	m.mu.RUnlock()
+	if journalErr != nil {
+		return fmt.Errorf("cannot apply update without durable progress: %w", journalErr)
+	}
 	state := PendingUpdateState{
+		RunID:         m.Progress().RunID,
 		TargetVersion: targetVersion,
 		FromVersion:   m.currentVersion,
 		StartedAt:     m.clock(),
@@ -1441,7 +1451,7 @@ func (m *Manager) writePendingUpdateState(targetVersion, method string) error {
 	}
 
 	pendingPath := filepath.Join(m.stateDir, pendingUpdateFile)
-	if err := os.WriteFile(pendingPath, data, 0o644); err != nil {
+	if err := writeUpdateState(pendingPath, data); err != nil {
 		return fmt.Errorf("failed to write pending update state: %w", err)
 	}
 
@@ -1464,16 +1474,30 @@ func (m *Manager) ValidatePostUpdate() (bool, string, error) {
 		return false, "", fmt.Errorf("failed to read pending update state: %w", err)
 	}
 
-	// Always clean up the file regardless of validation result
-	defer func() {
-		if removeErr := os.Remove(pendingPath); removeErr != nil {
-			m.logWarn("Failed to remove pending update state file", "error", removeErr)
-		}
-	}()
-
 	var state PendingUpdateState
 	if err := json.Unmarshal(data, &state); err != nil {
+		if preserveErr := os.Rename(pendingPath, pendingPath+fmt.Sprintf(".corrupt-%d", time.Now().UnixNano())); preserveErr != nil {
+			return false, "", errors.Join(err, preserveErr)
+		}
+		if m.Progress().Terminal() {
+			if beginErr := m.beginOperation(context.Background()); beginErr != nil {
+				return false, "", errors.Join(err, beginErr)
+			}
+		}
+		m.setStatusWithError(StatusFailed, ErrCodeHealthCheck, err.Error())
 		return false, "", fmt.Errorf("failed to parse pending update state: %w", err)
+	}
+	snapshot := m.Progress()
+	if snapshot.RunID == "" || snapshot.Terminal() || state.RunID != "" && state.RunID != snapshot.RunID {
+		if err := m.beginOperation(context.Background()); err != nil {
+			return true, state.FromVersion, err
+		}
+	}
+	m.mu.Lock()
+	m.currentRun = &UpdateRun{ID: m.progress.RunID, TargetVersion: state.TargetVersion, CurrentVersion: state.FromVersion}
+	m.mu.Unlock()
+	if err := m.publishProgress(StatusVerifying, 90, "Validating the running agent version...", ""); err != nil {
+		return true, state.FromVersion, err
 	}
 
 	m.logInfo("Checking post-update validation",
@@ -1489,8 +1513,15 @@ func (m *Manager) ValidatePostUpdate() (bool, string, error) {
 			"expected", state.TargetVersion,
 			"actual", m.currentVersion,
 			"from_version", state.FromVersion)
-		return true, state.FromVersion, fmt.Errorf("update validation failed: expected version %s but running %s",
+		validationErr := fmt.Errorf("update validation failed: expected version %s but running %s",
 			state.TargetVersion, m.currentVersion)
+		if err := m.publishProgress(StatusFailed, -1, validationErr.Error(), validationErr.Error()); err != nil {
+			return true, state.FromVersion, errors.Join(validationErr, err)
+		}
+		if err := os.Remove(pendingPath); err != nil {
+			return true, state.FromVersion, errors.Join(validationErr, err)
+		}
+		return true, state.FromVersion, validationErr
 	}
 
 	// Success!
@@ -1500,6 +1531,12 @@ func (m *Manager) ValidatePostUpdate() (bool, string, error) {
 		"update_method", state.Method,
 		"update_duration", m.clock().Sub(state.StartedAt).String())
 
+	if err := m.publishProgress(StatusSucceeded, 100, "Update completed; running version "+m.currentVersion, ""); err != nil {
+		return true, state.FromVersion, err
+	}
+	if err := os.Remove(pendingPath); err != nil {
+		return true, state.FromVersion, err
+	}
 	return true, state.FromVersion, nil
 }
 
@@ -1773,34 +1810,14 @@ func (m *Manager) setStatus(s Status) {
 }
 
 func (m *Manager) setStatusWithProgress(s Status, progress int, message string) {
-	m.mu.Lock()
-	m.status = s
-	targetVersion := ""
-	if m.currentRun != nil {
-		targetVersion = m.currentRun.TargetVersion
-	} else if m.latestManifest != nil {
-		targetVersion = m.latestManifest.Version
-	}
-	m.mu.Unlock()
-
-	// Invoke progress callback if set
-	if m.progressCallback != nil {
-		go m.progressCallback(s, targetVersion, progress, message, nil)
+	if err := m.publishProgress(s, progress, message, ""); err != nil {
+		m.logError("Failed to persist update progress", "error", err)
 	}
 }
 
 func (m *Manager) setStatusWithError(s Status, errCode, errMsg string) {
-	m.mu.Lock()
-	m.status = s
-	targetVersion := ""
-	if m.currentRun != nil {
-		targetVersion = m.currentRun.TargetVersion
-	}
-	m.mu.Unlock()
-
-	// Invoke progress callback with error
-	if m.progressCallback != nil {
-		go m.progressCallback(s, targetVersion, -1, errMsg, fmt.Errorf("%s: %s", errCode, errMsg))
+	if err := m.publishProgress(s, -1, errMsg, fmt.Sprintf("%s: %s", errCode, errMsg)); err != nil {
+		m.logError("Failed to persist update failure", "error", err)
 	}
 }
 
@@ -1811,16 +1828,19 @@ func (m *Manager) Cancel() bool {
 	defer m.mu.Unlock()
 
 	// Cannot cancel once we're restarting - it's too late
-	if m.status == StatusRestarting || m.status == StatusApplying {
+	if m.status == StatusRestarting || m.status == StatusApplying || m.status == StatusVerifying {
 		return false
 	}
 
 	// If not in an active update phase, nothing to cancel
-	if m.status == StatusIdle || m.status == StatusSucceeded || m.status == StatusFailed {
+	if m.status == StatusIdle || m.progress.Terminal() {
 		return false
 	}
 
 	m.cancelled = true
+	if m.operationCancel != nil {
+		m.operationCancel()
+	}
 	return true
 }
 

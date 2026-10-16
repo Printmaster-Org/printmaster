@@ -1019,6 +1019,7 @@ function connectSSE() {
     eventSource.onopen = (e) => {
         window.__pm_shared.log('SSE onopen, readyState=', eventSource.readyState);
         updateLiveIndicator(true);
+        if (agentsVM.loaded) loadAgents(true);
     };
 
     eventSource.addEventListener('connected', (e) => {
@@ -7327,6 +7328,9 @@ async function loadAgents(force = false) {
         await tenantPromise;
         updateAgentDirectory(Array.isArray(agents) ? agents : []);
         agentsVM.items = enrichAgents(Array.isArray(agents) ? agents : []);
+        for (const agent of agentsVM.items) {
+            if (agent.update_progress) handleAgentUpdateProgress({ ...agent.update_progress, agent_id: agent.agent_id }, { silent: true });
+        }
         agentsVM.stats.total = agentsVM.items.length;
         agentsVM.error = null;
         agentsVM.loaded = true;
@@ -10657,6 +10661,9 @@ function renderAgentVersionCell(agent, forTable = false) {
 // Calculate smoothed progress for update animations
 // Phases: checking (0-5%), downloading (5-55%), ready/installing (55-85%), restarting (85-95%), verifying (95-99%)
 function getSmoothedUpdateProgress(agentId, status, updateState) {
+    if (updateState.runId) {
+        return Math.min(Math.max(updateState.progress, 0), 99);
+    }
     const now = Date.now();
     const startTime = updateState.timestamp || now;
     const elapsed = now - startTime;
@@ -10685,7 +10692,7 @@ function getSmoothedUpdateProgress(agentId, status, updateState) {
     // For downloading, use actual progress from agent (scaled to 5-55% range)
     if (status === 'downloading') {
         const rawProgress = updateState.progress || 0;
-        const targetProgress = 5 + (rawProgress * 0.5); // Scale 0-100% to 5-55%
+        const targetProgress = rawProgress;
         // Smooth towards target
         const progressDiff = targetProgress - anim.displayProgress;
         anim.displayProgress += progressDiff * 0.3; // Ease towards target
@@ -10984,6 +10991,7 @@ async function fetchSingleAgent(agentId) {
                 agentsVM.items.push(enriched);
             }
             patchAgentDirectory(enriched);
+            if (enriched.update_progress) handleAgentUpdateProgress({ ...enriched.update_progress, agent_id: agentId }, { silent: true });
             refreshAgentMetrics();
             applyAgentFilters();
             refreshAgentVersionCell(agentId);
@@ -10997,68 +11005,8 @@ async function fetchSingleAgent(agentId) {
 
 // Handle agent reconnecting after an update restart
 async function handleAgentReconnectAfterUpdate(agentId, updateState) {
-    const agentName = agentsVM.items.find(a => a.agent_id === agentId)?.name || agentId;
-
-    // Transition to "verifying" state
-    agentsVM.updateState[agentId] = {
-        ...updateState,
-        status: 'verifying',
-        message: 'Agent reconnected, verifying update...',
-        timestamp: Date.now()
-    };
-    refreshAgentVersionCell(agentId);
-
-    // Small delay to let agent settle after restart
-    await new Promise(r => setTimeout(r, 1500));
-
-    // Fetch fresh agent data
-    const updatedAgent = await fetchSingleAgent(agentId);
-    if (!updatedAgent) {
-        // Couldn't fetch - clear state with warning
-        window.__pm_shared.showToast(`${agentName}: Reconnected but couldn't verify update`, 'warning');
-        delete agentsVM.updateState[agentId];
-        refreshAgentVersionCell(agentId);
-        return;
-    }
-
-    const newVersion = updatedAgent.version;
-    const previousVersion = updateState.previousVersion;
-    const targetVersion = updateState.targetVersion;
-
-    // Check if version changed
-    if (previousVersion && newVersion && newVersion !== previousVersion) {
-        // Version changed - update succeeded!
-        const versionMatch = targetVersion && newVersion === targetVersion;
-        window.__pm_shared.showToast(
-            `${agentName}: Update complete! ${previousVersion} → ${newVersion}`,
-            'success'
-        );
-        agentsVM.updateState[agentId] = {
-            ...updateState,
-            status: 'complete',
-            message: versionMatch ? 'Update verified' : `Updated to ${newVersion}`,
-            timestamp: Date.now()
-        };
-        refreshAgentVersionCell(agentId);
-        // Clear state after showing success
-        setTimeout(() => {
-            delete agentsVM.updateState[agentId];
-            refreshAgentVersionCell(agentId);
-        }, 3000);
-    } else if (previousVersion && newVersion === previousVersion) {
-        // Same version - update may have failed or was a no-op
-        window.__pm_shared.showToast(
-            `${agentName}: Reconnected with same version (${newVersion})`,
-            'warning'
-        );
-        delete agentsVM.updateState[agentId];
-        refreshAgentVersionCell(agentId);
-    } else {
-        // Couldn't determine - clear state
-        window.__pm_shared.showToast(`${agentName}: Reconnected (version: ${newVersion || 'unknown'})`, 'info');
-        delete agentsVM.updateState[agentId];
-        refreshAgentVersionCell(agentId);
-    }
+    // Reconnection is not validation. Only the agent's journal can complete a run.
+    await fetchSingleAgent(agentId);
 }
 
 function enrichAgents(list) {
@@ -11811,9 +11759,27 @@ function _attachAgentUpdateHandler(agent) {
 // ====== Update Agent (from agent list/cards) ======
 
 // Handle update progress events from SSE
-function handleAgentUpdateProgress(data) {
+function handleAgentUpdateProgress(data, { silent = false } = {}) {
     const agentId = data.agent_id;
     if (!agentId) return;
+    if (!agentsVM.updateSnapshots) agentsVM.updateSnapshots = {};
+    const previousSnapshot = agentsVM.updateSnapshots[agentId];
+    if (data.run_id) {
+        if (previousSnapshot) {
+            if (data.run_id === previousSnapshot.run_id) {
+                const terminal = ['idle', 'succeeded', 'failed', 'skipped', 'rolled_back', 'cancelled'].includes(previousSnapshot.status);
+                if (terminal || data.sequence <= previousSnapshot.sequence) return;
+            } else if (Date.parse(data.run_started_at) <= Date.parse(previousSnapshot.run_started_at)) {
+                return;
+            }
+        }
+        agentsVM.updateSnapshots[agentId] = data;
+    } else if (previousSnapshot) {
+        return;
+    }
+    const notify = (message, level) => {
+        if (!silent) window.__pm_shared.showToast(message, level);
+    };
 
     // Normalize status values emitted by agent auto-update pipeline
     const rawStatus = (data.status || 'unknown').toLowerCase();
@@ -11844,10 +11810,12 @@ function handleAgentUpdateProgress(data) {
     const existingState = agentsVM.updateState[agentId] || {};
     const agent = agentsVM.items.find(a => a.agent_id === agentId);
     const previousVersion = existingState.previousVersion || agent?.version || '';
-    const shownToasts = existingState._shownToasts || {};
+    const shownToasts = existingState.runId === data.run_id ? (existingState._shownToasts || {}) : {};
 
     agentsVM.updateState[agentId] = {
         status,
+        runId: data.run_id,
+        sequence: data.sequence,
         progress,
         message,
         targetVersion,
@@ -11873,19 +11841,19 @@ function handleAgentUpdateProgress(data) {
         case 'downloading':
             // Only show "Downloading..." toast once per update cycle
             if (!shownToasts.downloading) {
-                window.__pm_shared.showToast(`${agentName}: Downloading update...`, 'info');
+                notify(`${agentName}: Downloading update...`, 'info');
                 shownToasts.downloading = true;
             }
             break;
         case 'ready':
             if (!shownToasts.ready) {
-                window.__pm_shared.showToast(`${agentName}: Update downloaded, preparing to install...`, 'info');
+                notify(`${agentName}: Update downloaded, preparing to install...`, 'info');
                 shownToasts.ready = true;
             }
             break;
         case 'restarting':
             if (!shownToasts.restarting) {
-                window.__pm_shared.showToast(`${agentName}: Restarting to apply update...`, 'info');
+                notify(`${agentName}: Restarting to apply update...`, 'info');
                 shownToasts.restarting = true;
             }
             // Store previous version for comparison when agent reconnects
@@ -11897,9 +11865,9 @@ function handleAgentUpdateProgress(data) {
                 shownToasts.restartTimeout = true;
                 setTimeout(() => {
                     const st = agentsVM.updateState[agentId];
-                    if (st && st.status === 'restarting') {
-                        window.__pm_shared.showToast(`${agentName}: Update timed out waiting for reconnect`, 'warning');
-                        delete agentsVM.updateState[agentId];
+                    if (st && st.runId === data.run_id && st.status === 'restarting') {
+                        st.message = 'Awaiting agent validation; update outcome is not yet known';
+                        notify(`${agentName}: Still awaiting update validation`, 'warning');
                         refreshAgentVersionCell(agentId);
                         // Fetch just this agent's data instead of all agents
                         fetchSingleAgent(agentId);
@@ -11908,9 +11876,11 @@ function handleAgentUpdateProgress(data) {
             }
             break;
         case 'complete':
-            window.__pm_shared.showToast(`${agentName}: Update complete!`, 'success');
+            notify(`${agentName}: Update complete!`, 'success');
             // Clear state after a delay to let UI update
             setTimeout(() => {
+                if (agentsVM.updateState[agentId]?.runId !== data.run_id ||
+                    agentsVM.updateState[agentId]?.sequence !== data.sequence) return;
                 delete agentsVM.updateState[agentId];
                 if (agentsVM.updateAnimations) delete agentsVM.updateAnimations[agentId];
                 refreshAgentVersionCell(agentId);
@@ -11919,15 +11889,18 @@ function handleAgentUpdateProgress(data) {
             setTimeout(() => loadAgents(), 2000);
             break;
         case 'failed':
-            window.__pm_shared.showToast(`${agentName}: Update failed - ${errorMsg || message}`, 'error');
+            notify(`${agentName}: Update failed - ${errorMsg || message}`, 'error');
             // Clear state after showing error
             setTimeout(() => {
+                if (agentsVM.updateState[agentId]?.runId !== data.run_id ||
+                    agentsVM.updateState[agentId]?.sequence !== data.sequence) return;
                 delete agentsVM.updateState[agentId];
                 if (agentsVM.updateAnimations) delete agentsVM.updateAnimations[agentId];
                 refreshAgentVersionCell(agentId);
             }, 5000);
             break;
         case 'idle':
+        case 'cancelled':
             // Agent returned to idle, clear any pending state
             delete agentsVM.updateState[agentId];
             if (agentsVM.updateAnimations) delete agentsVM.updateAnimations[agentId];

@@ -105,15 +105,27 @@ func sendUpdateProgress(status autoupdate.Status, targetVersion string, progress
 	}
 
 	if sendErr := wsClient.SendMessage(msg); sendErr != nil {
-		// Log but don't fail - progress reporting is best-effort
-		_ = sendErr
+		worker.logger.Warn("Update progress delivery failed", "error", sendErr)
 	}
 }
 
-// makeProgressCallback creates a progress callback that sends updates via WebSocket.
-func makeProgressCallback() autoupdate.ProgressCallback {
-	return func(status autoupdate.Status, targetVersion string, progress int, message string, err error) {
-		sendUpdateProgress(status, targetVersion, progress, message, err)
+func sendUpdateSnapshot(snapshot updatepolicy.ProgressSnapshot) {
+	if sseHub != nil {
+		sseHub.Broadcast(SSEEvent{Type: "update_progress", Data: snapshot.Data()})
+	}
+	uploadWorkerMu.RLock()
+	worker := uploadWorker
+	uploadWorkerMu.RUnlock()
+	if worker == nil {
+		return
+	}
+	wsClient := worker.WSClient()
+	if wsClient != nil && wsClient.IsConnected() {
+		if err := wsClient.SendMessage(wscommon.Message{
+			Type: wscommon.MessageTypeUpdateProgress, Data: snapshot.Data(), Timestamp: time.Now(),
+		}); err != nil {
+			worker.logger.Warn("Update progress delivery failed; heartbeat will replay", "error", err)
+		}
 	}
 }
 
@@ -178,7 +190,7 @@ func startAutoUpdateManager(
 		ServerClient:     clientAdapter,
 		PolicyProvider:   policyAdapter,
 		TelemetrySink:    telemetryAdapter,
-		ProgressCallback: makeProgressCallback(),
+		SnapshotCallback: sendUpdateSnapshot,
 		Log:              log,
 		// Use defaults for intervals and thresholds
 	}
@@ -197,31 +209,13 @@ func startAutoUpdateManager(
 				"error", validationErr,
 				"current_version", currentVersion,
 				"from_version", fromVersion)
-			sendUpdateProgress(autoupdate.StatusFailed, currentVersion, -1,
-				"Update validation failed: "+validationErr.Error(), validationErr)
 		} else {
-			// Update successful! Simulate smooth progress from restart to completion
-			// This provides continuity from where the old agent left off (at ~80% applying)
 			log.Info("Post-update validation PASSED",
 				"new_version", currentVersion,
 				"previous_version", fromVersion)
-
-			// Simulate progress: restarting (85%) -> verifying (90-95%) -> complete (100%)
-			sendUpdateProgress(autoupdate.StatusRestarting, currentVersion, 85,
-				"Agent restarted with new version...", nil)
-			time.Sleep(300 * time.Millisecond)
-
-			sendUpdateProgress(autoupdate.StatusRestarting, currentVersion, 90,
-				"Verifying update...", nil)
-			time.Sleep(300 * time.Millisecond)
-
-			sendUpdateProgress(autoupdate.StatusRestarting, currentVersion, 95,
-				"Update verified successfully", nil)
-			time.Sleep(200 * time.Millisecond)
-
-			sendUpdateProgress(autoupdate.StatusSucceeded, currentVersion, 100,
-				"Update completed successfully from "+fromVersion+" to "+currentVersion, nil)
 		}
+	} else if validationErr != nil {
+		log.Error("Could not validate pending update", "error", validationErr)
 	}
 
 	manager.Start(ctx)
@@ -320,7 +314,6 @@ func handleServerCommand(ctx context.Context, command string, data map[string]in
 			log.Info("Triggering immediate update check per server request")
 			if err := manager.CheckNow(ctx); err != nil {
 				log.Error("Update check failed", "error", err)
-				sendUpdateProgress(autoupdate.StatusFailed, "", -1, err.Error(), err)
 			} else {
 				log.Info("Update check completed")
 			}
@@ -338,10 +331,8 @@ func handleServerCommand(ctx context.Context, command string, data map[string]in
 
 		if manager.Cancel() {
 			log.Info("Update cancellation requested")
-			sendUpdateProgress(autoupdate.StatusCancelled, "", -1, "Update cancelled by user", nil)
 		} else {
 			log.Warn("Unable to cancel update - may be in non-cancellable phase")
-			sendUpdateProgress(autoupdate.StatusFailed, "", -1, "Cannot cancel: update is in a non-cancellable phase", nil)
 		}
 
 	case "force_update", "install_channel":
@@ -369,7 +360,6 @@ func handleServerCommand(ctx context.Context, command string, data map[string]in
 			log.Info("Triggering forced reinstall per server request", "reason", reason)
 			if err := manager.ForceInstallLatestFromChannel(ctx, reason, channel); err != nil {
 				log.Error("Forced reinstall failed", "error", err)
-				sendUpdateProgress(autoupdate.StatusFailed, "", -1, err.Error(), err)
 			} else {
 				log.Info("Forced reinstall completed")
 			}

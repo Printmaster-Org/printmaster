@@ -184,7 +184,8 @@ func (s *BaseStore) GetAgent(ctx context.Context, agentID string) (*Agent, error
 		       token, tenant_id, registered_at, last_seen, status,
 		       os_version, go_version, architecture, num_cpu, total_memory_mb,
 		       build_type, git_commit, last_heartbeat, device_count,
-		       last_device_sync, last_metrics_sync
+		       last_device_sync, last_metrics_sync,
+		       COALESCE((SELECT payload FROM agent_update_progress WHERE agent_update_progress.agent_id = agents.agent_id), '')
 		FROM agents
 		WHERE agent_id = ?
 	`
@@ -195,6 +196,7 @@ func (s *BaseStore) GetAgent(ctx context.Context, agentID string) (*Agent, error
 	var totalMemoryMB sql.NullInt64
 	var lastHeartbeat, lastDeviceSync, lastMetricsSync sql.NullTime
 	var tenantID sql.NullString
+	var updateProgress string
 
 	err := s.queryRowContext(ctx, query, agentID).Scan(
 		&agent.ID, &agent.AgentID, &name, &agent.Hostname, &agent.IP,
@@ -202,7 +204,7 @@ func (s *BaseStore) GetAgent(ctx context.Context, agentID string) (*Agent, error
 		&agent.Token, &tenantID, &agent.RegisteredAt, &agent.LastSeen, &agent.Status,
 		&osVersion, &goVersion, &architecture, &numCPU, &totalMemoryMB,
 		&buildType, &gitCommit, &lastHeartbeat, &deviceCount,
-		&lastDeviceSync, &lastMetricsSync,
+		&lastDeviceSync, &lastMetricsSync, &updateProgress,
 	)
 
 	if errors.Is(err, sql.ErrNoRows) {
@@ -239,6 +241,9 @@ func (s *BaseStore) GetAgent(ctx context.Context, agentID string) (*Agent, error
 		agent.LastMetricsSync = lastMetricsSync.Time
 	}
 
+	if err := decodeAgentUpdateProgress(updateProgress, &agent); err != nil {
+		return nil, err
+	}
 	return &agent, nil
 }
 
@@ -313,7 +318,8 @@ func (s *BaseStore) ListAgents(ctx context.Context) ([]*Agent, error) {
 		       token, tenant_id, registered_at, last_seen, status,
 		       os_version, go_version, architecture, num_cpu, total_memory_mb,
 		       build_type, git_commit, last_heartbeat, device_count,
-		       last_device_sync, last_metrics_sync
+		       last_device_sync, last_metrics_sync,
+		       COALESCE((SELECT payload FROM agent_update_progress WHERE agent_update_progress.agent_id = agents.agent_id), '')
 		FROM agents
 		ORDER BY last_seen DESC
 	`
@@ -365,7 +371,8 @@ func (s *BaseStore) ListAgentsPaginated(ctx context.Context, limit, offset int, 
 			       token, tenant_id, registered_at, last_seen, status,
 			       os_version, go_version, architecture, num_cpu, total_memory_mb,
 			       build_type, git_commit, last_heartbeat, device_count,
-			       last_device_sync, last_metrics_sync
+			       last_device_sync, last_metrics_sync,
+			       COALESCE((SELECT payload FROM agent_update_progress WHERE agent_update_progress.agent_id = agents.agent_id), '')
 			FROM agents
 			ORDER BY last_seen DESC
 			LIMIT ? OFFSET ?
@@ -382,7 +389,8 @@ func (s *BaseStore) ListAgentsPaginated(ctx context.Context, limit, offset int, 
 			       token, tenant_id, registered_at, last_seen, status,
 			       os_version, go_version, architecture, num_cpu, total_memory_mb,
 			       build_type, git_commit, last_heartbeat, device_count,
-			       last_device_sync, last_metrics_sync
+			       last_device_sync, last_metrics_sync,
+			       COALESCE((SELECT payload FROM agent_update_progress WHERE agent_update_progress.agent_id = agents.agent_id), '')
 			FROM agents
 			WHERE tenant_id IN (%s)
 			ORDER BY last_seen DESC
@@ -417,6 +425,7 @@ func (s *BaseStore) scanAgent(rows *sql.Rows) (*Agent, error) {
 	var totalMemoryMB sql.NullInt64
 	var lastHeartbeat, lastDeviceSync, lastMetricsSync sql.NullTime
 	var tenantID sql.NullString
+	var updateProgress string
 
 	err := rows.Scan(
 		&agent.ID, &agent.AgentID, &name, &agent.Hostname, &agent.IP,
@@ -424,9 +433,12 @@ func (s *BaseStore) scanAgent(rows *sql.Rows) (*Agent, error) {
 		&agent.Token, &tenantID, &agent.RegisteredAt, &agent.LastSeen, &agent.Status,
 		&osVersion, &goVersion, &architecture, &numCPU, &totalMemoryMB,
 		&buildType, &gitCommit, &lastHeartbeat, &deviceCount,
-		&lastDeviceSync, &lastMetricsSync,
+		&lastDeviceSync, &lastMetricsSync, &updateProgress,
 	)
 	if err != nil {
+		return nil, err
+	}
+	if err := decodeAgentUpdateProgress(updateProgress, &agent); err != nil {
 		return nil, err
 	}
 

@@ -17,6 +17,7 @@ const (
 	StatusStaging     Status = "staging"
 	StatusApplying    Status = "applying"
 	StatusRestarting  Status = "restarting"
+	StatusVerifying   Status = "verifying"
 	StatusSucceeded   Status = "succeeded"
 	StatusFailed      Status = "failed"
 	StatusSkipped     Status = "skipped"
@@ -47,17 +48,18 @@ type UpdateRun struct {
 
 // ManagerStatus exposes the current state of the update manager for UI/API.
 type ManagerStatus struct {
-	Enabled           bool       `json:"enabled"`
-	DisabledReason    string     `json:"disabled_reason,omitempty"`
-	CurrentVersion    string     `json:"current_version"`
-	LatestVersion     string     `json:"latest_version,omitempty"`
-	UpdateAvailable   bool       `json:"update_available"`
-	Status            Status     `json:"status"`
-	LastCheckAt       *time.Time `json:"last_check_at,omitempty"`
-	NextCheckAt       *time.Time `json:"next_check_at,omitempty"`
-	PolicySource      string     `json:"policy_source,omitempty"`
-	CheckIntervalDays int        `json:"check_interval_days,omitempty"`
-	Channel           string     `json:"channel"`
+	Progress          *updatepolicy.ProgressSnapshot `json:"update_progress,omitempty"`
+	Enabled           bool                           `json:"enabled"`
+	DisabledReason    string                         `json:"disabled_reason,omitempty"`
+	CurrentVersion    string                         `json:"current_version"`
+	LatestVersion     string                         `json:"latest_version,omitempty"`
+	UpdateAvailable   bool                           `json:"update_available"`
+	Status            Status                         `json:"status"`
+	LastCheckAt       *time.Time                     `json:"last_check_at,omitempty"`
+	NextCheckAt       *time.Time                     `json:"next_check_at,omitempty"`
+	PolicySource      string                         `json:"policy_source,omitempty"`
+	CheckIntervalDays int                            `json:"check_interval_days,omitempty"`
+	Channel           string                         `json:"channel"`
 	// ChannelNote explains why Channel differs from the requested channel,
 	// such as an MSI install following Stable while Beta is selected.
 	ChannelNote       string `json:"channel_note,omitempty"`

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	agentpkg "printmaster/agent/agent"
+	"printmaster/agent/autoupdate"
 	"printmaster/agent/storage"
 	"printmaster/common/protocol"
 	pmsettings "printmaster/common/settings"
@@ -57,6 +58,59 @@ func TestUploadWorkerHandleHeartbeatSettingsPersistsSnapshot(t *testing.T) {
 func TestUploadWorkerHandleHeartbeatSettingsIgnoresNilSnapshot(t *testing.T) {
 	worker := &UploadWorker{settings: nil, logger: stubLogger{}}
 	worker.handleHeartbeatSettings(&agentpkg.HeartbeatResult{})
+}
+
+func TestUploadWorkerHeartbeatPrecedesUpdateProgressReplay(t *testing.T) {
+	manager, err := autoupdate.NewManager(autoupdate.Options{DataDir: t.TempDir(), CurrentVersion: "1.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.CheckNow(context.Background()); err == nil {
+		t.Fatal("disabled updater should report failure")
+	}
+	autoUpdateManagerMu.Lock()
+	previous := autoUpdateManager
+	autoUpdateManager = manager
+	autoUpdateManagerMu.Unlock()
+	t.Cleanup(func() {
+		autoUpdateManagerMu.Lock()
+		autoUpdateManager = previous
+		autoUpdateManagerMu.Unlock()
+	})
+	var routes []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		routes = append(routes, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/agents/update/telemetry" {
+			var payload struct {
+				AgentID        string `json:"agent_id"`
+				UpdateProgress struct {
+					RunID string `json:"run_id"`
+				} `json:"update_progress"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Error(err)
+			}
+			if payload.AgentID != "agent-1" || payload.UpdateProgress.RunID != manager.Progress().RunID {
+				t.Errorf("wrong snapshot replay: %+v", payload)
+			}
+		}
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer server.Close()
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "heartbeat.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	worker := NewUploadWorker(agentpkg.NewServerClient(server.URL, "agent-1", "test-token"), store, stubLogger{}, nil, UploadWorkerConfig{}, "")
+	worker.sendHeartbeat()
+	if len(routes) < 2 || routes[0] != "/api/v1/agents/heartbeat" || routes[len(routes)-1] != "/api/v1/agents/update/telemetry" {
+		t.Fatalf("heartbeat/replay order = %v", routes)
+	}
+	if worker.Status().LastHeartbeat.IsZero() {
+		t.Fatal("heartbeat success not recorded")
+	}
 }
 
 func TestUploadWorkerSendsRichInventoryBeforeMetrics(t *testing.T) {

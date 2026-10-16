@@ -124,6 +124,15 @@ func (s *SQLiteStore) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_agents_token ON agents(token);
 	CREATE INDEX IF NOT EXISTS idx_agents_tenant_id ON agents(tenant_id);
 
+	CREATE TABLE IF NOT EXISTS agent_update_progress (
+		agent_id TEXT PRIMARY KEY REFERENCES agents(agent_id) ON DELETE CASCADE,
+		run_id TEXT NOT NULL,
+		run_started_at BIGINT NOT NULL,
+		sequence BIGINT NOT NULL,
+		terminal INTEGER NOT NULL,
+		payload TEXT NOT NULL
+	);
+
 	-- Devices discovered by agents
 	CREATE TABLE IF NOT EXISTS devices (
 		serial TEXT PRIMARY KEY,

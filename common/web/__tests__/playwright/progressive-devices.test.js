@@ -307,6 +307,27 @@ async function openFilters(page) {
     await expect(page.locator('#devices_search')).toBeVisible();
 }
 
+test('Agent update progress restores from storage and terminal events cannot regress it', async ({ page }) => {
+    const snapshot = {
+        run_id: 'persisted-run', run_started_at: '2026-10-16T18:00:00Z', sequence: 7,
+        status: 'downloading', progress: 45, target_version: '1.1.0', message: 'Downloading update',
+    };
+    await open(page, { devices: [], agents: [{
+        agent_id: 'agent-1', name: 'Remote site', connection_type: 'ws',
+        version: '1.0.0', update_progress: snapshot,
+    }] });
+    await page.evaluate(() => loadAgents(true));
+    expect(await page.evaluate(() => agentsVM.updateState['agent-1'].progress)).toBe(45);
+    const actualProgress = await page.evaluate(() => getSmoothedUpdateProgress('agent-1', 'downloading', agentsVM.updateState['agent-1']));
+    expect(actualProgress).toBe(45);
+    await page.evaluate(snapshot => {
+        handleAgentUpdateProgress({ ...snapshot, agent_id: 'agent-1', sequence: 10, status: 'succeeded', progress: 100 });
+        handleAgentUpdateProgress({ ...snapshot, agent_id: 'agent-1', sequence: 9, status: 'restarting', progress: 80 });
+        handleAgentUpdateProgress({ ...snapshot, agent_id: 'agent-1', sequence: 11, status: 'restarting', progress: 80 });
+    }, snapshot);
+    expect(await page.evaluate(() => agentsVM.updateState['agent-1'].status)).toBe('complete');
+});
+
 test('Agent update channel modal dispatches exact selection and cancels without command', async ({ page }) => {
     await open(page, { devices: [] });
     const commands = [];

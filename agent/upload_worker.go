@@ -515,6 +515,21 @@ func (w *UploadWorker) sendHeartbeat() {
 	ctx, cancel := context.WithTimeout(w.workerContext(), 10*time.Second)
 	defer cancel()
 	defer func() {
+		autoUpdateManagerMu.RLock()
+		manager := autoUpdateManager
+		autoUpdateManagerMu.RUnlock()
+		if manager != nil {
+			snapshot := manager.Progress()
+			if snapshot.RunID != "" {
+				replayCtx, replayCancel := context.WithTimeout(w.workerContext(), 10*time.Second)
+				defer replayCancel()
+				if err := w.client.ReportUpdateProgress(replayCtx, snapshot); err != nil {
+					w.logger.Warn("Update progress replay failed", "error", err)
+				}
+			}
+		}
+	}()
+	defer func() {
 		if err := w.syncDeviceMetadata(ctx); err != nil {
 			w.logger.Warn("Server device metadata synchronization failed", "error", err)
 		}

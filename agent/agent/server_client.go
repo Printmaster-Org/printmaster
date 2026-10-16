@@ -857,6 +857,14 @@ func (c *ServerClient) DownloadArtifactWithProgress(ctx context.Context, manifes
 	return resumeFrom + written, nil
 }
 
+// ReportUpdateProgress replays the latest durable update snapshot to the server.
+func (c *ServerClient) ReportUpdateProgress(ctx context.Context, snapshot updatepolicy.ProgressSnapshot) error {
+	var response map[string]interface{}
+	return c.doRequest(ctx, "POST", "/api/v1/agents/update/telemetry", map[string]interface{}{
+		"agent_id": c.AgentID, "status": snapshot.Status, "update_progress": snapshot,
+	}, &response, true)
+}
+
 // ReportUpdateStatus sends telemetry about an update operation to the server.
 func (c *ServerClient) ReportUpdateStatus(ctx context.Context, status, runID, currentVersion, targetVersion string, errCode, errMsg string, metadata map[string]interface{}) error {
 	type TelemetryRequest struct {

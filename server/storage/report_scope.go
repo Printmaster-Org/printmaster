@@ -51,7 +51,8 @@ func (s *BaseStore) ListAgentsForReport(ctx context.Context, scope ReportDataSco
 		       a.token, a.tenant_id, a.registered_at, a.last_seen, a.status,
 		       a.os_version, a.go_version, a.architecture, a.num_cpu, a.total_memory_mb,
 		       a.build_type, a.git_commit, a.last_heartbeat, a.device_count,
-		       a.last_device_sync, a.last_metrics_sync
+		       a.last_device_sync, a.last_metrics_sync,
+		       COALESCE((SELECT payload FROM agent_update_progress WHERE agent_update_progress.agent_id = a.agent_id), '')
 		FROM agents a WHERE 1=1
 	`
 	query, args := appendReportAgentScope(query, nil, "a", scope)
@@ -82,7 +83,8 @@ func (s *BaseStore) GetAgentForReport(ctx context.Context, agentID string, scope
 		       a.token, a.tenant_id, a.registered_at, a.last_seen, a.status,
 		       a.os_version, a.go_version, a.architecture, a.num_cpu, a.total_memory_mb,
 		       a.build_type, a.git_commit, a.last_heartbeat, a.device_count,
-		       a.last_device_sync, a.last_metrics_sync
+		       a.last_device_sync, a.last_metrics_sync,
+		       COALESCE((SELECT payload FROM agent_update_progress WHERE agent_update_progress.agent_id = a.agent_id), '')
 		FROM agents a WHERE a.agent_id = ?
 	`
 	query, args := appendReportAgentScope(query, []interface{}{agentID}, "a", scope)

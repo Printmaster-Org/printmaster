@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"printmaster/common/updatepolicy"
 	wscommon "printmaster/common/ws"
 	"printmaster/server/storage"
 
@@ -675,6 +676,33 @@ func sendProxyRequest(agentID string, requestID string, targetURL string, method
 func handleWSUpdateProgress(agent *storage.Agent, msg wscommon.Message) {
 	if msg.Data == nil {
 		msg.Data = make(map[string]interface{})
+	}
+	if _, ordered := msg.Data["run_id"]; ordered {
+		data, err := json.Marshal(msg.Data)
+		if err != nil {
+			logWarn("Invalid update progress", "agent_id", agent.AgentID, "error", err)
+			return
+		}
+		var snapshot updatepolicy.ProgressSnapshot
+		if err := json.Unmarshal(data, &snapshot); err != nil {
+			logWarn("Invalid update progress", "agent_id", agent.AgentID, "error", err)
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := recordAgentUpdateProgress(ctx, agent.AgentID, snapshot); err != nil {
+			logError("Failed to record update progress", "agent_id", agent.AgentID, "error", err)
+		}
+		return
+	}
+	// A delayed legacy command error must not overwrite an ordered lifecycle.
+	current, err := serverStore.GetAgent(context.Background(), agent.AgentID)
+	if err != nil {
+		logError("Failed to inspect update progress", "agent_id", agent.AgentID, "error", err)
+		return
+	}
+	if current.UpdateProgress != nil {
+		return
 	}
 	// Check status to determine log level - failures should be logged as errors
 	status, _ := msg.Data["status"].(string)

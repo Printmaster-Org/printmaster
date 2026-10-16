@@ -64,8 +64,12 @@ func TestManualChannelRejectsInvalidOrMismatchedManifest(t *testing.T) {
 	if err := manager.ForceInstallLatestFromChannel(context.Background(), "test", "beta"); err == nil {
 		t.Fatal("wrong-channel manifest accepted")
 	}
-	if manager.Status().Status != StatusIdle {
-		t.Fatal("failed selection kept operation busy")
+	if manager.Status().Status != StatusFailed {
+		t.Fatal("failed selection was not reported")
+	}
+	client.manifest = &UpdateManifest{Version: "1.0.0", Channel: "stable"}
+	if err := manager.CheckNow(context.Background()); err != nil {
+		t.Fatalf("failed selection blocked a retry: %v", err)
 	}
 }
 

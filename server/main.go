@@ -9802,31 +9802,51 @@ func handleAgentUpdateTelemetry(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		AgentID        string                 `json:"agent_id"`
-		RunID          string                 `json:"run_id,omitempty"`
-		Status         string                 `json:"status"`
-		CurrentVersion string                 `json:"current_version"`
-		TargetVersion  string                 `json:"target_version,omitempty"`
-		ErrorCode      string                 `json:"error_code,omitempty"`
-		ErrorMessage   string                 `json:"error_message,omitempty"`
-		Timestamp      time.Time              `json:"timestamp"`
-		Metadata       map[string]interface{} `json:"metadata,omitempty"`
+		UpdateProgress *commonupdatepolicy.ProgressSnapshot `json:"update_progress,omitempty"`
+		AgentID        string                               `json:"agent_id"`
+		RunID          string                               `json:"run_id,omitempty"`
+		Status         string                               `json:"status"`
+		CurrentVersion string                               `json:"current_version"`
+		TargetVersion  string                               `json:"target_version,omitempty"`
+		ErrorCode      string                               `json:"error_code,omitempty"`
+		ErrorMessage   string                               `json:"error_message,omitempty"`
+		Timestamp      time.Time                            `json:"timestamp"`
+		Metadata       map[string]interface{}               `json:"metadata,omitempty"`
 	}
 	if err := decodeJSONBody(r, &req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
+	authenticated, ok := r.Context().Value(agentContextKey).(*storage.Agent)
+	if !ok || authenticated == nil {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
+	if req.AgentID != authenticated.AgentID {
+		http.Error(w, "agent ID does not match credentials", http.StatusForbidden)
+		return
+	}
+	if req.UpdateProgress != nil {
+		if err := req.UpdateProgress.Validate(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if _, err := recordAgentUpdateProgress(r.Context(), authenticated.AgentID, *req.UpdateProgress); err != nil {
+			logError("Failed to persist update progress", "agent_id", authenticated.AgentID, "error", err)
+			http.Error(w, "failed to persist update progress", http.StatusInternalServerError)
+			return
+		}
+	}
 
-	// Log telemetry for monitoring/alerting
-	logInfo("Agent update telemetry",
-		"agent_id", req.AgentID,
-		"status", req.Status,
-		"current_version", req.CurrentVersion,
-		"target_version", req.TargetVersion,
-		"error_code", req.ErrorCode,
-	)
-
-	// TODO: Store telemetry for dashboards/reporting
+	if req.UpdateProgress == nil {
+		logInfo("Agent update telemetry",
+			"agent_id", req.AgentID,
+			"status", req.Status,
+			"current_version", req.CurrentVersion,
+			"target_version", req.TargetVersion,
+			"error_code", req.ErrorCode,
+		)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
