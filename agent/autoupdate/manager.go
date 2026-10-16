@@ -1105,9 +1105,7 @@ func (m *Manager) applyUpdateViaApt(targetVersion string, progressFn ProgressFun
 	// Phase 1: Update package lists (0-30%)
 	progressFn(5, "Refreshing package metadata...")
 	m.logDebug("Running sudo apt-get update")
-	updateCmd := exec.Command("sudo", "apt-get", "update", "-qq")
-	updateCmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
-	if output, err := updateCmd.CombinedOutput(); err != nil {
+	if output, err := m.runUpdateCommand(installerCommandTimeout, []string{"DEBIAN_FRONTEND=noninteractive"}, "sudo", "-n", "apt-get", "update", "-qq"); err != nil {
 		m.logWarn("apt-get update failed (continuing anyway)", "error", err, "output", string(output))
 		// Don't fail here - the package might already be in cache
 	}
@@ -1119,9 +1117,7 @@ func (m *Manager) applyUpdateViaApt(targetVersion string, progressFn ProgressFun
 
 	progressFn(35, fmt.Sprintf("Downloading %s...", packageSpec))
 	m.logInfo("Running sudo apt-get install", "package", packageSpec)
-	installCmd := exec.Command("sudo", "apt-get", "install", "-y", "-qq", "--allow-downgrades", packageSpec)
-	installCmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
-	output, err := installCmd.CombinedOutput()
+	output, err := m.runUpdateCommand(installerCommandTimeout, []string{"DEBIAN_FRONTEND=noninteractive"}, "sudo", "-n", "apt-get", "install", "-y", "-qq", "--allow-downgrades", packageSpec)
 	if err != nil {
 		return m.wrapSudoError("apt-get install", err, output)
 	}
@@ -1155,14 +1151,13 @@ func (m *Manager) applyUpdateViaDnf(targetVersion string, progressFn ProgressFun
 	// Phase 3: Download package (30-60%)
 	progressFn(35, fmt.Sprintf("Downloading %s...", packageSpec))
 
-	installCmd := exec.Command("sudo", "dnf",
+	output, err := m.runUpdateCommand(installerCommandTimeout, nil, "sudo", "-n", "dnf",
 		"--setopt=logdir=/tmp",
 		"--refresh", // Force metadata refresh
 		"install",
 		"-y",
 		"--allowerasing", // Allow replacing conflicting packages
 		packageSpec)
-	output, err := installCmd.CombinedOutput()
 	if err != nil {
 		// Do not fall back to a versionless upgrade: it could install a
 		// different release than the manifest selected. Fail visibly instead.
@@ -1188,8 +1183,9 @@ func (m *Manager) applyUpdateViaYum(targetVersion string, progressFn ProgressFun
 	// Phase 1: Clean cache (0-20%)
 	progressFn(5, "Cleaning yum cache...")
 	m.logDebug("Running sudo yum clean metadata")
-	cleanCmd := exec.Command("sudo", "yum", "clean", "metadata", "-q")
-	cleanCmd.Run() // Ignore errors
+	if output, err := m.runUpdateCommand(installerCommandTimeout, nil, "sudo", "-n", "yum", "clean", "metadata", "-q"); err != nil {
+		m.logWarn("yum metadata clean failed; using existing metadata", "error", err, "output", string(output))
+	}
 	progressFn(20, "Cache cleaned")
 
 	// Phase 2: Resolve and download (20-60%)
@@ -1199,8 +1195,7 @@ func (m *Manager) applyUpdateViaYum(targetVersion string, progressFn ProgressFun
 	progressFn(35, fmt.Sprintf("Downloading %s...", packageSpec))
 
 	m.logInfo("Running sudo yum install", "package", packageSpec)
-	installCmd := exec.Command("sudo", "yum", "install", "-y", "-q", packageSpec)
-	output, err := installCmd.CombinedOutput()
+	output, err := m.runUpdateCommand(installerCommandTimeout, nil, "sudo", "-n", "yum", "install", "-y", "-q", packageSpec)
 	if err != nil {
 		// No versionless fallback; see applyUpdateViaDnf.
 		m.logWarn("yum install of exact version failed", "package", packageSpec, "error", err, "output", string(output))
@@ -1274,9 +1269,15 @@ if %%errorlevel%% neq 0 (
 )
 
 echo Waiting for service to fully stop...
+set /a STOP_RETRIES=120
 :waitloop
 sc query PrintMasterAgent | find "STOPPED" >nul
 if %%errorlevel%% neq 0 (
+    set /a STOP_RETRIES-=1
+    if %%STOP_RETRIES%% leq 0 (
+        echo ERROR: Service did not stop within 120 seconds; binary was not replaced
+        exit /b 1
+    )
     timeout /t 1 /nobreak >nul
     goto waitloop
 )
@@ -1629,12 +1630,8 @@ func (m *Manager) restartService() error {
 
 		// Use --no-block so the command returns immediately.
 		// systemd will handle stopping this process and starting the new one.
-		cmd := exec.Command("sudo", "systemctl", "restart", "--no-block", serviceName)
-		if err := cmd.Start(); err != nil {
-			m.logWarn("Failed to request systemd restart, falling back to exit", "error", err)
-			// Fall through to os.Exit - hopefully Restart=on-failure triggers
-			os.Exit(1) // Use exit code 1 so on-failure restart triggers
-			return nil
+		if output, err := m.runUpdateCommand(30*time.Second, nil, "sudo", "-n", "systemctl", "restart", "--no-block", serviceName); err != nil {
+			return m.wrapSudoError("systemctl restart", err, output)
 		}
 
 		// Give systemd a moment to receive the request, then exit cleanly.

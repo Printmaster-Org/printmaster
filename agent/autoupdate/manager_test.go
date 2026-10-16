@@ -300,6 +300,9 @@ func TestManagerForceInstallLatest(t *testing.T) {
 	manager.restartFn = func() error { return nil }
 	// Mock the helper launch to avoid spawning a real process that holds files open
 	manager.launchHelperFn = func(helperPath string) error { return nil }
+	if runtime.GOOS == "windows" {
+		manager.isService = true
+	}
 
 	if err := manager.ForceInstallLatest(context.Background(), "test"); err != nil {
 		t.Fatalf("ForceInstallLatest error = %v", err)
@@ -313,6 +316,10 @@ func TestManagerForceInstallLatest(t *testing.T) {
 		helperPath := filepath.Join(dataDir, "autoupdate", "update_helper.bat")
 		if _, err := os.Stat(helperPath); err != nil {
 			t.Fatalf("expected update helper script on windows: %v", err)
+		}
+		script, err := os.ReadFile(helperPath)
+		if err != nil || !bytes.Contains(script, []byte("STOP_RETRIES=120")) || !bytes.Contains(script, []byte("binary was not replaced")) {
+			t.Fatalf("service stop loop lacks a bounded abort: %v", err)
 		}
 	} else if !bytes.Equal(updated, payload) {
 		t.Fatalf("expected binary to be replaced with payload")
