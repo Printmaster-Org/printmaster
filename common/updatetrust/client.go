@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/theupdateframework/go-tuf/v2/metadata"
@@ -50,13 +49,13 @@ func (t Target) Path() (string, error) {
 type Options struct {
 	TrustedRoot []byte
 	MetadataURL string
-	CacheDir    string
+	CacheDir    string // Exclusively owned by one running Client.
 	HTTPClient  *http.Client
 }
 
 type Client struct {
-	mu      sync.Mutex
-	options Options
+	refreshLock chan struct{}
+	options     Options
 }
 
 func NewClient(opts Options) (*Client, error) {
@@ -82,16 +81,20 @@ func NewClient(opts Options) (*Client, error) {
 		opts.HTTPClient = &http.Client{Timeout: 30 * time.Second}
 	}
 	opts.TrustedRoot = append([]byte(nil), opts.TrustedRoot...)
-	return &Client{options: opts}, nil
+	return &Client{options: opts, refreshLock: make(chan struct{}, 1)}, nil
 }
 
 // Verify refreshes trusted metadata before authorizing the Server's exact
 // candidate. There is deliberately no legacy or expired-metadata fallback.
 func (c *Client) Verify(ctx context.Context, target Target) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
+	select {
+	case c.refreshLock <- struct{}{}:
+		defer func() { <-c.refreshLock }()
+	case <-ctx.Done():
+		return fmt.Errorf("wait for publisher verification: %w", ctx.Err())
+	}
 	path, err := target.Path()
 	if err != nil {
 		return err
