@@ -4,9 +4,15 @@ run-name: "CI: ${{ github.ref_name }} (${{ github.event.head_commit.message || g
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
     # Release tags reuse CI Passed for this SHA via the CD workflows.
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
   workflow_dispatch: {}
 
 concurrency:

@@ -1,12 +1,15 @@
 # CodeQL security analysis for PrintMaster
-# Runs on main commits and weekly to catch new CVEs
+# Runs on non-documentation main commits and weekly to catch new CVEs
 name: "CodeQL"
 run-name: "CodeQL: ${{ github.ref_name }}"
 
 on:
-  # Scan every commit to main (runs once per commit)
+  # Skip documentation-only pushes; scheduled and manual scans remain available.
   push:
     branches: [ main ]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
   # Weekly scan to catch new CVEs in dependencies
   schedule:
     - cron: '0 0 * * 0'

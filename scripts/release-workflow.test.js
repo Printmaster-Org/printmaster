@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawnSync } = require('child_process');
+const yaml = require('js-yaml');
+const picomatch = require('picomatch');
 
 const root = path.resolve(__dirname, '..');
 const workflow = fs.readFileSync(path.join(root, '.github/workflows/cd-agent.yml'), 'utf8');
@@ -55,6 +57,54 @@ test('CI tests main and pull requests without rerunning for release tags', () =>
     expect(triggers).toContain('workflow_dispatch:');
     expect(triggers).not.toMatch(/^\s+tags:/m);
     expect(ci).toContain('name: CI Passed');
+});
+
+describe('documentation-only workflow filtering', () => {
+    const workflows = Object.fromEntries(['ci', 'cd-agent', 'cd-server', 'codeql'].map(name => [
+        name, yaml.load(fs.readFileSync(path.join(root, '.github', 'workflows', `${name}.yml`), 'utf8')),
+    ]));
+    const events = [
+        ['ci', 'push'], ['ci', 'pull_request'],
+        ['cd-agent', 'push'], ['cd-server', 'push'], ['codeql', 'push'],
+    ];
+
+    test.each(events)('%s %s ignores only documentation paths', (name, event) => {
+        const trigger = workflows[name].on[event];
+        expect(trigger.branches).toEqual(['main']);
+        expect(trigger['paths-ignore']).toEqual(['**/*.md', 'docs/**']);
+        expect(trigger.paths).toBeUndefined();
+        const ignored = picomatch(trigger['paths-ignore'], { dot: true });
+        const runs = files => files.some(file => !ignored(file));
+
+        expect(runs(['README.md'])).toBe(false);
+        expect(runs(['AGENTS.md', '.github/copilot-instructions.md', 'agent/README.md', 'CONTRIBUTING.md'])).toBe(false);
+        expect(runs(['docs/guide.md', 'docs/images/example.png'])).toBe(false);
+        for (const file of [
+            'agent/main.go', 'server/main.go', 'common/web/shared.js',
+            'agent/go.mod', 'server/go.sum', 'go.work.sum', 'package-lock.json',
+            'agent/web/index.html', 'common/web/style.css', 'static/logo.png',
+            'agent/config.example.toml', 'agent/Dockerfile', 'agent/VERSION',
+            'tests/example_test.go', 'scripts/release-workflow.test.js',
+            'build.ps1', 'build.sh', 'docker-compose.yml', 'packaging/site/index.html',
+            '.github/workflows/ci.yml', '.github/dependabot.yml',
+        ]) {
+            expect(runs([file])).toBe(true);
+            expect(runs(['README.md', file])).toBe(true);
+        }
+    });
+
+    test('manual runs, release tag publication, and scheduled security scans remain enabled', () => {
+        for (const workflow of Object.values(workflows)) {
+            expect(workflow.on.workflow_dispatch).toEqual({});
+        }
+        for (const component of ['agent', 'server']) {
+            expect(workflows[`cd-${component}`].on.push.tags).toEqual([
+                `${component}-v[0-9]+.[0-9]+.[0-9]+`,
+                `${component}-v[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+`,
+            ]);
+        }
+        expect(workflows.codeql.on.schedule).toEqual([{ cron: '0 0 * * 0' }]);
+    });
 });
 
 test('Playwright caches its default browser directory and installs system dependencies on every runner', () => {
