@@ -1,3 +1,7 @@
+html[data-session-pending] body {
+  visibility: hidden;
+}
+
 .status-pill.offline {
   color: var(--danger);
   background: rgba(220, 50, 47, 0.12);

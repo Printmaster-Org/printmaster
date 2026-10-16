@@ -29,6 +29,70 @@ function setup(names, globals = {}) {
     return { context, document: dom.window.document };
 }
 
+describe('Server session monitoring', () => {
+    function sessionSetup(status) {
+        const replace = jest.fn();
+        const fetch = jest.fn().mockResolvedValue({ status, ok: status === 200 });
+        const auth = { currentUser: { username: 'admin' }, redirectPending: false };
+        const { context, document } = setup(['monitorServerSession'], {
+            Request, URL,
+            window: {
+                fetch, __pm_auth: auth,
+                location: {
+                    href: 'https://printmaster.test/?tenant=office#devices',
+                    origin: 'https://printmaster.test', pathname: '/',
+                    search: '?tenant=office', hash: '#devices', replace,
+                },
+            },
+        });
+        document.documentElement.removeAttribute('data-session-pending');
+        context.monitorServerSession();
+        return { context, document, fetch, auth, replace };
+    }
+
+    test.each([
+        '/api/v1/auth/me', '/api/v1/devices/index', '/api/v1/devices/rows',
+        '/api/v1/devices/metrics/query', '/api/v1/agents/list', '/api/v1/metrics/summary',
+    ])('%s redirects before the caller handles a 401', async path => {
+        const { context, document, auth, replace } = sessionSetup(401);
+        await context.window.fetch(path);
+        expect(document.documentElement.hasAttribute('data-session-pending')).toBe(true);
+        expect(auth.currentUser).toBeNull();
+        expect(replace).toHaveBeenCalledWith('/login?redirect=%2F%3Ftenant%3Doffice%23devices');
+        await context.window.fetch(path);
+        expect(replace).toHaveBeenCalledTimes(1);
+    });
+
+    test.each([200, 403, 500, 503])('HTTP %s is not a session failure', async status => {
+        const { context, document, replace } = sessionSetup(status);
+        const response = await context.window.fetch('/api/v1/devices/index');
+        expect(response.status).toBe(status);
+        expect(document.documentElement.hasAttribute('data-session-pending')).toBe(false);
+        expect(replace).not.toHaveBeenCalled();
+    });
+
+    test.each([
+        '/api/v1/proxy/agent/site-1/devices', '/api/v1/proxy/device/printer-1',
+        '/api/v1/auth/login', '/api/v1/auth/logout', '/api/v1/auth/options',
+        'https://other.test/api/v1/devices/index',
+    ])('%s does not invalidate the Server session on 401', async path => {
+        const { context, replace } = sessionSetup(401);
+        await context.window.fetch(path);
+        expect(replace).not.toHaveBeenCalled();
+    });
+
+    test('preserves Request and fetch options, and propagates network errors', async () => {
+        const { context, fetch, replace } = sessionSetup(200);
+        const request = new Request('https://printmaster.test/api/v1/devices/rows');
+        const options = { method: 'POST', body: '{"serials":["one"]}' };
+        await context.window.fetch(request, options);
+        expect(fetch).toHaveBeenCalledWith(request, options);
+        fetch.mockRejectedValueOnce(new TypeError('Network unavailable'));
+        await expect(context.window.fetch('/api/v1/devices/index')).rejects.toThrow('Network unavailable');
+        expect(replace).not.toHaveBeenCalled();
+    });
+});
+
 describe('device status tag filtering', () => {
     const keys = ['healthy', 'warning', 'error', 'jam', 'offline', 'unknown'];
     const escapeHtml = value => String(value);

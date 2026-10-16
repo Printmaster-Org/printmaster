@@ -70,6 +70,52 @@ async function open(page, options = {}) {
 const cards = page => page.locator('#devices_cards .device-card-clickable');
 const stageCalls = (calls, stage) => calls.filter(call => call.path.endsWith(stage));
 
+async function recordSessionVisibility(page) {
+    const states = [];
+    await page.exposeFunction('recordSessionVisibility', state => states.push(state));
+    await page.addInitScript(() => {
+        const setAttribute = Element.prototype.setAttribute;
+        Element.prototype.setAttribute = function(name, value) {
+            setAttribute.call(this, name, value);
+            if (this === document.documentElement && name === 'data-session-pending') {
+                window.recordSessionVisibility(getComputedStyle(document.body).visibility);
+            }
+        };
+    });
+    return states;
+}
+
+test('invalid startup session redirects before revealing the fleet UI', async ({ page }) => {
+    const states = await recordSessionVisibility(page);
+    let inventoryRequests = 0;
+    await page.route('**/login?**', route => route.fulfill({ contentType: 'text/html', body: '<h1>Sign in</h1>' }));
+    await page.route('**/api/**', route => {
+        const pathname = new URL(route.request().url()).pathname;
+        if (pathname.includes('/devices/')) inventoryRequests++;
+        return route.fulfill({ status: 401, body: 'invalid session' });
+    });
+    const navigation = page.waitForRequest('**/login?**');
+    await page.goto(baseURL + '/app?tenant=office#devices', { waitUntil: 'domcontentloaded' });
+    const request = await navigation;
+    expect(new URL(request.url()).searchParams.get('redirect')).toBe('/app?tenant=office#devices');
+    await expect.poll(() => states).toEqual(['hidden']);
+    expect(inventoryRequests).toBe(0);
+    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+});
+
+test('expired session hides inventory errors and redirects without waiting for auth options', async ({ page }) => {
+    const states = await recordSessionVisibility(page);
+    await open(page);
+    await expect(cards(page)).toHaveCount(30);
+    await page.route('**/login?**', route => route.fulfill({ contentType: 'text/html', body: '<h1>Sign in</h1>' }));
+    await page.route('**/api/v1/devices/index', route => route.fulfill({ status: 401, body: 'invalid session' }));
+    const navigation = page.waitForRequest('**/login?**');
+    await page.evaluate(() => { void loadDevices(true); });
+    await navigation;
+    await expect.poll(() => states).toEqual(['hidden']);
+    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+});
+
 test('device interactions omit extra controls and Shift-select without highlighting text', async ({ page }) => {
     await open(page, { devices: devices.slice(0, 3) });
     await expect(cards(page)).toHaveCount(3);

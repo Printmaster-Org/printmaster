@@ -1,5 +1,29 @@
 // PrintMaster Server - Web UI JavaScript
 
+function monitorServerSession() {
+    const originalFetch = window.fetch;
+    window.fetch = async function(input, init) {
+        const response = await originalFetch.call(this, input, init);
+        const url = new URL(input instanceof Request ? input.url : input, window.location.href);
+        // Agent authentication failures behind the proxy are not Server session failures.
+        if (response.status === 401 && url.origin === window.location.origin &&
+            url.pathname.startsWith('/api/v1/') && !url.pathname.startsWith('/api/v1/proxy/') &&
+            !['/api/v1/auth/login', '/api/v1/auth/logout', '/api/v1/auth/options'].includes(url.pathname)) {
+            const auth = window.__pm_auth;
+            if (!auth.redirectPending) {
+                auth.redirectPending = true;
+                auth.currentUser = null;
+                document.documentElement.setAttribute('data-session-pending', '');
+                const target = window.location.pathname + window.location.search + window.location.hash;
+                window.location.replace('/login?redirect=' + encodeURIComponent(target));
+            }
+        }
+        return response;
+    };
+}
+
+monitorServerSession();
+
 const DEFAULT_ROLE_PRIORITY = { admin: 3, operator: 2, viewer: 1 };
 const BASE_TAB_LABELS = {
     dashboard: 'Dashboard',
@@ -760,12 +784,16 @@ document.addEventListener('DOMContentLoaded', function () {
     // Before initializing the UI, ensure user is authenticated (shared auth util)
     window.__pm_auth.ensureAuth().then(async user => {
         if (!user) {
-            // ensureAuthenticated will redirect to login for us
+            if (!window.__pm_auth.redirectPending) {
+                document.documentElement.removeAttribute('data-session-pending');
+                window.__pm_shared.showToast('Unable to verify your session. Please reload to try again.', 'error');
+            }
             return;
         }
 
         currentUser = user;
         applyRBACVisibility();
+        document.documentElement.removeAttribute('data-session-pending');
 
         // Initialize theme toggle
         initThemeToggle();
@@ -827,6 +855,10 @@ document.addEventListener('DOMContentLoaded', function () {
         initAllTableScrollIndicators();
     }).catch(err => {
         window.__pm_shared.error('Auth initialization failed', err);
+        if (!window.__pm_auth.redirectPending) {
+            document.documentElement.removeAttribute('data-session-pending');
+            window.__pm_shared.showToast('Unable to initialize the page. Please reload to try again.', 'error');
+        }
     });
 });
 
