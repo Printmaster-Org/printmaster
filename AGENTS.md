@@ -2,6 +2,14 @@
 
 Full guidance for AI agents is in [.github/copilot-instructions.md](.github/copilot-instructions.md). Read it before making changes.
 
+## Engineering expectations (required)
+
+- Follow SOLID and DRY pragmatically: keep responsibilities clear, reuse existing helpers, and introduce interfaces at real boundaries rather than adding speculative abstractions.
+- Follow the existing structured logging conventions, levels, and field names. Record actionable failures and recovery outcomes with operation context; never log credentials or silently swallow errors.
+- Write concise comments explaining non-obvious invariants, tradeoffs, platform behavior, and recovery logic so contributors can safely extend the code. Do not narrate self-explanatory code.
+- Implement and commit coherent, tested slices with their related documentation. Preserve supported upgrade paths and mixed-version behavior; test failures and recovery, not just happy paths.
+- Flag discovered out-of-scope bugs and architectural risks in the completion summary and relevant existing issue/design documentation. Distinguish implemented fixes, deferred work, and unresolved decisions; do not hide them or expand scope silently.
+
 ## Keep the docs site in sync (required)
 
 The canonical documentation lives in the **Printmaster-Org/docs.printmaster.work** repo. It is normally checked out next to this repo at `../docs.printmaster.work`.
