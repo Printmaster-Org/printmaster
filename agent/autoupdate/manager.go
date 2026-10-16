@@ -904,15 +904,39 @@ func (m *Manager) downloadWithRetry(ctx context.Context, manifest *UpdateManifes
 		var resumeFrom int64
 		if info, err := os.Stat(destPath + ".partial"); err == nil {
 			resumeFrom = info.Size()
+			if manifest.SizeBytes > 0 && resumeFrom >= manifest.SizeBytes {
+				if resumeFrom == manifest.SizeBytes && m.verifyHash(destPath+".partial", manifest.SHA256) == nil {
+					return os.Rename(destPath+".partial", destPath)
+				}
+				m.logWarn("Discarding invalid completed partial artifact", "bytes", resumeFrom, "expected_bytes", manifest.SizeBytes)
+				if err := os.Remove(destPath + ".partial"); err != nil {
+					return fmt.Errorf("remove invalid partial artifact: %w", err)
+				}
+				resumeFrom = 0
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect partial artifact: %w", err)
 		}
 
 		downloaded, err := m.client.DownloadArtifactWithProgress(ctx, manifest, destPath+".partial", resumeFrom, progressCb)
 		if err == nil && downloaded > 0 {
-			// Rename partial to final
-			if err := os.Rename(destPath+".partial", destPath); err != nil {
-				return fmt.Errorf("failed to finalize download: %w", err)
+			if manifest.SizeBytes > 0 && downloaded != manifest.SizeBytes {
+				err = fmt.Errorf("artifact size mismatch: expected %d bytes, received %d", manifest.SizeBytes, downloaded)
+			} else if verifyErr := m.verifyHash(destPath+".partial", manifest.SHA256); verifyErr != nil {
+				err = verifyErr
+				m.logWarn("Discarding artifact after verification failure", "attempt", attempt, "error", err)
+				if removeErr := os.Remove(destPath + ".partial"); removeErr != nil {
+					return errors.Join(err, removeErr)
+				}
+			} else {
+				// Rename partial to final
+				if err := os.Rename(destPath+".partial", destPath); err != nil {
+					return fmt.Errorf("failed to finalize download: %w", err)
+				}
+				return nil
 			}
-			return nil
+		} else if err == nil {
+			err = fmt.Errorf("artifact download returned no bytes")
 		}
 
 		lastErr = err

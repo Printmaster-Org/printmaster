@@ -124,7 +124,14 @@ func (m *Manager) EnsureManifestForArtifact(ctx context.Context, artifact *stora
 	}
 	existing, err := m.store.GetReleaseManifest(ctx, artifact.Component, artifact.Version, artifact.Platform, artifact.Arch, artifact.Format)
 	if err == nil && existing != nil && existing.SigningKeyID == key.ID && existing.Signature != "" && existing.Channel == artifact.Channel {
-		return existing, nil
+		var payload ManifestPayload
+		if json.Unmarshal([]byte(existing.ManifestJSON), &payload) == nil &&
+			payload.SHA256 == artifact.SHA256 && payload.SizeBytes == artifact.SizeBytes &&
+			payload.SourceURL == artifact.SourceURL && payload.PublishedAt.Equal(artifact.PublishedAt) {
+			return existing, nil
+		}
+	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
 	}
 	return m.signArtifactWithKey(ctx, artifact, key)
 }
@@ -240,6 +247,28 @@ func (m *Manager) GetLatestManifest(ctx context.Context, component, platform, ar
 		if channel != "" && (manifest.Channel != channel || channelFromVersion(manifest.Version) != channel) {
 			continue
 		}
+		artifact, err := m.store.GetReleaseArtifact(ctx, manifest.Component, manifest.Version, manifest.Platform, manifest.Arch, format)
+		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				return nil, fmt.Errorf("load release artifact: %w", err)
+			}
+			m.logInfo("Skipping unavailable release manifest", "version", manifest.Version, "error", err)
+			continue
+		}
+		if err := validateCachedArtifact(ctx, artifact); err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			m.logInfo("Skipping invalid cached release", "version", manifest.Version, "format", format, "error", err)
+			continue
+		}
+		var signed ManifestPayload
+		if err := json.Unmarshal([]byte(manifest.ManifestJSON), &signed); err != nil ||
+			signed.SHA256 != artifact.SHA256 || signed.SizeBytes != artifact.SizeBytes ||
+			signed.SourceURL != artifact.SourceURL || !signed.PublishedAt.Equal(artifact.PublishedAt) {
+			m.logInfo("Skipping inconsistent release manifest; sync to repair", "version", manifest.Version)
+			continue
+		}
 		matchCount++
 		candidateVersion := parseSemverVersion(manifest.Version)
 		var publishedAt time.Time
@@ -300,7 +329,7 @@ func (m *Manager) GetLatestManifest(ctx context.Context, component, platform, ar
 	// Get the corresponding artifact for size info
 	artifact, err := m.store.GetReleaseArtifact(ctx, latest.Component, latest.Version, latest.Platform, latest.Arch, format)
 	if err != nil {
-		m.logDebug("No artifact found for manifest", "component", latest.Component, "version", latest.Version, "format", format, "error", err)
+		return nil, fmt.Errorf("selected artifact unavailable: %w", err)
 	}
 
 	// Parse minor line from version (e.g., "0.9.16" -> "0.9")

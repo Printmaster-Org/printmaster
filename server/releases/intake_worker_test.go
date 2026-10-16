@@ -33,7 +33,7 @@ func TestIntakeWorkerCachesArtifacts(t *testing.T) {
                     {
                         "name": "printmaster-server-v0.9.16-windows-amd64.exe",
                         "browser_download_url": "` + downloadURL + `",
-                        "size": 12,
+                        "size": 11,
                         "updated_at": "2025-11-20T12:00:00Z"
                     }
                 ]
@@ -92,7 +92,52 @@ func TestIntakeWorkerCachesArtifacts(t *testing.T) {
 	if downloadHits != firstHits {
 		t.Fatalf("expected cached artifact to skip download")
 	}
+	if err := os.WriteFile(art.CachePath, []byte("corruptdata"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatalf("cache repair failed: %v", err)
+	}
+	if downloadHits != firstHits+1 {
+		t.Fatal("corrupt cache was not downloaded again")
+	}
 
+}
+
+func TestIntakeFailureDoesNotReportCompletion(t *testing.T) {
+	t.Parallel()
+	var base string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/repos/") {
+			_, _ = w.Write([]byte(`[{"tag_name":"agent-v0.32.0","assets":[{"name":"printmaster-agent-v0.32.0-linux-amd64","browser_download_url":"` + base + `/artifact","size":8}]}]`))
+			return
+		}
+		_, _ = w.Write([]byte("short"))
+	}))
+	defer server.Close()
+	base = server.URL
+	store, err := storage.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	worker, err := NewIntakeWorker(store, nil, Options{CacheDir: t.TempDir(), BaseAPIURL: base, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var last SyncProgress
+	err = worker.RunOnceWithProgress(context.Background(), func(p SyncProgress) {
+		last = p
+		if p.Phase == "complete" {
+			t.Error("failed intake reported success")
+		}
+	})
+	if err == nil || last.Phase != "error" || last.CompletedFiles != 0 || last.PercentComplete == 100 {
+		t.Fatalf("untruthful failure: %+v err=%v", last, err)
+	}
+	if _, err := store.GetReleaseArtifact(context.Background(), "agent", "0.32.0", "linux", "amd64", ""); err == nil {
+		t.Fatal("incomplete artifact entered cache")
+	}
 }
 
 // TestIntakeWorkerCachesBinaryAndMSISeparately covers the Windows release

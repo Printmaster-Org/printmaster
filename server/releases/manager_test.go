@@ -148,6 +148,7 @@ func TestLatestManifestVersionOrdering(t *testing.T) {
 					Channel: tc.channel, SHA256: strings.Repeat("ab", 32), SizeBytes: 42,
 					SourceURL: "https://example.com/" + version, PublishedAt: publishedAt,
 				}
+				cacheTestArtifact(t, artifact)
 				if version == tc.older {
 					artifact.PublishedAt = publishedAt.Add(-24 * time.Hour)
 					if tc.olderPublishedLater {

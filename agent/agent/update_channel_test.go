@@ -74,6 +74,7 @@ func TestManifestRequestCarriesArtifactFormat(t *testing.T) {
 
 	// Without a Server-supplied URL the fallback must still select the MSI.
 	manifest.Component, manifest.Platform, manifest.Arch = "agent", "windows", "amd64"
+	manifest.SizeBytes = int64(len("artifact"))
 	if _, err := client.DownloadArtifact(context.Background(), manifest, filepath.Join(t.TempDir(), "agent.msi"), 0); err != nil {
 		t.Fatal(err)
 	}

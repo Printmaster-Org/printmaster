@@ -54,6 +54,7 @@ func TestSyncRepairsCachedBetaManifestAndExcludesItFromStable(t *testing.T) {
 	}
 	ctx := context.Background()
 	artifact := &storage.ReleaseArtifact{Component: "agent", Version: "1.1.0-beta.1", Platform: "linux", Arch: "amd64", Channel: "stable", SHA256: strings.Repeat("ab", 32), SizeBytes: 100, SourceURL: "https://example.com/agent"}
+	cacheTestArtifact(t, artifact)
 	if err := store.UpsertReleaseArtifact(ctx, artifact); err != nil {
 		t.Fatal(err)
 	}

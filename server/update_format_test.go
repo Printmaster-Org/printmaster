@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -44,8 +46,9 @@ func TestAgentUpdateManifestAndDownloadHonorFormat(t *testing.T) {
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
+		hash := sha256.Sum256([]byte(body))
 		artifact := &storage.ReleaseArtifact{Component: "agent", Version: "0.32.0", Channel: "stable", Platform: "windows", Arch: "amd64",
-			Format: format, SourceURL: "https://example.com/" + format, CachePath: path, SHA256: strings.Repeat(format[:1], 64), SizeBytes: int64(len(body))}
+			Format: format, SourceURL: "https://example.com/" + format, CachePath: path, SHA256: hex.EncodeToString(hash[:]), SizeBytes: int64(len(body))}
 		if err := f.store.UpsertReleaseArtifact(ctx, artifact); err != nil {
 			t.Fatal(err)
 		}
@@ -99,7 +102,8 @@ func TestAgentUpdateManifestAndDownloadHonorFormat(t *testing.T) {
 			if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &resp) != nil || !resp.Success {
 				t.Fatalf("manifest request failed: %d %s", w.Code, w.Body.String())
 			}
-			if resp.Manifest.Format != tc.wantFormat || resp.Manifest.SHA256 != strings.Repeat(tc.wantFormat[:1], 64) {
+			hash := sha256.Sum256([]byte(payloads[tc.wantFormat]))
+			if resp.Manifest.Format != tc.wantFormat || resp.Manifest.SHA256 != hex.EncodeToString(hash[:]) {
 				t.Fatalf("got format %q sha %q, want %s artifact", resp.Manifest.Format, resp.Manifest.SHA256, tc.wantFormat)
 			}
 			if !strings.HasSuffix(resp.Manifest.DownloadURL, tc.wantURLSuffix) {

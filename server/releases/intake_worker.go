@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"printmaster/common/logger"
@@ -64,6 +65,7 @@ type Options struct {
 }
 
 type IntakeWorker struct {
+	syncMu            sync.Mutex
 	store             storage.Store
 	log               *logger.Logger
 	cacheDir          string
@@ -218,6 +220,13 @@ type artifactPlan struct {
 }
 
 func (w *IntakeWorker) runOnceWithProgress(ctx context.Context, onProgress ProgressCallback) error {
+	// Scheduled and manual syncs share cache paths and must not interleave.
+	if !w.syncMu.TryLock() {
+		return fmt.Errorf("release intake already in progress")
+	}
+	defer w.syncMu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, time.Hour)
+	defer cancel()
 	report := func(p SyncProgress) {
 		if onProgress != nil {
 			onProgress(p)
@@ -267,10 +276,18 @@ func (w *IntakeWorker) runOnceWithProgress(ctx context.Context, onProgress Progr
 	// Phase 3: Refresh cached artifacts and download missing ones
 	var completedFiles int
 	var completedBytes int64
+	var failures []error
 
 	for _, p := range plans {
+		if err := ctx.Err(); err != nil {
+			failures = append(failures, err)
+			break
+		}
 		if !p.needsWork {
-			w.refreshCachedArtifact(ctx, p)
+			if err := w.refreshCachedArtifact(ctx, p); err != nil {
+				w.logWarn("Cached release refresh failed", "asset", p.asset.Name, "error", err)
+				failures = append(failures, fmt.Errorf("%s: %w", p.asset.Name, err))
+			}
 			continue
 		}
 
@@ -314,12 +331,24 @@ func (w *IntakeWorker) runOnceWithProgress(ctx context.Context, onProgress Progr
 		if err := w.cacheArtifact(ctx, p, onDownload); err != nil {
 			w.logWarn("release artifact caching failed",
 				"asset", p.asset.Name, "component", p.desc.component, "version", p.desc.version, "format", p.desc.format, "error", err)
+			failures = append(failures, fmt.Errorf("%s: %w", p.asset.Name, err))
 			continue
 		}
 		completedFiles++
 		completedBytes += p.asset.Size
 	}
 
+	if len(failures) > 0 {
+		err := errors.Join(failures...)
+		percent := 0
+		if bytesToDownload > 0 {
+			percent = int(completedBytes * 100 / bytesToDownload)
+		}
+		report(SyncProgress{Phase: "error", Message: "Release sync incomplete; retry to repair failed artifacts",
+			Error: err.Error(), TotalFiles: filesToDownload, CompletedFiles: completedFiles,
+			TotalBytes: bytesToDownload, CompletedBytes: completedBytes, PercentComplete: percent})
+		return err
+	}
 	w.pruneIfConfigured(ctx)
 
 	message := fmt.Sprintf("Sync complete: %d files downloaded", completedFiles)
@@ -383,9 +412,13 @@ func (w *IntakeWorker) planArtifacts(ctx context.Context, releases []ghRelease) 
 			plan := artifactPlan{desc: desc, rel: rel, asset: asset, needsWork: true}
 			existing, err := w.store.GetReleaseArtifact(ctx, desc.component, desc.version, desc.platform, desc.arch, desc.format.String())
 			switch {
-			case err == nil && existing != nil && fileExists(existing.CachePath) && existing.SHA256 != "":
-				plan.cached = existing
-				plan.needsWork = false
+			case err == nil && existing != nil:
+				if verifyErr := validateCachedArtifact(ctx, existing); verifyErr == nil && existing.SizeBytes == asset.Size {
+					plan.cached = existing
+					plan.needsWork = false
+				} else {
+					w.logWarn("Cached release requires repair", "asset", asset.Name, "error", verifyErr, "expected_bytes", asset.Size)
+				}
 			case err != nil && !errors.Is(err, sql.ErrNoRows):
 				w.logWarn("Release artifact lookup failed; will re-download",
 					"asset", asset.Name, "format", desc.format, "error", err)
@@ -399,7 +432,7 @@ func (w *IntakeWorker) planArtifacts(ctx context.Context, releases []ghRelease) 
 
 // refreshCachedArtifact keeps metadata for an already-downloaded artifact in
 // sync with GitHub (notes, URL, size, channel) and ensures its manifest.
-func (w *IntakeWorker) refreshCachedArtifact(ctx context.Context, p artifactPlan) {
+func (w *IntakeWorker) refreshCachedArtifact(ctx context.Context, p artifactPlan) error {
 	existing := p.cached
 	channel := channelFromVersion(p.desc.version)
 	if existing.SourceURL != p.asset.BrowserDownloadURL || existing.ReleaseNotes != p.rel.Body ||
@@ -412,10 +445,10 @@ func (w *IntakeWorker) refreshCachedArtifact(ctx context.Context, p artifactPlan
 		if err := w.store.UpsertReleaseArtifact(ctx, existing); err != nil {
 			w.logWarn("release artifact metadata refresh failed",
 				"component", existing.Component, "version", existing.Version, "format", existing.Format, "error", err)
-			return
+			return err
 		}
 	}
-	w.ensureManifest(ctx, existing)
+	return w.ensureManifest(ctx, existing)
 }
 
 // cacheArtifact downloads an asset, records it, and signs its manifest.
@@ -444,8 +477,7 @@ func (w *IntakeWorker) cacheArtifact(ctx context.Context, p artifactPlan, onProg
 	}
 	w.logInfo("cached release artifact", "component", record.Component, "version", record.Version,
 		"platform", record.Platform, "arch", record.Arch, "format", record.Format, "bytes", size)
-	w.ensureManifest(ctx, record)
-	return nil
+	return w.ensureManifest(ctx, record)
 }
 
 func (w *IntakeWorker) pruneIfConfigured(ctx context.Context) {
@@ -461,6 +493,11 @@ func (w *IntakeWorker) pruneIfConfigured(ctx context.Context) {
 // downloadArtifactWithProgress downloads an artifact into the cache, hashing it
 // as it streams. onProgress may be nil.
 func (w *IntakeWorker) downloadArtifactWithProgress(ctx context.Context, desc artifactDescriptor, downloadURL string, expectedSize int64, onProgress func(downloaded int64)) (string, string, int64, error) {
+	if expectedSize <= 0 {
+		return "", "", 0, fmt.Errorf("release asset requires a positive size")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return "", "", 0, err
@@ -470,13 +507,18 @@ func (w *IntakeWorker) downloadArtifactWithProgress(ctx context.Context, desc ar
 		req.Header.Set("Authorization", "Bearer "+w.token)
 	}
 
-	resp, err := w.client.Do(req)
+	client := *w.client
+	client.Timeout = 15 * time.Minute
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", 0, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return "", "", 0, fmt.Errorf("download failed: %s", resp.Status)
+	}
+	if resp.ContentLength >= 0 && resp.ContentLength != expectedSize {
+		return "", "", 0, fmt.Errorf("release asset length %d does not match expected %d", resp.ContentLength, expectedSize)
 	}
 
 	componentDir, err := buildCacheDir(w.cacheDir, desc)
@@ -504,8 +546,9 @@ func (w *IntakeWorker) downloadArtifactWithProgress(ctx context.Context, desc ar
 	buf := make([]byte, 32*1024) // 32KB buffer
 	lastReport := time.Now()
 
+	reader := io.LimitReader(resp.Body, expectedSize+1)
 	for {
-		n, readErr := resp.Body.Read(buf)
+		n, readErr := reader.Read(buf)
 		if n > 0 {
 			_, writeErr := writer.Write(buf[:n])
 			if writeErr != nil {
@@ -527,6 +570,10 @@ func (w *IntakeWorker) downloadArtifactWithProgress(ctx context.Context, desc ar
 		}
 	}
 
+	if written != expectedSize {
+		return "", "", 0, fmt.Errorf("release asset size mismatch: expected %d, received %d", expectedSize, written)
+	}
+
 	// Final progress report
 	if onProgress != nil {
 		onProgress(written)
@@ -540,7 +587,6 @@ func (w *IntakeWorker) downloadArtifactWithProgress(ctx context.Context, desc ar
 	}
 
 	finalPath := filepath.Join(componentDir, desc.fileName)
-	_ = os.Remove(finalPath)
 	if err := os.Rename(tempFile.Name(), finalPath); err != nil {
 		return "", "", 0, err
 	}
@@ -583,24 +629,26 @@ func (w *IntakeWorker) fetchReleases(ctx context.Context) ([]ghRelease, error) {
 	return releases, nil
 }
 
-func (w *IntakeWorker) ensureManifest(ctx context.Context, artifact *storage.ReleaseArtifact) {
+func (w *IntakeWorker) ensureManifest(ctx context.Context, artifact *storage.ReleaseArtifact) error {
 	if artifact == nil {
-		return
+		return fmt.Errorf("artifact required")
 	}
 	// Repair beta manifests cached as stable by older intake implementations.
 	if channel := channelFromVersion(artifact.Version); artifact.Channel != channel {
 		artifact.Channel = channel
 		if err := w.store.UpsertReleaseArtifact(ctx, artifact); err != nil {
 			w.logWarn("release channel repair failed", "version", artifact.Version, "error", err)
-			return
+			return err
 		}
 	}
 	if w.manifests == nil {
-		return
+		return nil
 	}
 	if _, err := w.manifests.EnsureManifestForArtifact(ctx, artifact); err != nil {
 		w.logWarn("manifest generation failed", "component", artifact.Component, "version", artifact.Version, "platform", artifact.Platform, "arch", artifact.Arch, "error", err)
+		return err
 	}
+	return nil
 }
 
 func buildCacheDir(root string, desc artifactDescriptor) (string, error) {

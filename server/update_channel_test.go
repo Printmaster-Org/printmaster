@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -36,6 +39,13 @@ func TestLegacyAgentManifestUsesSavedFleetChannel(t *testing.T) {
 	}
 	for _, release := range []struct{ channel, version string }{{"stable", "0.31.1"}, {"dev", "0.31.2-dev.1"}, {"beta", "0.31.2-beta.1"}} {
 		artifact := &storage.ReleaseArtifact{Component: "agent", Version: release.version, Channel: release.channel, Platform: "linux", Arch: "amd64", SourceURL: "https://example.com/agent", SHA256: strings.Repeat("ab", 32), SizeBytes: 100}
+		body := []byte("artifact-" + release.version)
+		hash := sha256.Sum256(body)
+		artifact.CachePath = filepath.Join(t.TempDir(), "artifact")
+		artifact.SHA256, artifact.SizeBytes = hex.EncodeToString(hash[:]), int64(len(body))
+		if err := os.WriteFile(artifact.CachePath, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
 		if err := f.store.UpsertReleaseArtifact(ctx, artifact); err != nil {
 			t.Fatal(err)
 		}

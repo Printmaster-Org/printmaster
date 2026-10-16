@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -779,6 +780,22 @@ func (c *ServerClient) DownloadArtifactWithProgress(ctx context.Context, manifes
 	if manifest == nil {
 		return 0, fmt.Errorf("manifest required")
 	}
+	if manifest.SizeBytes <= 0 || resumeFrom < 0 {
+		return 0, fmt.Errorf("artifact requires a positive size and nonnegative resume offset")
+	}
+	if resumeFrom > 0 {
+		info, err := os.Stat(destPath)
+		if err != nil || !info.Mode().IsRegular() || info.Size() != resumeFrom {
+			return 0, fmt.Errorf("partial artifact does not match resume offset %d: %v", resumeFrom, err)
+		}
+		if resumeFrom >= manifest.SizeBytes {
+			// A complete or oversized partial must be fetched afresh, rather
+			// than repeatedly requesting an unsatisfiable range.
+			resumeFrom = 0
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+	defer cancel()
 
 	downloadURL := manifest.DownloadURL
 	if downloadURL == "" {
@@ -812,7 +829,28 @@ func (c *ServerClient) DownloadArtifactWithProgress(ctx context.Context, manifes
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumeFrom))
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	// Metadata requests retain their short timeout; large artifacts have a
+	// separate bounded budget while preserving TLS and transport settings.
+	client := *c.HTTPClient
+	client.Timeout = 15 * time.Minute
+	origin := req.URL
+	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if next.URL.Scheme != origin.Scheme || !strings.EqualFold(next.URL.Host, origin.Host) {
+			return fmt.Errorf("artifact redirect changes origin")
+		}
+		if c.HTTPClient.CheckRedirect != nil {
+			return c.HTTPClient.CheckRedirect(next, via)
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("too many artifact redirects")
+		}
+		return nil
+	}
+	base, err := url.Parse(c.BaseURL)
+	if err != nil || origin.Scheme != base.Scheme || !strings.EqualFold(origin.Host, base.Host) || origin.User != nil {
+		return 0, fmt.Errorf("artifact URL must use the authenticated Server origin")
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("download request failed: %w", err)
 	}
@@ -821,6 +859,18 @@ func (c *ServerClient) DownloadArtifactWithProgress(ctx context.Context, manifes
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return 0, fmt.Errorf("download failed with status %d: %s", resp.StatusCode, string(body))
+	}
+	if resp.StatusCode == http.StatusPartialContent {
+		expected := fmt.Sprintf("bytes %d-%d/%d", resumeFrom, manifest.SizeBytes-1, manifest.SizeBytes)
+		if resp.Header.Get("Content-Range") != expected {
+			return 0, fmt.Errorf("invalid artifact Content-Range: expected %s", expected)
+		}
+	} else {
+		resumeFrom = 0
+	}
+	remaining := manifest.SizeBytes - resumeFrom
+	if resp.ContentLength >= 0 && resp.ContentLength != remaining {
+		return 0, fmt.Errorf("artifact length %s does not match expected %d", strconv.FormatInt(resp.ContentLength, 10), remaining)
 	}
 
 	// Open destination file
@@ -839,19 +889,30 @@ func (c *ServerClient) DownloadArtifactWithProgress(ctx context.Context, manifes
 	defer file.Close()
 
 	// Use progress reader if callback is provided and we know the total size
-	var reader io.Reader = resp.Body
-	totalSize := manifest.SizeBytes
-	if resumeFrom > 0 && resp.StatusCode == http.StatusPartialContent {
-		// For resumed downloads, remaining size is total - already downloaded
-		totalSize = manifest.SizeBytes - resumeFrom
-	}
-	if progressCb != nil && totalSize > 0 {
-		reader = newProgressReader(resp.Body, totalSize, progressCb)
+	var reader io.Reader = io.LimitReader(resp.Body, remaining+1)
+	if progressCb != nil {
+		reader = newProgressReader(reader, remaining, func(_ int, bytesRead int64) {
+			total := resumeFrom + bytesRead
+			percent := int(float64(total) / float64(manifest.SizeBytes) * 100)
+			if percent > 100 {
+				percent = 100
+			}
+			progressCb(percent, total)
+		})
 	}
 
 	written, err := io.Copy(file, reader)
 	if err != nil {
 		return resumeFrom + written, fmt.Errorf("download interrupted: %w", err)
+	}
+	if written != remaining {
+		return resumeFrom + written, fmt.Errorf("artifact size mismatch: expected %d bytes, received %d", manifest.SizeBytes, resumeFrom+written)
+	}
+	if err := file.Sync(); err != nil {
+		return resumeFrom + written, fmt.Errorf("sync artifact: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return resumeFrom + written, fmt.Errorf("close artifact: %w", err)
 	}
 
 	return resumeFrom + written, nil

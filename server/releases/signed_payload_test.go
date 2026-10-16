@@ -28,6 +28,7 @@ func TestLatestManifestCarriesVerifiableSignedPayload(t *testing.T) {
 	ctx := context.Background()
 	artifact := &storage.ReleaseArtifact{Component: "agent", Version: "1.2.0", Platform: "linux", Arch: "amd64", Channel: "stable",
 		SHA256: strings.Repeat("cd", 32), SizeBytes: 42, SourceURL: "https://example.com/agent"}
+	cacheTestArtifact(t, artifact)
 	if err := store.UpsertReleaseArtifact(ctx, artifact); err != nil {
 		t.Fatal(err)
 	}
