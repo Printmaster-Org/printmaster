@@ -9,6 +9,7 @@ The canonical documentation lives in the **Printmaster-Org/docs.printmaster.work
 - Any change to behavior, configuration, APIs, vendor/SNMP mappings, security, or UI must also update the relevant pages there:
   - guides and developer pages: `content/`
   - API contracts: `static/openapi/`
+- Review documentation impact for every feature, fix, removal, and deprecation as part of the same task. Keep source-local READMEs and examples accurate too. If no documentation change is needed, explicitly explain why in the PR or completion summary.
 - The legacy documentation trees have been removed from this repo. Do not recreate them or duplicate guides here; retain only concise source-local READMEs, contribution/security entry points, agent instructions, and licenses. On imported docs-site pages, leave the `source`/`sourceCommit` front matter as it is (it records import provenance, and the docs tests check it), but point any source-code links at the current commit.
 - Commit the program change and the docs change as a linked pair, and mention both in your summary.
 - If the docs checkout is unavailable, say so and list the exact pages that need updating. Do not report the work as complete.
