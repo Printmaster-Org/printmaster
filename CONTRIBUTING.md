@@ -80,14 +80,18 @@ printmaster/
 │   ├── handlers/   # HTTP API handlers
 │   ├── storage/    # Database layer
 │   └── web/        # Embedded web UI
-├── common/         # Shared packages (logger, config, etc.)
-└── docs/           # Design documentation
+└── common/         # Shared packages (logger, config, etc.)
 ```
 
 Key documentation:
-- [docs/BUILD_WORKFLOW.md](docs/BUILD_WORKFLOW.md) - Build, test, and release procedures
-- [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md) - Detailed architecture overview
-- [docs/ROADMAP.md](docs/ROADMAP.md) - Planned features and priorities
+- [Build workflow](https://docs.printmaster.work/development/build-workflow/) - Build, test, and release procedures
+- [Project structure](https://docs.printmaster.work/development/project-structure/) - Detailed architecture overview
+- [Developer docs](https://docs.printmaster.work/development/) - Plans, research, and implementation references
+
+Maintain guides and API contracts in the separate
+[documentation repository](https://github.com/Printmaster-Org/docs.printmaster.work).
+This repository retains entry-point READMEs, contribution/security policies,
+agent instructions, and licenses; do not recreate the legacy documentation trees.
 
 ## Making Changes
 
@@ -208,7 +212,7 @@ snmpwalk -v2c -c public <printer-ip> 1.3.6.1
 
 ### Resources
 
-- [docs/SNMP_REFERENCE.md](docs/SNMP_REFERENCE.md) - OID documentation
+- [SNMP reference](https://docs.printmaster.work/development/snmp-reference/) - OID documentation
 - [agent/scanner/vendor/](agent/scanner/vendor/) - Existing vendor profiles
 - Open a [Printer Support Request](https://github.com/printmaster-org/printmaster/issues/new?template=printer_support.yml) if you need help
 
@@ -216,6 +220,6 @@ snmpwalk -v2c -c public <printer-ip> 1.3.6.1
 
 - Check [existing issues](https://github.com/printmaster-org/printmaster/issues)
 - Open a [Question issue](https://github.com/printmaster-org/printmaster/issues/new?template=question.yml)
-- Read the [documentation](docs/)
+- Read the [documentation](https://docs.printmaster.work/)
 
 Thank you for contributing! 🖨️

@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/images/banner.png" alt="Bridge Monitor" width="900">
+  <img src="https://docs.printmaster.work/media/docs/images/banner.png" alt="Bridge Monitor" width="900">
 
 [![CI](https://github.com/printmaster-org/printmaster/actions/workflows/ci.yml/badge.svg)](https://github.com/printmaster-org/printmaster/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/printmaster-org/printmaster)](https://github.com/printmaster-org/printmaster/releases)
@@ -41,49 +41,49 @@ eight-printer fleet. Device names, counters, supplies, and alerts are demo data.
 <details>
 <summary><b>Dashboard</b> — Hierarchical view of tenants, sites, agents, and devices</summary>
 
-![Dashboard](docs/screenshots/Dashboard%20-%20PrintMaster%20Server.png)
+![Dashboard](https://docs.printmaster.work/media/docs/screenshots/Dashboard%20-%20PrintMaster%20Server.png)
 </details>
 
 <details>
 <summary><b>Fleet Agents</b> — Monitor agent connectivity, versions, and status</summary>
 
-![Agents](docs/screenshots/Agents%20-%20PrintMaster%20Server.png)
+![Agents](https://docs.printmaster.work/media/docs/screenshots/Agents%20-%20PrintMaster%20Server.png)
 </details>
 
 <details>
 <summary><b>Fleet Devices</b> — Track printers, consumables, and health status</summary>
 
-![Devices](docs/screenshots/Devices%20-%20PrintMaster%20Server.png)
+![Devices](https://docs.printmaster.work/media/docs/screenshots/Devices%20-%20PrintMaster%20Server.png)
 </details>
 
 <details>
 <summary><b>Fleet Metrics</b> — Netdata-style time-series charts for throughput and usage</summary>
 
-![Metrics](docs/screenshots/Metrics%20-%20PrintMaster%20Server.png)
+![Metrics](https://docs.printmaster.work/media/docs/screenshots/Metrics%20-%20PrintMaster%20Server.png)
 </details>
 
 <details>
 <summary><b>System Logs</b> — Real-time log streaming with search and filtering</summary>
 
-![Logs](docs/screenshots/Logs%20-%20PrintMaster%20Server.png)
+![Logs](https://docs.printmaster.work/media/docs/screenshots/Logs%20-%20PrintMaster%20Server.png)
 </details>
 
 <details>
 <summary><b>Fleet Alerts</b> — Fleet health, alert categories, and recent events</summary>
 
-![Fleet health and recent alerts](docs/screenshots/Alerts%20-%20PrintMaster%20Server.png)
+![Fleet health and recent alerts](https://docs.printmaster.work/media/docs/screenshots/Alerts%20-%20PrintMaster%20Server.png)
 </details>
 
 <details>
 <summary><b>Agent Devices</b> — Local printer cards with counters and consumables</summary>
 
-![Agent device cards and consumable levels](docs/screenshots/Devices%20-%20PrintMaster%20Agent.png)
+![Agent device cards and consumable levels](https://docs.printmaster.work/media/docs/screenshots/Devices%20-%20PrintMaster%20Agent.png)
 </details>
 
 <details>
 <summary><b>Device Details</b> — Identity, location, asset tags, and usage metrics</summary>
 
-![Agent device details and metrics overview](docs/screenshots/Device%20Details%20-%20PrintMaster%20Agent.png)
+![Agent device details and metrics overview](https://docs.printmaster.work/media/docs/screenshots/Device%20Details%20-%20PrintMaster%20Agent.png)
 </details>
 
 ## Quick Start
@@ -160,16 +160,22 @@ curl -fsSL https://packages.printmaster.work/install.sh | sudo bash
 
 ## Documentation
 
+The canonical documentation is published at **[docs.printmaster.work](https://docs.printmaster.work/)**.
+Guides, API references, research notes, and documentation images are maintained
+in the separate [documentation repository](https://github.com/Printmaster-Org/docs.printmaster.work),
+not duplicated in this source repository.
+
 | Guide | Description |
 | ------- | ------------- |
-| [Installation](docs/INSTALL.md) | Complete setup instructions for all platforms |
-| [Getting Started](docs/GETTING_STARTED.md) | First steps after installation |
-| [Features](docs/FEATURES.md) | Detailed feature documentation |
-| [Configuration](docs/CONFIGURATION.md) | All configuration options |
-| [Troubleshooting](docs/TROUBLESHOOTING.md) | Common issues and solutions |
-| [FAQ](docs/FAQ.md) | Frequently asked questions |
+| [Installation](https://docs.printmaster.work/guides/install/) | Complete setup instructions for all platforms |
+| [Getting Started](https://docs.printmaster.work/guides/getting-started/) | First steps after installation |
+| [Features](https://docs.printmaster.work/guides/features/) | Detailed feature documentation |
+| [Configuration](https://docs.printmaster.work/guides/configuration/) | All configuration options |
+| [Troubleshooting](https://docs.printmaster.work/guides/troubleshooting/) | Common issues and solutions |
+| [FAQ](https://docs.printmaster.work/guides/faq/) | Frequently asked questions |
 
-Developer documentation is in [docs/dev/](docs/dev/).
+See [Developer docs](https://docs.printmaster.work/development/) and the
+[API reference](https://docs.printmaster.work/api/) for development and integrations.
 
 ## Configuration
 
@@ -191,7 +197,7 @@ timeout_ms = 2000
 retries = 1
 ```
 
-See [Configuration Guide](docs/CONFIGURATION.md) for all options.
+See [Configuration Guide](https://docs.printmaster.work/guides/configuration/) for all options.
 
 ## Contributing
 

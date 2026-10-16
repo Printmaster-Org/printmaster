@@ -16,7 +16,7 @@ import (
 
 // EpsonVendor implements vendor-specific support for Epson devices.
 // OIDs and derivations mirror what Epson Device Admin (EDA) reads, verified
-// against a live device. Reference: docs/vendor/EPSON_OID_MAPPING.md
+// against a live device. Reference: https://docs.printmaster.work/development/vendor/epson-oid-mapping/
 type EpsonVendor struct{}
 
 func init() {

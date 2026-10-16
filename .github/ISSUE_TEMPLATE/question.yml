@@ -52,5 +52,5 @@ body:
       options:
         - label: I have searched existing issues for similar questions
           required: true
-        - label: I have checked the documentation in the docs/ folder
+        - label: I have checked the documentation at https://docs.printmaster.work/
           required: false

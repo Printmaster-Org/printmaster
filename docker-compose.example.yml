@@ -42,8 +42,8 @@ services:
   # TimescaleDB (PostgreSQL 18) Database
   # Replace credentials and tune performance for production use.
   db:
-    # New deployments use PostgreSQL 18. Existing database volumes require
-    # the migration procedure in docs/deployment/database-upgrade.md.
+    # New deployments use PostgreSQL 18. For existing database volumes, follow
+    # https://docs.printmaster.work/deployment/database-upgrade/.
     image: timescale/timescaledb:latest-pg18
     restart: unless-stopped
     container_name: ${DB_HOST}

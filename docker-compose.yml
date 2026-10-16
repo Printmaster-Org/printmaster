@@ -32,7 +32,7 @@ services:
   # Replace credentials and tune performance for production use.
   db:
     # New deployments use PostgreSQL 18. Do not use this tag for an existing
-    # PostgreSQL 15 data directory; follow docs/deployment/database-upgrade.md.
+    # PostgreSQL 15 data directory; follow https://docs.printmaster.work/deployment/database-upgrade/.
     image: timescale/timescaledb:latest-pg18
     # --- Plain PostgreSQL Alternative ---
     # If you prefer standard PostgreSQL without time-series features, use:

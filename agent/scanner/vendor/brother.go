@@ -16,7 +16,7 @@ import (
 // enterprise OID tree 1.3.6.1.4.1.2435.*. OIDs and their semantics follow Print
 // Audit ICE's Brother scan logic; the binary blob layout was cross-checked
 // against real device captures.
-// Reference: docs/dev/vendor/BROTHER_OID_MAPPING.md
+// Reference: https://docs.printmaster.work/development/vendor/brother-oid-mapping/
 type BrotherVendor struct{}
 
 func init() {

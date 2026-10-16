@@ -13,7 +13,7 @@
   <Category>Network:Management Tools:</Category>
   <WebUI>http://[IP]:[PORT:9090]</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/printmaster-org/printmaster/main/server/unraid-template.xml</TemplateURL>
-  <Icon>https://raw.githubusercontent.com/printmaster-org/printmaster/main/docs/icon.png</Icon>
+  <Icon>https://docs.printmaster.work/images/icon.png</Icon>
   <ExtraParams>--restart=unless-stopped</ExtraParams>
   <PostArgs/>
   <CPUset/>

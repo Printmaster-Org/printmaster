@@ -137,7 +137,7 @@ const (
 
 // Epson vendor-specific OIDs (Enterprise 1248)
 // Reference: Epson Device Admin (EDA) MIB usage, verified against a live
-// ST-C8090. See docs/vendor/EPSON_OID_MAPPING.md.
+// ST-C8090. See https://docs.printmaster.work/development/vendor/epson-oid-mapping/.
 const (
 	// EpsonEnterprise is the Epson enterprise OID prefix
 	EpsonEnterprise = "1.3.6.1.4.1.1248"
@@ -269,7 +269,7 @@ const (
 )
 
 // Brother vendor-specific OIDs (Enterprise 2435)
-// Reference: Print Audit ICE BrotherCommon scan logic (docs/dev/vendor/PRINTAUDIT_ICE_FINDINGS.md),
+// Reference: Print Audit ICE BrotherCommon scan logic (https://docs.printmaster.work/development/vendor/printaudit-ice-findings/),
 // cross-checked against captured blobs from the open-source bieniu/brother library.
 const (
 	// BrotherEnterprise is the Brother enterprise OID prefix

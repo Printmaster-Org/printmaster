@@ -2,14 +2,14 @@
 
 > **Important**: Fix root causes, not symptoms. Do NOT write code "bandaids" or patches—solve the underlying problem.
 
-> **Docs site is mandatory**: Any change in this repo that affects behavior, configuration, APIs, vendor/SNMP mappings, or security must also update the relevant pages in the **docs.printmaster.work** repo (sibling checkout `../docs.printmaster.work`). Updating only this repo's `docs/` folder is not sufficient. See the section below.
+> **Docs site is mandatory**: Any change in this repo that affects behavior, configuration, APIs, vendor/SNMP mappings, or security must also update the relevant pages in the **docs.printmaster.work** repo (sibling checkout `../docs.printmaster.work`). The legacy documentation trees have been removed; do not recreate them. See the section below.
 
 > **Commit format is mandatory**: Use Conventional Commits (`type(scope): summary`) as specified in [AGENTS.md](../AGENTS.md#commit-messages-required). The `.githooks/commit-msg` hook enforces it; never use `--no-verify`.
 
 ## Required: Keep Code and Documentation in Tandem
 
 - Every feature addition, behavior change, fix, removal, or deprecation requires a documentation-impact review before completion. Update affected docs in the same functional slice; do not defer documentation to a later cleanup.
-- The canonical user/developer documentation and published API references live in **Printmaster-Org/docs.printmaster.work**, normally at the sibling checkout `../docs.printmaster.work` relative to this repo (e.g. `printmaster-org/printmaster` ↔ `printmaster-org/docs.printmaster.work`). Its `content/` guides and `static/openapi/` contracts are the editorial targets. Keep source-local READMEs, examples, contribution/security entry points, and configuration samples accurate where they remain relevant; do not update only the old `docs/` copies.
+- The canonical user/developer documentation and published API references live in **Printmaster-Org/docs.printmaster.work**, normally at the sibling checkout `../docs.printmaster.work` relative to this repo (e.g. `printmaster-org/printmaster` ↔ `printmaster-org/docs.printmaster.work`). Its `content/` guides and `static/openapi/` contracts are the editorial targets. Keep concise source-local READMEs, examples, contribution/security entry points, and configuration samples accurate where they remain relevant; do not duplicate full guides in this repo.
 - Before editing code, locate affected guides, examples, and API contracts. Verify documentation against actual defaults, route registrations, handlers, authorization middleware, configuration structs, CLI flags, and serialization—not old READMEs or planned behavior.
 - For API-surface changes, update the correct reference: Server user-session APIs (`static/openapi/server.yaml`), Agent-local APIs (`static/openapi/agent.yaml`), or Agent↔Server machine/protocol guide (`content/api/protocol.md`). These have different credentials and must not be conflated. If an operation is outside the reviewed OpenAPI subset, explicitly review/document its scope rather than implying the entire API is covered.
 - Review method/path, parameters, request/response schemas, statuses/content types, pagination/filtering, authentication, role/tenant scope, limits, and compatibility. Changes to these semantics require docs/contract updates even if the URL is unchanged. Update contract coverage tests, examples, `x-source`, and the reviewed source revision for actually reviewed operations. Never imply uniform authorization or implemented features that the code does not provide.
@@ -100,4 +100,4 @@ Both binaries embed their UIs via `//go:embed web`. Shared CSS/JS in `common/web
 | Modify DB schema | `agent/storage/sqlite.go::initSchema()` |
 | Agent↔Server API changes | `agent/upload_worker.go`, `server/websocket.go` |
 | Shared web components | `common/web/shared.go` |
-| Design docs | `docs/dev/PROJECT_STRUCTURE.md`, `BUILD_WORKFLOW.md` |
+| Design docs | [Project structure](https://docs.printmaster.work/development/project-structure/), [Build workflow](https://docs.printmaster.work/development/build-workflow/) |

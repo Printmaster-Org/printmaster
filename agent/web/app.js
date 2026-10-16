@@ -2346,7 +2346,7 @@ function toggleIPScanningUI() {
 (function () { const m = document.getElementById('mib_mfg'); if (!m) return; m.addEventListener('change', function (e) { const v = e.target.value; const custom = document.getElementById('mib_custom'); if (custom) { custom.style.display = (v === 'custom') ? 'inline-block' : 'none'; } }); })();
 
 // DEPRECATED: Manual MIB walk functionality is superseded by automated discovery pipeline
-// See: docs/DEPRECATED_PENDING_REMOVAL.md
+// See: https://docs.printmaster.work/development/deprecations/
 // TODO: Remove this function and associated UI elements after verification
 function runMibWalk() {
     // Simplified single-IP manual walk: only IP, community and version are required.
@@ -2370,7 +2370,7 @@ function runMibWalk() {
 }
 
 // DEPRECATED: Manual MIB walk functionality is superseded by automated discovery pipeline
-// See: docs/DEPRECATED_PENDING_REMOVAL.md
+// See: https://docs.printmaster.work/development/deprecations/
 // TODO: Remove this function and associated UI elements after verification
 // Run a MIB walk for a specific discovered printer IP and show results in the MIB Walk panel
 function runMibWalkFor(ip) {

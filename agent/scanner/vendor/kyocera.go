@@ -15,7 +15,7 @@ import (
 // enterprise OID tree 1.3.6.1.4.1.1347.*. OIDs and their semantics come from
 // Kyocera Net Device Manager (def.dev.snmp-oid.xml plus the decompiled
 // DeviceController operators).
-// Reference: docs/dev/vendor/KYOCERA_OID_MAPPING.md
+// Reference: https://docs.printmaster.work/development/vendor/kyocera-oid-mapping/
 type KyoceraVendor struct{}
 
 const (
