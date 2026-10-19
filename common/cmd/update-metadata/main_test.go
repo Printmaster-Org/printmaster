@@ -95,6 +95,24 @@ func TestPublishingCLIRecoversPinnedStateAndTransitionsRoutineKeys(t *testing.T)
 	if err := run([]string{"-repository", repository, "-root", nextPath, "-keys", newKeysDir}); err != nil {
 		t.Fatal(err)
 	}
+	backup, records, mirror := filepath.Join(dir, "backup"), filepath.Join(dir, "records"), filepath.Join(dir, "mirror")
+	for _, path := range []string{backup, records, mirror} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run([]string{"-repository", repository, "-root", nextPath, "-keys", newKeysDir,
+		"-backup", backup, "-records", records, "-mirror", mirror}); err != nil {
+		t.Fatal(err)
+	}
+	committed, err := os.ReadFile(filepath.Join(repository, "timestamp.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivered, err := os.ReadFile(filepath.Join(mirror, "timestamp.json"))
+	if err != nil || string(delivered) != string(committed) {
+		t.Fatal("managed CLI did not deliver exact publication")
+	}
 }
 
 func TestPublishingCLIValidatesInventory(t *testing.T) {

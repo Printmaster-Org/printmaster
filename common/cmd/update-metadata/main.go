@@ -29,11 +29,22 @@ func run(args []string) error {
 	inventory := flags.String("inventory", "", "optional JSON array of PublishTarget entries; omit for freshness refresh")
 	previousRootPath := flags.String("previous-root", "", "explicit prior root for one-version key transition; requires independent latest timestamp pin")
 	expectedTimestamp := flags.String("expected-timestamp-sha256", "", "independently recorded latest timestamp fingerprint for recovery or transition")
+	backupDirectory := flags.String("backup", "", "managed local transaction: existing protected publication backup directory")
+	recordDirectory := flags.String("records", "", "managed local transaction: existing independent publication record directory")
+	mirrorDirectory := flags.String("mirror", "", "managed local transaction: existing public metadata output directory")
+	resume := flags.Bool("resume", false, "resume a sealed managed publication without signing another version")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if *directory == "" || *rootPath == "" || *keysDir == "" || flags.NArg() != 0 {
 		return fmt.Errorf("-repository, -root and -keys are required")
+	}
+	managed := *backupDirectory != "" || *recordDirectory != "" || *mirrorDirectory != "" || *resume
+	if managed && (*backupDirectory == "" || *recordDirectory == "" || *mirrorDirectory == "") {
+		return fmt.Errorf("managed publication requires -backup, -records and -mirror together")
+	}
+	if *resume && (*inventory != "" || *previousRootPath != "" || *expectedTimestamp != "") {
+		return fmt.Errorf("resume uses the sealed pending publication; do not provide inventory or transition/recovery flags")
 	}
 	repositoryAbs, err := filepath.Abs(*directory)
 	if err != nil {
@@ -43,19 +54,30 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	if strings.EqualFold(filepath.VolumeName(repositoryAbs), filepath.VolumeName(keysAbs)) {
-		relative, err := filepath.Rel(repositoryAbs, keysAbs)
+	outputs := []string{repositoryAbs}
+	if managed {
+		outputs = append(outputs, *backupDirectory, *recordDirectory, *mirrorDirectory)
+	}
+	for _, output := range outputs {
+		absolute, err := filepath.Abs(output)
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(filepath.VolumeName(absolute), filepath.VolumeName(keysAbs)) {
+			continue
+		}
+		relative, err := filepath.Rel(absolute, keysAbs)
 		if err != nil {
 			return err
 		}
 		if relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("signing keys must be outside the published metadata directory")
+			return fmt.Errorf("signing keys must be outside publication output directories")
 		}
 	}
 	if *previousRootPath != "" && *expectedTimestamp == "" {
 		return fmt.Errorf("-previous-root requires -expected-timestamp-sha256 from the independent latest publication record")
 	}
-	if *inventory == "" || *previousRootPath != "" || *expectedTimestamp != "" {
+	if !*resume && (*inventory == "" || *previousRootPath != "" || *expectedTimestamp != "") {
 		if _, err := os.Stat(filepath.Join(repositoryAbs, "timestamp.json")); err != nil {
 			return fmt.Errorf("freshness refresh requires the existing publication workspace: %w", err)
 		}
@@ -76,6 +98,9 @@ func run(args []string) error {
 	}
 	keys := make(map[string]ed25519.PrivateKey)
 	for _, role := range []string{"targets", "snapshot", "timestamp"} {
+		if *resume {
+			break
+		}
 		key, err := updatetrust.LoadSigningKey(filepath.Join(*keysDir, role+".pem"))
 		if err != nil {
 			return fmt.Errorf("load %s signing key: %w", role, err)
@@ -101,14 +126,24 @@ func run(args []string) error {
 			return fmt.Errorf("publishing inventory must contain exactly one JSON array")
 		}
 	}
-	if err := updatetrust.Publish(updatetrust.PublishOptions{Directory: *directory, Root: root, Keys: keys, Targets: targets,
-		PreviousRoot: previousRoot, ExpectedTimestampSHA256: *expectedTimestamp}); err != nil {
+	options := updatetrust.PublishOptions{Directory: *directory, Root: root, Keys: keys, Targets: targets,
+		PreviousRoot: previousRoot, ExpectedTimestampSHA256: *expectedTimestamp}
+	if managed {
+		if err := updatetrust.PublishTransaction(updatetrust.TransactionOptions{Publish: options,
+			BackupDirectory: *backupDirectory, RecordDirectory: *recordDirectory, MirrorDirectory: *mirrorDirectory, Resume: *resume}); err != nil {
+			return err
+		}
+	} else if err := updatetrust.Publish(options); err != nil {
 		return err
 	}
 	timestamp, err := os.ReadFile(filepath.Join(repositoryAbs, "timestamp.json"))
 	if err != nil {
 		return fmt.Errorf("metadata committed but timestamp fingerprint could not be recorded: %w", err)
 	}
-	_, err = fmt.Fprintf(os.Stdout, "Update metadata published locally; upload versioned files first and timestamp.json last\nRecord latest timestamp SHA256 independently before distribution: %x\n", sha256.Sum256(timestamp))
+	message := "Update metadata published locally; upload versioned files first and timestamp.json last"
+	if managed {
+		message = "Managed publication backed up, recorded and distributed locally; no remote hosting was changed"
+	}
+	_, err = fmt.Fprintf(os.Stdout, "%s\nLatest timestamp SHA256 (retain independently): %x\n", message, sha256.Sum256(timestamp))
 	return err
 }
