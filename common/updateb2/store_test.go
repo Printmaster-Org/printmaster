@@ -128,7 +128,7 @@ func TestB2VersionRead(t *testing.T) {
 }
 
 func TestB2UploadReceiptAndReadBack(t *testing.T) {
-	for _, scenario := range []string{"valid", "foreign host", "http", "userinfo", "wrong upload bucket",
+	for _, scenario := range []string{"valid", "legacy v1", "legacy v2", "legacy routing", "wrong operation", "unsupported API", "foreign host", "http", "userinfo", "wrong upload bucket",
 		"wrong version", "tampered", "missing retention", "ambiguous", "query secret", "redirect"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
@@ -144,6 +144,16 @@ func TestB2UploadReceiptAndReadBack(t *testing.T) {
 					endpoint := "https://pod-000-1005-03.backblaze.com/b2api/v4/b2_upload_file?cvt=private-query&bucket=bucket-id"
 					bucketID := "bucket-id"
 					switch scenario {
+					case "legacy v1":
+						endpoint = strings.Replace(endpoint, "/v4/", "/v1/", 1)
+					case "legacy v2":
+						endpoint = strings.Replace(endpoint, "/v4/", "/v2/", 1)
+					case "legacy routing":
+						endpoint = "https://pod-000-1005-03.backblaze.com/b2api/v1/b2_upload_file/opaque-route/bucket-route"
+					case "wrong operation":
+						endpoint = strings.Replace(endpoint, "b2_upload_file", "b2_delete_file_version", 1)
+					case "unsupported API":
+						endpoint = strings.Replace(endpoint, "/v4/", "/v99/", 1)
 					case "foreign host":
 						endpoint = "https://attacker.example/b2api/v4/b2_upload_file"
 					case "http":
@@ -197,7 +207,7 @@ func TestB2UploadReceiptAndReadBack(t *testing.T) {
 				}
 			})
 			err := s.Put(context.Background(), info.Name, []byte("{}"))
-			if scenario == "valid" {
+			if scenario == "valid" || strings.HasPrefix(scenario, "legacy") {
 				if err != nil || calls != 4 {
 					t.Fatalf("got %v, calls=%d", err, calls)
 				}

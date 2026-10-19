@@ -11,11 +11,16 @@ import (
 	"io/fs"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
 
 const objectLimit = 16 << 20
+
+// B2 can issue an upload URL using an older upload API version even when the
+// control request uses v4. Legacy pods also carry opaque routing path segments.
+var uploadPath = regexp.MustCompile(`^/b2api/v[1-4]/b2_upload_file(/[A-Za-z0-9_-]+)*$`)
 
 // Store is a bounded B2 Native API adapter, not a cross-host lock or a signer.
 // Callers must serialize all writers externally, including owner/manual tools.
@@ -270,9 +275,12 @@ func (s *Store) Put(ctx context.Context, name string, data []byte) error {
 	trustedHost := strings.HasSuffix(host, ".backblazeb2.com") ||
 		(strings.HasPrefix(host, "pod-") && strings.HasSuffix(host, ".backblaze.com"))
 	if u.Scheme != "https" || u.User != nil || u.Port() != "" || u.Host != host ||
-		!trustedHost || u.Fragment != "" || u.Path != "/b2api/v4/b2_upload_file" ||
+		!trustedHost || u.Fragment != "" || !uploadPath.MatchString(u.Path) ||
 		upload.Token == "" || upload.BucketID != s.bucketID {
-		return fmt.Errorf("unexpected B2 upload endpoint or missing token")
+		// Report only validation classes, never URLs, routing tokens or queries.
+		return fmt.Errorf("unexpected B2 upload endpoint: secure=%t host=%t path=%t bucket=%t token=%t",
+			u.Scheme == "https" && u.User == nil && u.Port() == "" && u.Host == host && u.Fragment == "",
+			trustedHost, uploadPath.MatchString(u.Path), upload.BucketID == s.bucketID, upload.Token != "")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upload.URL, bytes.NewReader(data))
 	if err != nil {
