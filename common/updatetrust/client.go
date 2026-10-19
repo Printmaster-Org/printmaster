@@ -174,7 +174,7 @@ type contextFetcher struct {
 }
 
 func (f *contextFetcher) DownloadFile(source string, maxLength int64, _ time.Duration) ([]byte, error) {
-	if maxLength <= 0 || maxLength > 16*1024*1024 {
+	if maxLength <= 0 || maxLength > MaxMetadataBytes {
 		return nil, fmt.Errorf("invalid TUF metadata length limit %d", maxLength)
 	}
 	req, err := http.NewRequestWithContext(f.ctx, http.MethodGet, source, nil)

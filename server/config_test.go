@@ -7,6 +7,23 @@ import (
 	"testing"
 )
 
+func TestPublisherMetadataConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "server.toml")
+	if err := os.WriteFile(path, []byte("[releases]\npublisher_metadata_dir = 'public-metadata'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RELEASES_PUBLISHER_METADATA_DIR", "")
+	cfg, _, err := LoadConfig(path)
+	if err != nil || cfg.Releases.PublisherMetadataDir != "public-metadata" {
+		t.Fatalf("TOML metadata mirror not loaded: %v %v", cfg, err)
+	}
+	t.Setenv("RELEASES_PUBLISHER_METADATA_DIR", "mounted-metadata")
+	cfg, tracker, err := LoadConfig(path)
+	if err != nil || cfg.Releases.PublisherMetadataDir != "mounted-metadata" || !tracker.EnvKeys["releases.publisher_metadata_dir"] {
+		t.Fatalf("environment override not tracked: %v %v", cfg, err)
+	}
+}
+
 func TestWriteDefaultConfig(t *testing.T) {
 	t.Parallel()
 

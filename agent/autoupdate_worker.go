@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
@@ -13,6 +15,11 @@ import (
 	"printmaster/common/updatepolicy"
 	wscommon "printmaster/common/ws"
 )
+
+// Provision public root metadata during owner setup; null deliberately blocks
+// updates. Never replace this with a Server-delivered root or a disposable key.
+//go:embed update_publisher_root.json
+var updatePublisherRoot []byte
 
 // autoUpdateConfigProvider wraps agentConfig to provide the interface.
 type autoUpdateConfigProvider struct {
@@ -163,6 +170,11 @@ func startAutoUpdateManager(
 	clientAdapter := autoupdate.NewClientAdapter(serverClient)
 	telemetryAdapter := autoupdate.NewTelemetryAdapter(serverClient)
 	policyAdapter := autoupdate.NewPolicyAdapter(configProvider, fleetProvider)
+	verifier, trustErr := serverClient.NewPublisherVerifier(updatePublisherRoot,
+		filepath.Join(dataDir, "update-trust", "metadata"))
+	if trustErr != nil {
+		log.Error("Publisher verifier unavailable; updates will be blocked", "error", trustErr)
+	}
 
 	opts := autoupdate.Options{
 		Enabled:        true,
@@ -193,6 +205,10 @@ func startAutoUpdateManager(
 		SnapshotCallback: sendUpdateSnapshot,
 		Log:              log,
 		// Use defaults for intervals and thresholds
+	}
+	// Do not put a typed nil into the verifier interface after setup failure.
+	if trustErr == nil {
+		opts.PublisherVerifier = verifier
 	}
 
 	manager, err := autoupdate.NewManager(opts)

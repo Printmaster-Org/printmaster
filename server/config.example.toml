@@ -99,6 +99,9 @@
   enabled = true
 
 [releases]
+  # Read-only copy of public TUF metadata. Never point at private signing keys.
+  # Empty disables delivery; Agents fail closed when trust is unavailable.
+  publisher_metadata_dir = ""
   # Number of releases per component cached locally
   max_releases = 6
 

@@ -3492,6 +3492,7 @@ func setupRoutes(cfg *Config) {
 
 	// Agent update endpoints (authenticated by agent token)
 	http.HandleFunc("/api/v1/agents/update/manifest", requireAuth(handleAgentUpdateManifest))
+	http.HandleFunc("/api/v1/agents/update/metadata/", requireAuth(handleAgentUpdateMetadata))
 	http.HandleFunc("/api/v1/agents/update/download/", requireAuth(handleAgentUpdateDownload))
 	http.HandleFunc("/api/v1/agents/update/telemetry", requireAuth(handleAgentUpdateTelemetry))
 

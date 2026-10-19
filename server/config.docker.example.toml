@@ -77,6 +77,8 @@
   level = "info"
 
 [releases]
+  # Mount only public TUF metadata read-only, never the signing workspace.
+  publisher_metadata_dir = ""
   # Keep a smaller cache in container deployments
   max_releases = 4
   poll_interval_minutes = 240

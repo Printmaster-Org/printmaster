@@ -63,10 +63,11 @@ type ServerConfig struct {
 
 // ReleasesConfig tunes the GitHub release intake worker.
 type ReleasesConfig struct {
-	MaxReleases         int    `toml:"max_releases"`
-	PollIntervalMinutes int    `toml:"poll_interval_minutes"`
-	RetentionVersions   int    `toml:"retention_versions"` // 0 = disabled (keep all), N = keep N versions per component
-	IncludePrerelease   string `toml:"include_prerelease"` // "true", "false", or "" (auto-detect from build type)
+	PublisherMetadataDir string `toml:"publisher_metadata_dir"` // Read-only publisher metadata mirror; never private keys.
+	MaxReleases          int    `toml:"max_releases"`
+	PollIntervalMinutes  int    `toml:"poll_interval_minutes"`
+	RetentionVersions    int    `toml:"retention_versions"` // 0 = disabled (keep all), N = keep N versions per component
+	IncludePrerelease    string `toml:"include_prerelease"` // "true", "false", or "" (auto-detect from build type)
 }
 
 // SelfUpdateConfig exposes tweakable server auto-update controls.
@@ -263,6 +264,10 @@ func applyEnvOverrides(cfg *Config, tracker *ConfigSourceTracker) {
 	if val := os.Getenv("SERVER_SELF_UPDATE_ENABLED"); val != "" {
 		cfg.Server.SelfUpdateEnabled = val == "true" || val == "1"
 		tracker.EnvKeys["server.self_update_enabled"] = true
+	}
+	if val := os.Getenv("RELEASES_PUBLISHER_METADATA_DIR"); val != "" {
+		cfg.Releases.PublisherMetadataDir = val
+		tracker.EnvKeys["releases.publisher_metadata_dir"] = true
 	}
 	if val := os.Getenv("RELEASES_MAX_RELEASES"); val != "" {
 		var v int
