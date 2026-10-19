@@ -118,7 +118,7 @@ func TestPublicReaderConfinesPathsAndRejectsRedirects(t *testing.T) {
 			t.Fatal("unsafe source name accepted")
 		}
 	}
-	redirect := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "https://example.invalid", 302) }))
+	redirect := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "https://example.invalid", http.StatusFound) }))
 	defer redirect.Close()
 	r, err := NewPublicReader(redirect.URL)
 	if err != nil {
