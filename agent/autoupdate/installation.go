@@ -29,7 +29,7 @@ func installationErrorCode(err error) string {
 
 // InstallationDescriptor is constructed from publisher authorization, not a
 // Server-supplied sidecar. Its persisted copy is a receipt, never trust authority.
-// Protecting paths/ACLs and closing verification-to-use races is a separate gate.
+// The state directories and installation paths are protected before this receipt is used.
 type InstallationDescriptor struct {
 	RunID         string                    `json:"run_id"`
 	FromVersion   string                    `json:"from_version"`
@@ -43,6 +43,7 @@ type InstallationDescriptor struct {
 type ArtifactIdentity struct {
 	SHA256    string `json:"sha256"`
 	SizeBytes int64  `json:"size_bytes"`
+	Mode      uint32 `json:"mode,omitempty"`
 }
 
 func fileIdentity(path string) (ArtifactIdentity, error) {
@@ -63,7 +64,9 @@ func fileIdentity(path string) (ArtifactIdentity, error) {
 	if err != nil {
 		return ArtifactIdentity{}, err
 	}
-	return ArtifactIdentity{SHA256: hex.EncodeToString(hash.Sum(nil)), SizeBytes: length}, nil
+	return ArtifactIdentity{
+		SHA256: hex.EncodeToString(hash.Sum(nil)), SizeBytes: length, Mode: uint32(info.Mode().Perm()),
+	}, nil
 }
 
 func (expected ArtifactIdentity) verify(path string) error {
@@ -86,6 +89,16 @@ func (m *Manager) installationDescriptor(ctx context.Context, manifest *UpdateMa
 	if err != nil {
 		return InstallationDescriptor{}, err
 	}
+	for _, path := range []string{m.binaryPath, staging} {
+		if err := validateInstallPath(path); err != nil {
+			return InstallationDescriptor{}, fmt.Errorf("unsafe installation path %s: %w", path, err)
+		}
+	}
+	if m.isService {
+		if err := validateServiceInstallPath(m.binaryPath); err != nil {
+			return InstallationDescriptor{}, fmt.Errorf("unsafe service executable path: %w", err)
+		}
+	}
 	previous, err := fileIdentity(m.binaryPath)
 	if err != nil {
 		return InstallationDescriptor{}, fmt.Errorf("record previous installation: %w", err)
@@ -103,6 +116,16 @@ func (m *Manager) validateInstallation(ctx context.Context, descriptor Installat
 		filepath.Dir(descriptor.StagingPath) != filepath.Join(m.stateDir, stagingDirName) ||
 		filepath.Dir(descriptor.BackupPath) != filepath.Join(m.stateDir, backupDirName) {
 		return fmt.Errorf("installation descriptor does not match this operation")
+	}
+	for _, path := range []string{descriptor.BinaryPath, descriptor.StagingPath, descriptor.BackupPath} {
+		if err := validateInstallPath(path); err != nil {
+			return fmt.Errorf("unsafe installation path %s: %w", path, err)
+		}
+	}
+	if m.isService {
+		if err := validateServiceInstallPath(m.binaryPath); err != nil {
+			return fmt.Errorf("unsafe service executable path: %w", err)
+		}
 	}
 	manifest := &UpdateManifest{Component: target.Component, Version: target.Version,
 		Platform: target.Platform, Arch: target.Arch, Format: target.Format, Channel: target.Channel,
@@ -147,8 +170,7 @@ func (m *Manager) readInstallationReceipt() (InstallationDescriptor, error) {
 	return descriptor, nil
 }
 
-// helperIntegrityCommand embeds verified expected values, not a writable
-// manifest path. This detects changed staged bytes; it does not close path races.
+// helperIntegrityCommand embeds expected values rather than a writable manifest path.
 func helperIntegrityCommand(path string, identity ArtifactIdentity) string {
 	script := fmt.Sprintf("$ErrorActionPreference='Stop'; try { $f=[IO.File]::OpenRead('%s'); $h=[Security.Cryptography.SHA256]::Create(); try { if ($f.Length -ne %d -or [BitConverter]::ToString($h.ComputeHash($f)).Replace('-','') -ne '%s') { throw 'Update artifact verification failed' } } finally { $f.Dispose(); $h.Dispose() } } catch { [Console]::Error.WriteLine($_); exit 1 }",
 		strings.ReplaceAll(path, "'", "''"), identity.SizeBytes, identity.SHA256)

@@ -92,7 +92,7 @@ func getServiceConfig() *service.Config {
 		workingDir = "/var/lib/printmaster"
 	}
 
-	return &service.Config{
+	config := &service.Config{
 		Name:             "PrintMasterAgent",
 		DisplayName:      "PrintMaster Agent",
 		Description:      "PrintMaster printer and copier fleet management agent. Discovers network printers, collects device metadata, and provides web-based management.",
@@ -121,6 +121,10 @@ func getServiceConfig() *service.Config {
 			"SessionCreate": false,
 		},
 	}
+	if runtime.GOOS == "windows" {
+		config.Executable = windowsServiceExecutablePath()
+	}
+	return config
 }
 
 // setupServiceDirectories creates necessary directories for service operation
@@ -152,6 +156,12 @@ func setupServiceDirectories() error {
 	}
 
 	for _, dir := range dirs {
+		if runtime.GOOS == "windows" && (filepath.Clean(dir) == filepath.Clean(filepath.Join(os.Getenv("ProgramData"), "PrintMaster")) ||
+			filepath.Clean(dir) == filepath.Clean(filepath.Join(os.Getenv("ProgramData"), "PrintMaster", "agent"))) {
+			if err := protectWindowsServiceDirectory(dir); err != nil {
+				return fmt.Errorf("failed to protect directory %s: %w", dir, err)
+			}
+		}
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}

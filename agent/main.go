@@ -2676,6 +2676,11 @@ func handleServiceCommand(cmd string) {
 			os.Exit(1)
 		}
 		commonutil.ShowSuccess("Directories ready")
+		if err := prepareWindowsServiceExecutable(); err != nil {
+			commonutil.ShowError(fmt.Sprintf("Failed to protect service executable: %v", err))
+			commonutil.ShowCompletionScreen(false, "Installation Failed")
+			os.Exit(1)
+		}
 
 		commonutil.ShowInfo("Installing service...")
 		time.Sleep(500 * time.Millisecond)
@@ -2899,6 +2904,11 @@ func handleServiceCommand(cmd string) {
 			os.Exit(1)
 		}
 		commonutil.ShowSuccess("Directories ready")
+		if err := prepareWindowsServiceExecutable(); err != nil {
+			commonutil.ShowError(fmt.Sprintf("Failed to protect service executable: %v", err))
+			commonutil.ShowCompletionScreen(false, "Update Failed")
+			os.Exit(1)
+		}
 
 		// Reinstall service
 		commonutil.ShowInfo("Installing updated service...")
@@ -2959,8 +2969,9 @@ func handleServiceCommand(cmd string) {
 		fmt.Println("Platform-Specific Paths:")
 		switch runtime.GOOS {
 		case "windows":
-			fmt.Println("  Data Directory: C:\\ProgramData\\PrintMaster\\")
-			fmt.Println("  Log Directory:  C:\\ProgramData\\PrintMaster\\logs\\")
+			fmt.Println("  Data Directory: C:\\ProgramData\\PrintMaster\\agent\\")
+			fmt.Println("  Log Directory:  C:\\ProgramData\\PrintMaster\\agent\\logs\\")
+			fmt.Println("  Service Binary: %ProgramFiles%\\PrintMaster\\Agent\\printmaster-agent.exe")
 		case "darwin":
 			fmt.Println("  Data Directory: /Library/Application Support/PrintMaster/")
 			fmt.Println("  Log Directory:  /var/log/printmaster/")

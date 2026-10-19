@@ -139,6 +139,15 @@ func TestFailedInstallRecoveryOnlyRestoresRecordedPreviousArtifact(t *testing.T)
 			if string(body) != want {
 				t.Fatalf("restored %q, want %q", body, want)
 			}
+			if mode == "valid" && runtime.GOOS != "windows" {
+				info, err := os.Stat(m.binaryPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if uint32(info.Mode().Perm()) != descriptor.Previous.Mode {
+					t.Fatalf("restored mode = %04o, want %04o", info.Mode().Perm(), descriptor.Previous.Mode)
+				}
+			}
 		})
 	}
 }

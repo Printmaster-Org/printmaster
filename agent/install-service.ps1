@@ -113,8 +113,9 @@ if ($startNow -eq "Y" -or $startNow -eq "y") {
             Write-Host "  Status:      $($service.Status)"
             Write-Host "  Start Type:  $($service.StartType)"
             Write-Host ""
-            Write-Host "Data Directory: C:\ProgramData\PrintMaster\" -ForegroundColor Cyan
-            Write-Host "Log Directory:  C:\ProgramData\PrintMaster\logs\" -ForegroundColor Cyan
+            Write-Host "Agent Data:     C:\ProgramData\PrintMaster\agent\" -ForegroundColor Cyan
+            Write-Host "Log Directory:  C:\ProgramData\PrintMaster\agent\logs\" -ForegroundColor Cyan
+            Write-Host "Service Binary: $env:ProgramFiles\PrintMaster\Agent\printmaster-agent.exe" -ForegroundColor Cyan
         } else {
             Write-Host ""
             Write-Host "WARNING: Service may not have started properly" -ForegroundColor Yellow

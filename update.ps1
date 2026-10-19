@@ -117,7 +117,7 @@ function Invoke-Exe {
 }
 
 $serverSvcExe = 'C:\ProgramData\PrintMaster\printmaster-server.exe'
-$agentSvcExe  = 'C:\ProgramData\PrintMaster\printmaster-agent.exe'
+$agentSvcExe  = Join-Path $env:ProgramFiles 'PrintMaster\Agent\printmaster-agent.exe'
 $localRoot    = 'C:\temp\printmaster'
 $localServer  = Join-Path $localRoot 'server\printmaster-server.exe'
 $localAgent   = Join-Path $localRoot 'agent\printmaster-agent.exe'
@@ -134,6 +134,30 @@ try {
 
 
 Log "Update script starting. SkipBuild=$SkipBuild"
+
+# Elevate before stopping services or changing protected installation paths.
+function Is-Administrator {
+	$current = [Security.Principal.WindowsIdentity]::GetCurrent()
+	$principal = New-Object Security.Principal.WindowsPrincipal($current)
+	return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+if (-not (Is-Administrator)) {
+	Log-Warn "Script not running elevated. Attempting to relaunch elevated..."
+	$pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
+	if ($null -ne $pwshCmd) { $pwshPath = $pwshCmd.Source } else { $pwshPath = 'pwsh' }
+	$relaunchArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$MyInvocation.MyCommand.Path)
+	if ($SkipBuild) { $relaunchArgs += '-SkipBuild' }
+	if ($Quiet) { $relaunchArgs += '-Quiet' }
+	try {
+		Start-Process -FilePath $pwshPath -ArgumentList $relaunchArgs -Verb RunAs
+		Log "Relaunched elevated. Exiting current process."
+		return
+	} catch {
+		Log-Err "Elevation failed or was cancelled: $_"
+		exit 1
+	}
+}
 
 # Stop services (best-effort)
 if (Test-Path $serverSvcExe) { Invoke-Exe $serverSvcExe @('--service','stop','--quiet') | Out-Null }
@@ -162,33 +186,11 @@ if (-not $SkipBuild) {
 	if (-not $buildOk) { throw 'Build failed - aborting update' }
 }
 
-# Ensure ProgramData dir exists
-## Elevation check: relaunch elevated if not running as Administrator
-function Is-Administrator {
-	$current = [Security.Principal.WindowsIdentity]::GetCurrent()
-	$principal = New-Object Security.Principal.WindowsPrincipal($current)
-	return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
-
-if (-not (Is-Administrator)) {
-	Log-Warn "Script not running elevated. Attempting to relaunch elevated..."
-	$pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
-	if ($null -ne $pwshCmd) { $pwshPath = $pwshCmd.Source } else { $pwshPath = 'pwsh' }
-	$relaunchArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$MyInvocation.MyCommand.Path)
-	if ($SkipBuild) { $relaunchArgs += '-SkipBuild' }
-	if ($Quiet) { $relaunchArgs += '-Quiet' }
-	try {
-		Start-Process -FilePath $pwshPath -ArgumentList $relaunchArgs -Verb RunAs
-		Log "Relaunched elevated. Exiting current process."
-		return
-	} catch {
-		Log-Err "Elevation failed or was cancelled: $_"
-		# Continue; subsequent operations may fail due to permissions.
-	}
-}
-
+# Ensure ProgramData and protected Program Files paths exist
 $installDir = 'C:\ProgramData\PrintMaster'
 if (-not (Test-Path $installDir)) { New-Item -Path $installDir -ItemType Directory -Force | Out-Null }
+$agentInstallDir = Split-Path -Parent $agentSvcExe
+if (-not (Test-Path $agentInstallDir)) { New-Item -Path $agentInstallDir -ItemType Directory -Force | Out-Null }
 
 # Backup existing binaries (timestamped) then copy new ones
 function Backup-And-Copy($src, $dst) {

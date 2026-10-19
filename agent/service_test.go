@@ -73,6 +73,19 @@ func TestGetServiceLogPath(t *testing.T) {
 	}
 }
 
+func TestWindowsServiceRegistersProtectedExecutable(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific test")
+	}
+	programFiles := t.TempDir()
+	t.Setenv("ProgramFiles", programFiles)
+	config := getServiceConfig()
+	expected := filepath.Join(programFiles, "PrintMaster", "Agent", "printmaster-agent.exe")
+	if config.Executable != expected {
+		t.Fatalf("service executable = %q, want %q", config.Executable, expected)
+	}
+}
+
 func TestSSEHubShutdown(t *testing.T) {
 	t.Parallel()
 

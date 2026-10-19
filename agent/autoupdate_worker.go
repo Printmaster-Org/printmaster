@@ -18,6 +18,7 @@ import (
 
 // Provision public root metadata during owner setup; null deliberately blocks
 // updates. Never replace this with a Server-delivered root or a disposable key.
+//
 //go:embed update_publisher_root.json
 var updatePublisherRoot []byte
 
@@ -170,8 +171,12 @@ func startAutoUpdateManager(
 	clientAdapter := autoupdate.NewClientAdapter(serverClient)
 	telemetryAdapter := autoupdate.NewTelemetryAdapter(serverClient)
 	policyAdapter := autoupdate.NewPolicyAdapter(configProvider, fleetProvider)
-	verifier, trustErr := serverClient.NewPublisherVerifier(updatePublisherRoot,
-		filepath.Join(dataDir, "update-trust", "metadata"))
+	var verifier autoupdate.PublisherVerifier
+	trustErr := autoupdate.SecureUpdaterDirectories(dataDir)
+	if trustErr == nil {
+		verifier, trustErr = serverClient.NewPublisherVerifier(updatePublisherRoot,
+			filepath.Join(dataDir, "update-trust", "metadata"))
+	}
 	if trustErr != nil {
 		log.Error("Publisher verifier unavailable; updates will be blocked", "error", trustErr)
 	}

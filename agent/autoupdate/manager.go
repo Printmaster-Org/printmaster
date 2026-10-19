@@ -203,13 +203,8 @@ func NewManager(opts Options) (*Manager, error) {
 	}
 
 	stateDir := filepath.Join(dataDir, updateDirName)
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		return nil, fmt.Errorf("failed to create update state directory: %w", err)
-	}
-	for _, sub := range []string{stagingDirName, backupDirName, downloadDirName} {
-		if err := os.MkdirAll(filepath.Join(stateDir, sub), 0o755); err != nil {
-			return nil, fmt.Errorf("failed to create %s directory: %w", sub, err)
-		}
+	if err := secureUpdaterDirectories(dataDir); err != nil {
+		return nil, fmt.Errorf("failed to secure updater directories: %w", err)
 	}
 
 	minDiskSpace := opts.MinDiskSpaceMB
@@ -239,6 +234,11 @@ func NewManager(opts Options) (*Manager, error) {
 		exec, err := os.Executable()
 		if err == nil {
 			binaryPath = exec
+		}
+	}
+	if runtime.GOOS == "windows" && opts.IsService && binaryPath != "" {
+		if err := secureWindowsServiceExecutable(binaryPath); err != nil {
+			return nil, fmt.Errorf("failed to secure Windows service executable: %w", err)
 		}
 	}
 
@@ -1006,7 +1006,10 @@ func (m *Manager) backupBinary(backupPath string) error {
 	if err := os.MkdirAll(filepath.Dir(backupPath), 0o755); err != nil {
 		return err
 	}
-	return copyFile(m.binaryPath, backupPath)
+	if err := copyFile(m.binaryPath, backupPath); err != nil {
+		return err
+	}
+	return os.Chmod(backupPath, 0o600)
 }
 
 func (m *Manager) applyUpdate(ctx context.Context, descriptor InstallationDescriptor) error {
@@ -1044,35 +1047,9 @@ func (m *Manager) applyUpdateUnix(stagingPath string) error {
 	// Try to rename the staging file to replace the current binary.
 	// This is the fastest approach when both paths are on the same filesystem.
 	if err := os.Rename(stagingPath, m.binaryPath); err != nil {
-		// Check if this is a cross-device link error (EXDEV).
-		// This happens when staging dir and binary path are on different filesystems
-		// (e.g., staging on /var/lib/... and binary on /usr/bin).
 		var linkErr *os.LinkError
 		if errors.As(err, &linkErr) && errors.Is(linkErr.Err, syscall.EXDEV) {
-			// Fall back to copy + delete for cross-filesystem updates
-			m.logInfo("Cross-filesystem update detected, using copy instead of rename",
-				"staging", stagingPath, "target", m.binaryPath)
-
-			// Copy the staged file to the target location
-			if copyErr := copyFile(stagingPath, m.binaryPath); copyErr != nil {
-				// Check for read-only filesystem errors and provide helpful guidance
-				if strings.Contains(copyErr.Error(), "read-only file system") {
-					return fmt.Errorf("failed to update binary: filesystem is read-only. "+
-						"If this agent was installed via apt/deb package, update using: sudo apt-get update && sudo apt-get upgrade printmaster-agent. "+
-						"If running in a container, rebuild the container image with the new version. Original error: %w", copyErr)
-				}
-				return fmt.Errorf("failed to copy binary across filesystems: %w", copyErr)
-			}
-
-			// Set executable permissions on the copied file
-			if chmodErr := os.Chmod(m.binaryPath, 0o755); chmodErr != nil {
-				return fmt.Errorf("failed to set executable permission after copy: %w", chmodErr)
-			}
-
-			// Remove the staging file
-			_ = os.Remove(stagingPath) // Best effort cleanup
-
-			return nil
+			return fmt.Errorf("safe atomic update cannot cross filesystems; install the Agent in a supported location or use its package manager")
 		}
 		// Check for read-only filesystem on the rename error too
 		if strings.Contains(err.Error(), "read-only file system") {
@@ -1320,8 +1297,8 @@ if %%errorlevel%% neq 0 (
 echo Update complete, cleaning up...
 timeout /t 2 /nobreak >nul
 del "%%~f0"
-`, helperIntegrityCommand(stagingPath, ArtifactIdentity{descriptor.Authorization.Target.SHA256, descriptor.Authorization.Target.SizeBytes}),
-			helperIntegrityCommand(stagingPath, ArtifactIdentity{descriptor.Authorization.Target.SHA256, descriptor.Authorization.Target.SizeBytes}),
+`, helperIntegrityCommand(stagingPath, ArtifactIdentity{SHA256: descriptor.Authorization.Target.SHA256, SizeBytes: descriptor.Authorization.Target.SizeBytes}),
+			helperIntegrityCommand(stagingPath, ArtifactIdentity{SHA256: descriptor.Authorization.Target.SHA256, SizeBytes: descriptor.Authorization.Target.SizeBytes}),
 			stagingPath, descriptor.BinaryPath)
 	} else {
 		// Running standalone - just start the binary
@@ -1344,7 +1321,7 @@ start "" "%s"
 echo Update complete, cleaning up...
 timeout /t 2 /nobreak >nul
 del "%%~f0"
-`, helperIntegrityCommand(stagingPath, ArtifactIdentity{descriptor.Authorization.Target.SHA256, descriptor.Authorization.Target.SizeBytes}),
+`, helperIntegrityCommand(stagingPath, ArtifactIdentity{SHA256: descriptor.Authorization.Target.SHA256, SizeBytes: descriptor.Authorization.Target.SizeBytes}),
 			stagingPath, descriptor.BinaryPath, descriptor.BinaryPath)
 	}
 
@@ -1428,7 +1405,7 @@ timeout /t 2 /nobreak >nul
 del "%s"
 del "%%~f0"
 exit /b %%MSI_EXIT%%
-`, helperIntegrityCommand(msiPath, ArtifactIdentity{descriptor.Authorization.Target.SHA256, descriptor.Authorization.Target.SizeBytes}),
+`, helperIntegrityCommand(msiPath, ArtifactIdentity{SHA256: descriptor.Authorization.Target.SHA256, SizeBytes: descriptor.Authorization.Target.SizeBytes}),
 		msiPath, logPath, logPath, msiPath)
 
 	helperPath := filepath.Join(m.stateDir, "msi_update_helper.bat")
@@ -1473,12 +1450,26 @@ func (m *Manager) rollback(descriptor InstallationDescriptor) error {
 		filepath.Dir(descriptor.BackupPath) != filepath.Join(m.stateDir, backupDirName) {
 		return fmt.Errorf("rollback is limited to the recorded previous installation of this failed run")
 	}
+	for _, path := range []string{descriptor.BinaryPath, descriptor.BackupPath} {
+		if err := validateInstallPath(path); err != nil {
+			return fmt.Errorf("unsafe rollback path %s: %w", path, err)
+		}
+	}
 	if err := descriptor.Previous.verify(descriptor.BackupPath); err != nil {
 		return fmt.Errorf("rollback backup verification failed: %w", err)
 	}
 
 	if err := copyFile(descriptor.BackupPath, descriptor.BinaryPath); err != nil {
 		return err
+	}
+	if runtime.GOOS != "windows" {
+		mode := descriptor.Previous.Mode
+		if mode == 0 {
+			mode = 0o755
+		}
+		if err := os.Chmod(descriptor.BinaryPath, os.FileMode(mode)); err != nil {
+			return fmt.Errorf("restore previous executable permissions: %w", err)
+		}
 	}
 	m.logInfo("Restored recorded previous installation after failed update",
 		"run_id", descriptor.RunID, "version", descriptor.FromVersion)
@@ -1594,7 +1585,7 @@ func (m *Manager) ValidatePostUpdate() (bool, string, error) {
 		}
 		if state.Method == "binary" {
 			target := descriptor.Authorization.Target
-			if err := (ArtifactIdentity{target.SHA256, target.SizeBytes}).verify(m.binaryPath); err != nil {
+			if err := (ArtifactIdentity{SHA256: target.SHA256, SizeBytes: target.SizeBytes}).verify(m.binaryPath); err != nil {
 				m.setStatusWithError(StatusFailed, ErrCodeHealthCheck, err.Error())
 				return true, state.FromVersion, fmt.Errorf("running installation does not match recorded artifact: %w", err)
 			}

@@ -254,10 +254,19 @@ func TestTelemetryAdapter(t *testing.T) {
 func TestManagerForceInstallLatest(t *testing.T) {
 	dataDir := t.TempDir()
 	binaryName := "agent-test"
+	var binaryPath string
 	if runtime.GOOS == "windows" {
 		binaryName += ".exe"
+		installRoot := t.TempDir()
+		t.Setenv("ProgramFiles", installRoot)
+		binaryPath = filepath.Join(installRoot, "PrintMaster", "Agent", "printmaster-agent.exe")
 	}
-	binaryPath := filepath.Join(dataDir, binaryName)
+	if runtime.GOOS != "windows" {
+		binaryPath = filepath.Join(dataDir, binaryName)
+	}
+	if err := os.MkdirAll(filepath.Dir(binaryPath), 0o700); err != nil {
+		t.Fatalf("failed to create fake binary directory: %v", err)
+	}
 
 	if err := os.WriteFile(binaryPath, []byte("new-agent-binary"), 0o755); err != nil {
 		t.Fatalf("failed to create fake binary: %v", err)
