@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -26,6 +27,8 @@ func run(args []string) error {
 	rootPath := flags.String("root", "", "owner-provisioned trusted root metadata")
 	keysDir := flags.String("keys", "", "directory containing targets.pem, snapshot.pem and timestamp.pem (not root)")
 	inventory := flags.String("inventory", "", "optional JSON array of PublishTarget entries; omit for freshness refresh")
+	previousRootPath := flags.String("previous-root", "", "explicit prior root for one-version key transition; requires independent latest timestamp pin")
+	expectedTimestamp := flags.String("expected-timestamp-sha256", "", "independently recorded latest timestamp fingerprint for recovery or transition")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -49,7 +52,10 @@ func run(args []string) error {
 			return fmt.Errorf("signing keys must be outside the published metadata directory")
 		}
 	}
-	if *inventory == "" {
+	if *previousRootPath != "" && *expectedTimestamp == "" {
+		return fmt.Errorf("-previous-root requires -expected-timestamp-sha256 from the independent latest publication record")
+	}
+	if *inventory == "" || *previousRootPath != "" || *expectedTimestamp != "" {
 		if _, err := os.Stat(filepath.Join(repositoryAbs, "timestamp.json")); err != nil {
 			return fmt.Errorf("freshness refresh requires the existing publication workspace: %w", err)
 		}
@@ -57,6 +63,16 @@ func run(args []string) error {
 	root, err := os.ReadFile(*rootPath)
 	if err != nil {
 		return err
+	}
+	var previousRoot []byte
+	if *previousRootPath != "" {
+		previousRoot, err = os.ReadFile(*previousRootPath)
+		if err != nil {
+			return err
+		}
+		if len(previousRoot) == 0 {
+			return fmt.Errorf("previous root must not be empty")
+		}
 	}
 	keys := make(map[string]ed25519.PrivateKey)
 	for _, role := range []string{"targets", "snapshot", "timestamp"} {
@@ -85,9 +101,14 @@ func run(args []string) error {
 			return fmt.Errorf("publishing inventory must contain exactly one JSON array")
 		}
 	}
-	if err := updatetrust.Publish(updatetrust.PublishOptions{Directory: *directory, Root: root, Keys: keys, Targets: targets}); err != nil {
+	if err := updatetrust.Publish(updatetrust.PublishOptions{Directory: *directory, Root: root, Keys: keys, Targets: targets,
+		PreviousRoot: previousRoot, ExpectedTimestampSHA256: *expectedTimestamp}); err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stdout, "Update metadata published locally; upload versioned files first and timestamp.json last")
-	return nil
+	timestamp, err := os.ReadFile(filepath.Join(repositoryAbs, "timestamp.json"))
+	if err != nil {
+		return fmt.Errorf("metadata committed but timestamp fingerprint could not be recorded: %w", err)
+	}
+	_, err = fmt.Fprintf(os.Stdout, "Update metadata published locally; upload versioned files first and timestamp.json last\nRecord latest timestamp SHA256 independently before distribution: %x\n", sha256.Sum256(timestamp))
+	return err
 }

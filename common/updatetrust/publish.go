@@ -1,6 +1,7 @@
 package updatetrust
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -9,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -32,6 +34,11 @@ type PublishOptions struct {
 	Keys      map[string]ed25519.PrivateKey
 	Targets   []PublishTarget
 	Now       time.Time
+	// PreviousRoot is only for an explicitly authorized one-version transition.
+	// ExpectedTimestampSHA256 must come from the owner's independent latest
+	// publication record, not the distribution server or the backup itself.
+	PreviousRoot            []byte
+	ExpectedTimestampSHA256 string
 }
 
 // Publish updates routine metadata without accessing a root private key.
@@ -45,23 +52,35 @@ func Publish(opts PublishOptions) error {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	if err := ValidateBootstrapRoot(opts.Root, now); err != nil {
+		return err
+	}
 	root, err := metadata.Root().FromBytes(opts.Root)
 	if err != nil {
 		return err
 	}
-	if err := root.VerifyDelegate("root", root); err != nil {
-		return err
+	restoreRoot := root
+	if len(opts.PreviousRoot) != 0 {
+		if opts.ExpectedTimestampSHA256 == "" {
+			return fmt.Errorf("root transition requires the independently recorded latest timestamp SHA256")
+		}
+		restoreRoot, err = validateRootPolicy(opts.PreviousRoot)
+		if err != nil {
+			return fmt.Errorf("previous publisher root: %w", err)
+		}
+		if err := verifyRootSuccessor(restoreRoot, root); err != nil {
+			return err
+		}
 	}
-	if !root.Signed.Expires.After(now) {
-		return fmt.Errorf("publisher root expired; offline root maintenance required")
-	}
-	if !root.Signed.ConsistentSnapshot {
-		return fmt.Errorf("publisher requires TUF consistent snapshots")
+	if opts.ExpectedTimestampSHA256 != "" {
+		if err := verifyPublisherRootHistory(opts.Directory, restoreRoot); err != nil {
+			return fmt.Errorf("recover publisher root history: %w", err)
+		}
 	}
 	targets := metadata.Targets(now.Add(180 * 24 * time.Hour))
 	snapshot := metadata.Snapshot(now.Add(30 * 24 * time.Hour))
 	timestamp := metadata.Timestamp(now.Add(7 * 24 * time.Hour))
-	if err := restorePublication(opts.Directory, root, targets, snapshot, timestamp); err != nil {
+	if err := restorePublication(opts.Directory, restoreRoot, targets, snapshot, timestamp, opts.ExpectedTimestampSHA256); err != nil {
 		return fmt.Errorf("read publisher state: %w", err)
 	}
 	for role, version := range map[string]*int64{"targets": &targets.Signed.Version, "snapshot": &snapshot.Signed.Version} {
@@ -157,8 +176,21 @@ func Publish(opts PublishOptions) error {
 
 // Timestamp is the publication commit point. Reconstruct state from its signed
 // versioned dependencies, never from independently overwritten working copies.
-func restorePublication(directory string, root *metadata.Metadata[metadata.RootType], targets *metadata.Metadata[metadata.TargetsType], snapshot *metadata.Metadata[metadata.SnapshotType], timestamp *metadata.Metadata[metadata.TimestampType]) error {
-	data, err := os.ReadFile(filepath.Join(directory, "timestamp.json"))
+func restorePublication(directory string, root *metadata.Metadata[metadata.RootType], targets *metadata.Metadata[metadata.TargetsType], snapshot *metadata.Metadata[metadata.SnapshotType], timestamp *metadata.Metadata[metadata.TimestampType], expectedTimestamp string) error {
+	data, err := readPublisherMetadata(filepath.Join(directory, "timestamp.json"))
+	if expectedTimestamp != "" {
+		expected, decodeErr := hex.DecodeString(expectedTimestamp)
+		if decodeErr != nil || len(expected) != sha256.Size {
+			return fmt.Errorf("expected timestamp SHA256 must be 64 hexadecimal characters")
+		}
+		if err != nil {
+			return fmt.Errorf("read independently pinned publication: %w", err)
+		}
+		actual := sha256.Sum256(data)
+		if !bytes.Equal(expected, actual[:]) {
+			return fmt.Errorf("publication does not match independently recorded latest timestamp; restore authoritative state, do not reset versions")
+		}
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		entries, readErr := os.ReadDir(directory)
 		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
@@ -178,6 +210,9 @@ func restorePublication(directory string, root *metadata.Metadata[metadata.RootT
 	if err != nil {
 		return err
 	}
+	if oldTimestamp.Signed.Version <= 0 {
+		return fmt.Errorf("committed timestamp requires a positive version")
+	}
 	if err := root.VerifyDelegate("timestamp", oldTimestamp); err != nil {
 		return err
 	}
@@ -185,7 +220,7 @@ func restorePublication(directory string, root *metadata.Metadata[metadata.RootT
 		if info == nil || info.Version <= 0 {
 			return nil, fmt.Errorf("missing %s publication reference", role)
 		}
-		data, err := os.ReadFile(filepath.Join(directory, fmt.Sprintf("%d.%s.json", info.Version, role)))
+		data, err := readPublisherMetadata(filepath.Join(directory, fmt.Sprintf("%d.%s.json", info.Version, role)))
 		if err != nil {
 			return nil, err
 		}
@@ -231,6 +266,29 @@ func restorePublication(directory string, root *metadata.Metadata[metadata.RootT
 		return fmt.Errorf("publisher metadata version overflow")
 	}
 	return nil
+}
+
+func readPublisherMetadata(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > MaxMetadataBytes {
+		return nil, fmt.Errorf("publisher metadata must be a regular file of at most %d bytes", MaxMetadataBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, MaxMetadataBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > MaxMetadataBytes {
+		return nil, fmt.Errorf("publisher metadata exceeds size limit")
+	}
+	return data, nil
 }
 
 func unusedVersion(directory, role string, next int64) (int64, error) {

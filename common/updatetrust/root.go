@@ -143,6 +143,24 @@ func RotateRoot(previous []byte, oldKey, newKey ed25519.PrivateKey, expires time
 	if len(oldKey) != ed25519.PrivateKeySize || len(newKey) != ed25519.PrivateKeySize || !expires.After(time.Now()) {
 		return nil, fmt.Errorf("valid old/new offline keys and future expiry required")
 	}
+	return rotateRoleKeys(previous, oldKey, newKey, map[string]crypto.PublicKey{"root": newKey.Public()}, expires)
+}
+
+// RotateRoutineKeys replaces all three online roles in one offline ceremony.
+// No previous routine private key is needed, including after loss or compromise.
+func RotateRoutineKeys(previous []byte, rootKey ed25519.PrivateKey, public map[string]crypto.PublicKey, expires time.Time) ([]byte, error) {
+	if len(rootKey) != ed25519.PrivateKeySize || len(public) != 3 || !expires.After(time.Now()) {
+		return nil, fmt.Errorf("offline root key, three replacement routine keys and future expiry required")
+	}
+	for _, role := range []string{"targets", "snapshot", "timestamp"} {
+		if public[role] == nil {
+			return nil, fmt.Errorf("replacement public key required for %s", role)
+		}
+	}
+	return rotateRoleKeys(previous, rootKey, rootKey, public, expires)
+}
+
+func rotateRoleKeys(previous []byte, oldKey, newKey ed25519.PrivateKey, replacements map[string]crypto.PublicKey, expires time.Time) ([]byte, error) {
 	// TUF permits an expired previous root to authorize its successor.
 	// The release/bootstrap check still requires an unexpired final root.
 	oldRoot, err := validateRootPolicy(previous)
@@ -156,45 +174,55 @@ func RotateRoot(previous []byte, oldKey, newKey ed25519.PrivateKey, expires time
 	if err != nil {
 		return nil, err
 	}
-	oldIDs := append([]string(nil), next.Signed.Roles["root"].KeyIDs...)
-	for _, id := range oldIDs {
-		if err := next.Signed.RevokeKey(id, "root"); err != nil {
+	for role, public := range replacements {
+		if _, ok := public.(ed25519.PublicKey); !ok {
+			return nil, fmt.Errorf("replacement %s key must be Ed25519", role)
+		}
+		key, err := metadata.KeyFromPublicKey(public)
+		if err != nil {
 			return nil, err
 		}
-	}
-	key, err := metadata.KeyFromPublicKey(newKey.Public())
-	if err != nil {
-		return nil, err
-	}
-	newID, err := key.ID()
-	if err != nil {
-		return nil, err
-	}
-	for role, spec := range next.Signed.Roles {
-		if role != "root" {
-			for _, id := range spec.KeyIDs {
-				if id == newID {
-					return nil, fmt.Errorf("offline root key must remain separate from routine publisher keys")
-				}
+		id, err := key.ID()
+		if err != nil {
+			return nil, err
+		}
+		for _, previousKey := range oldRoot.Signed.Keys {
+			previousID, err := previousKey.ID()
+			if err != nil {
+				return nil, err
+			}
+			if id == previousID {
+				return nil, fmt.Errorf("replacement %s key must be new and distinct from previous role keys", role)
 			}
 		}
-	}
-	if err := next.Signed.AddKey(key, "root"); err != nil {
-		return nil, err
+		for _, oldID := range append([]string(nil), next.Signed.Roles[role].KeyIDs...) {
+			if err := next.Signed.RevokeKey(oldID, role); err != nil {
+				return nil, err
+			}
+		}
+		if err := next.Signed.AddKey(key, role); err != nil {
+			return nil, err
+		}
 	}
 	next.Signed.Version++
 	next.Signed.Expires, next.Signatures = expires.UTC(), nil
 	if err := signMetadata(next, oldKey); err != nil {
 		return nil, err
 	}
-	if err := signMetadata(next, newKey); err != nil {
+	if !oldKey.Equal(newKey) {
+		if err := signMetadata(next, newKey); err != nil {
+			return nil, err
+		}
+	}
+	if err := verifyRootSuccessor(oldRoot, next); err != nil {
 		return nil, err
 	}
-	if err := oldRoot.VerifyDelegate("root", next); err != nil {
-		return nil, fmt.Errorf("previous root authorization: %w", err)
+	data, err := next.ToBytes(false)
+	if err != nil {
+		return nil, err
 	}
-	if err := next.VerifyDelegate("root", next); err != nil {
-		return nil, fmt.Errorf("replacement root authorization: %w", err)
+	if err := ValidateBootstrapRoot(data, time.Now()); err != nil {
+		return nil, err
 	}
-	return next.ToBytes(false)
+	return data, nil
 }

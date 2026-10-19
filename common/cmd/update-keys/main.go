@@ -28,26 +28,26 @@ func main() {
 
 func run(args []string, output io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("command required: init, rotate-root, verify-keys or check-root")
+		return fmt.Errorf("command required: init, rotate-root, rotate-routine, verify-keys or check-root")
 	}
 	command := args[0]
-	if command != "init" && command != "rotate-root" && command != "verify-keys" && command != "check-root" {
+	if command != "init" && command != "rotate-root" && command != "rotate-routine" && command != "verify-keys" && command != "check-root" {
 		return fmt.Errorf("unknown key operation %q", command)
 	}
 	flags := flag.NewFlagSet("update-keys "+command, flag.ContinueOnError)
 	rootPath := flags.String("root", "", "public root metadata to check or rotate")
 	var offline, routine, public, expiry, oldKey string
-	if command != "check-root" {
+	if command == "init" || command == "rotate-root" || command == "verify-keys" {
 		flags.StringVar(&offline, "offline", "", "offline root-key directory")
 	}
-	if command == "init" || command == "verify-keys" {
+	if command == "init" || command == "rotate-routine" || command == "verify-keys" {
 		flags.StringVar(&routine, "routine", "", "routine signing-key directory (never upload root.pem)")
 	}
-	if command == "init" || command == "rotate-root" {
+	if command == "init" || command == "rotate-root" || command == "rotate-routine" {
 		flags.StringVar(&public, "public", "", "new directory for versioned public root metadata")
 		flags.StringVar(&expiry, "expires", "", "explicit future root expiry in RFC3339 UTC")
 	}
-	if command == "rotate-root" {
+	if command == "rotate-root" || command == "rotate-routine" {
 		flags.StringVar(&oldKey, "old-key", "", "previous offline root.pem")
 	}
 	if err := flags.Parse(args[1:]); err != nil {
@@ -63,10 +63,10 @@ func run(args []string, output io.Writer) error {
 	} else if *rootPath == "" {
 		return fmt.Errorf("-root required")
 	}
-	if command == "rotate-root" && oldKey == "" {
+	if (command == "rotate-root" || command == "rotate-routine") && oldKey == "" {
 		return fmt.Errorf("-old-key required")
 	}
-	if command == "init" || command == "rotate-root" {
+	if command == "init" || command == "rotate-root" || command == "rotate-routine" {
 		expires, err := time.Parse(time.RFC3339, expiry)
 		if err != nil || !expires.After(time.Now()) {
 			return fmt.Errorf("-expires must be a future RFC3339 timestamp")
@@ -74,6 +74,8 @@ func run(args []string, output io.Writer) error {
 		dirs := []string{offline, public}
 		if command == "init" {
 			dirs = append(dirs, routine)
+		} else if command == "rotate-routine" {
+			dirs = []string{routine, public}
 		}
 		if err := validateNewDirectories(dirs); err != nil {
 			return err
@@ -81,14 +83,9 @@ func run(args []string, output io.Writer) error {
 		var root []byte
 		var rootKey ed25519.PrivateKey
 		if command == "init" {
-			keys := make(map[string]ed25519.PrivateKey)
-			pub := make(map[string]crypto.PublicKey)
-			for _, role := range []string{"root", "targets", "snapshot", "timestamp"} {
-				p, key, err := ed25519.GenerateKey(nil)
-				if err != nil {
-					return err
-				}
-				keys[role], pub[role] = key, p
+			keys, pub, err := generateRoleKeys("root", "targets", "snapshot", "timestamp")
+			if err != nil {
+				return err
 			}
 			rootKey = keys["root"]
 			root, err = updatetrust.InitializeRoot(rootKey, pub, expires)
@@ -114,18 +111,39 @@ func run(args []string, output io.Writer) error {
 			if err != nil {
 				return fmt.Errorf("load old offline key: %w", err)
 			}
-			_, rootKey, err = ed25519.GenerateKey(nil)
-			if err != nil {
-				return err
-			}
-			root, err = updatetrust.RotateRoot(previous, old, rootKey, expires)
-			if err != nil {
-				return err
-			}
-			if err := createOutputs(dirs, func() error {
-				return writeProvisioning(offline, public, rootKey, root)
-			}); err != nil {
-				return err
+			if command == "rotate-routine" {
+				keys, pub, err := generateRoleKeys("targets", "snapshot", "timestamp")
+				if err != nil {
+					return err
+				}
+				root, err = updatetrust.RotateRoutineKeys(previous, old, pub, expires)
+				if err != nil {
+					return err
+				}
+				if err := createOutputs(dirs, func() error {
+					for _, role := range []string{"targets", "snapshot", "timestamp"} {
+						if err := writeKey(filepath.Join(routine, role+".pem"), keys[role]); err != nil {
+							return err
+						}
+					}
+					return writePublicRoot(public, root)
+				}); err != nil {
+					return err
+				}
+			} else {
+				_, rootKey, err = ed25519.GenerateKey(nil)
+				if err != nil {
+					return err
+				}
+				root, err = updatetrust.RotateRoot(previous, old, rootKey, expires)
+				if err != nil {
+					return err
+				}
+				if err := createOutputs(dirs, func() error {
+					return writeProvisioning(offline, public, rootKey, root)
+				}); err != nil {
+					return err
+				}
 			}
 		}
 		return reportRoot(output, root)
@@ -175,6 +193,19 @@ func readRoot(path string) ([]byte, error) {
 	return data, nil
 }
 
+func generateRoleKeys(roles ...string) (map[string]ed25519.PrivateKey, map[string]crypto.PublicKey, error) {
+	keys := make(map[string]ed25519.PrivateKey)
+	public := make(map[string]crypto.PublicKey)
+	for _, role := range roles {
+		pub, key, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		keys[role], public[role] = key, pub
+	}
+	return keys, public, nil
+}
+
 func reportRoot(output io.Writer, data []byte) error {
 	root, err := metadata.Root().FromBytes(data)
 	if err != nil {
@@ -189,7 +220,7 @@ func validateNewDirectories(dirs []string) error {
 	absolute := make([]string, 0, len(dirs))
 	for _, dir := range dirs {
 		if dir == "" {
-			return fmt.Errorf("new -offline, -public and (for init) -routine directories are required")
+			return fmt.Errorf("new output directories required (-public and -offline and/or -routine for this operation)")
 		}
 		path, err := filepath.Abs(dir)
 		if err != nil {
@@ -249,6 +280,10 @@ func writeProvisioning(offline, public string, key ed25519.PrivateKey, data []by
 	if err := writeKey(filepath.Join(offline, "root.pem"), key); err != nil {
 		return err
 	}
+	return writePublicRoot(public, data)
+}
+
+func writePublicRoot(public string, data []byte) error {
 	root, err := metadata.Root().FromBytes(data)
 	if err != nil {
 		return err
