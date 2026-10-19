@@ -43,12 +43,13 @@ const (
 
 // PendingUpdateState stores information about an in-progress update for post-restart validation.
 type PendingUpdateState struct {
-	RunID         string                  `json:"run_id,omitempty"`
-	TargetVersion string                  `json:"target_version"`
-	FromVersion   string                  `json:"from_version"`
-	StartedAt     time.Time               `json:"started_at"`
-	Method        string                  `json:"method"` // "binary", "msi", "dnf", "apt", "yum"
-	Installation  *InstallationDescriptor `json:"installation,omitempty"`
+	RunID            string                  `json:"run_id,omitempty"`
+	TargetVersion    string                  `json:"target_version"`
+	FromVersion      string                  `json:"from_version"`
+	StartedAt        time.Time               `json:"started_at"`
+	Method           string                  `json:"method"` // "binary", "msi", "dnf", "apt", "yum"
+	HelperResultPath string                  `json:"helper_result_path,omitempty"`
+	Installation     *InstallationDescriptor `json:"installation,omitempty"`
 }
 
 // ProgressCallback is invoked when update status changes, allowing real-time
@@ -141,8 +142,6 @@ type Manager struct {
 	progressMu        sync.Mutex
 	progress          updatepolicy.ProgressSnapshot
 	progressErr       error
-	keyPins           *signingKeyPinStore // Log-only manifest signing key pin.
-
 	// Package manager support (Linux dpkg/apt/dnf/rpm)
 	usePackageManager bool   // True if binary is managed by a package manager
 	packageName       string // Package name (e.g., "printmaster-agent")
@@ -165,6 +164,7 @@ type Manager struct {
 	currentRun       *UpdateRun
 	cancelled        bool
 	operationCancel  context.CancelFunc
+	helperReconcile  bool
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -283,7 +283,6 @@ func NewManager(opts Options) (*Manager, error) {
 	mgr := &Manager{
 		log:               opts.Log,
 		stateDir:          stateDir,
-		keyPins:           newSigningKeyPinStore(stateDir),
 		enabled:           opts.Enabled,
 		disabledReason:    disabledReason,
 		currentVersion:    opts.CurrentVersion,
@@ -618,6 +617,9 @@ func (m *Manager) performCheck(ctx context.Context) (operationErr error) {
 // acquireOperation rejects overlapping manual, scheduled, and forced work.
 // Status is presentation state, not an operation lock (pending is admissible).
 func (m *Manager) acquireOperation() error {
+	if err := m.unresolvedHelperHandoff(); err != nil {
+		return err
+	}
 	if m.operationMu.TryLock() {
 		m.mu.RLock()
 		status := m.status
@@ -1229,217 +1231,48 @@ func (m *Manager) wrapSudoError(operation string, err error, output []byte) erro
 }
 
 func (m *Manager) applyUpdateWindows(descriptor InstallationDescriptor) error {
-	stagingPath := descriptor.StagingPath
 	// If using MSI, delegate to MSI-specific update method
 	if m.useMSI {
 		return m.applyUpdateWindowsMSI(descriptor)
 	}
-
-	// On Windows, we write a helper batch file that:
-	// 1. Stops the service (if running as service) to prevent auto-restart race
-	// 2. Waits for the current process to exit
-	// 3. Copies the new binary over the old one
-	// 4. Restarts the service (or starts the binary directly)
-	//
-	// The batch file is launched detached so it continues running after we exit.
-
-	// Use the isService flag passed from main (which uses kardianos/service.Interactive())
-	// This is more reliable than trying to detect service mode from within the update package
-	isService := m.isService
-
-	var helperScript string
-	if isService {
-		// Running as a Windows service - use SC to stop, copy, and start
-		// IMPORTANT: We must stop the service first to prevent the service manager
-		// from auto-restarting the old binary while we're trying to update.
-		helperScript = fmt.Sprintf(`@echo off
-echo PrintMaster Agent Update Helper
-echo ============================================
-%s
-echo Stopping service to prevent auto-restart...
-sc stop PrintMasterAgent
-if %%errorlevel%% neq 0 (
-    echo WARNING: SC stop returned %%errorlevel%% - service may already be stopping
-)
-
-echo Waiting for service to fully stop...
-set /a STOP_RETRIES=120
-:waitloop
-sc query PrintMasterAgent | find "STOPPED" >nul
-if %%errorlevel%% neq 0 (
-    set /a STOP_RETRIES-=1
-    if %%STOP_RETRIES%% leq 0 (
-        echo ERROR: Service did not stop within 120 seconds; binary was not replaced
-        exit /b 1
-    )
-    timeout /t 1 /nobreak >nul
-    goto waitloop
-)
-echo Service stopped.
-
-%s
-echo Copying new binary...
-copy /y "%s" "%s"
-if %%errorlevel%% neq 0 (
-    echo ERROR: Failed to copy new binary
-    echo Attempting to restart service with old binary...
-    sc start PrintMasterAgent
-    exit /b %%errorlevel%%
-)
-echo Binary copied successfully.
-
-echo Starting service with new binary...
-sc start PrintMasterAgent
-if %%errorlevel%% neq 0 (
-    echo WARNING: SC start returned %%errorlevel%% - service may already be starting
-)
-
-echo Update complete, cleaning up...
-timeout /t 2 /nobreak >nul
-del "%%~f0"
-`, helperIntegrityCommand(stagingPath, ArtifactIdentity{SHA256: descriptor.Authorization.Target.SHA256, SizeBytes: descriptor.Authorization.Target.SizeBytes}),
-			helperIntegrityCommand(stagingPath, ArtifactIdentity{SHA256: descriptor.Authorization.Target.SHA256, SizeBytes: descriptor.Authorization.Target.SizeBytes}),
-			stagingPath, descriptor.BinaryPath)
-	} else {
-		// Running standalone - just start the binary
-		helperScript = fmt.Sprintf(`@echo off
-echo PrintMaster Agent Update Helper
-echo Waiting for agent to stop...
-timeout /t 3 /nobreak >nul
-
-%s
-echo Copying new binary...
-copy /y "%s" "%s"
-if %%errorlevel%% neq 0 (
-    echo ERROR: Failed to copy new binary
-    exit /b %%errorlevel%%
-)
-
-echo Starting agent...
-start "" "%s"
-
-echo Update complete, cleaning up...
-timeout /t 2 /nobreak >nul
-del "%%~f0"
-`, helperIntegrityCommand(stagingPath, ArtifactIdentity{SHA256: descriptor.Authorization.Target.SHA256, SizeBytes: descriptor.Authorization.Target.SizeBytes}),
-			stagingPath, descriptor.BinaryPath, descriptor.BinaryPath)
-	}
-
-	helperPath := filepath.Join(m.stateDir, "update_helper.bat")
-
-	// Ensure the state directory exists (it should, but verify)
-	if err := os.MkdirAll(m.stateDir, 0o755); err != nil {
-		return fmt.Errorf("failed to ensure update directory exists: %w", err)
-	}
-
-	if err := os.WriteFile(helperPath, []byte(helperScript), 0o755); err != nil {
-		return fmt.Errorf("failed to write update helper: %w", err)
-	}
-
-	// Verify the file was actually written before trying to launch it
-	if _, err := os.Stat(helperPath); err != nil {
-		return fmt.Errorf("update helper file not found after write: %w", err)
-	}
-
-	// Launch the helper script detached - it will wait for us to exit, then do the copy
-	if m.launchHelperFn != nil {
-		// Use mock function (for testing)
-		if err := m.launchHelperFn(helperPath); err != nil {
-			return fmt.Errorf("failed to launch update helper: %w", err)
-		}
-	} else {
-		// Production: use cmd /C start with proper quoting
-		// - First quoted arg after "start" is the window title
-		// - The actual command must also be quoted if it contains spaces
-		cmd := exec.Command("cmd.exe", "/C", "start", "/min", "PrintMaster Update", helperPath)
-		cmd.Dir = m.stateDir
-		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("failed to launch update helper: %w", err)
-		}
-	}
-
-	m.logInfo("Update helper launched", "helper_path", helperPath, "is_service", isService)
-	return nil
+	return m.launchWindowsUpdateHelper(descriptor, false)
 }
 
 // applyUpdateWindowsMSI applies an update using the Windows MSI installer.
 // This method downloads an MSI and runs msiexec to perform an upgrade.
 func (m *Manager) applyUpdateWindowsMSI(descriptor InstallationDescriptor) error {
-	msiPath := descriptor.StagingPath
-	m.logInfo("Applying update via MSI", "msi_path", msiPath)
+	return m.launchWindowsUpdateHelper(descriptor, true)
+}
 
-	// Create a helper batch script that:
-	// 1. Waits for current process to exit
-	// 2. Runs msiexec to install the new MSI (which handles service stop/start)
-	// 3. Cleans up
-
+func (m *Manager) launchWindowsUpdateHelper(descriptor InstallationDescriptor, useMSI bool) error {
+	name := "update_helper.ps1"
+	if useMSI {
+		name = "msi_update_helper.ps1"
+	}
+	helperPath := filepath.Join(m.stateDir, name)
+	resultPath := filepath.Join(m.stateDir, windowsHelperResultFile)
 	logPath := filepath.Join(m.stateDir, "msi_update.log")
-
-	// MSI upgrade will automatically:
-	// - Stop the service
-	// - Replace files
-	// - Start the service
-	// We use /qn for silent install, /l*v for verbose logging
-	helperScript := fmt.Sprintf(`@echo off
-echo PrintMaster Agent MSI Update Helper
-echo ============================================
-echo Waiting for agent to exit...
-timeout /t 3 /nobreak >nul
-
-%s
-echo Running MSI installer...
-msiexec /i "%s" /qn /norestart /l*v "%s"
-set MSI_EXIT=%%errorlevel%%
-
-if %%MSI_EXIT%% equ 0 (
-    echo MSI installation completed successfully.
-) else if %%MSI_EXIT%% equ 3010 (
-    echo MSI installation completed - reboot required.
-) else (
-    echo MSI installation failed with exit code %%MSI_EXIT%%
-    echo Check log file: %s
-)
-
-echo Cleaning up...
-timeout /t 2 /nobreak >nul
-del "%s"
-del "%%~f0"
-exit /b %%MSI_EXIT%%
-`, helperIntegrityCommand(msiPath, ArtifactIdentity{SHA256: descriptor.Authorization.Target.SHA256, SizeBytes: descriptor.Authorization.Target.SizeBytes}),
-		msiPath, logPath, logPath, msiPath)
-
-	helperPath := filepath.Join(m.stateDir, "msi_update_helper.bat")
-
-	// Ensure the state directory exists
-	if err := os.MkdirAll(m.stateDir, 0o755); err != nil {
-		return fmt.Errorf("failed to ensure update directory exists: %w", err)
+	serviceName := m.serviceName
+	if serviceName == "" {
+		serviceName = "PrintMasterAgent"
 	}
-
-	if err := os.WriteFile(helperPath, []byte(helperScript), 0o755); err != nil {
-		return fmt.Errorf("failed to write MSI update helper: %w", err)
+	script := windowsHelperScript(descriptor, serviceName, m.isService, useMSI, os.Getpid(), resultPath, logPath)
+	if err := writeUpdateState(helperPath, []byte(script)); err != nil {
+		return fmt.Errorf("write update helper: %w", err)
 	}
-
-	// Verify the file was written
 	if _, err := os.Stat(helperPath); err != nil {
-		return fmt.Errorf("MSI update helper file not found after write: %w", err)
+		return fmt.Errorf("inspect update helper: %w", err)
 	}
 
-	// Launch the helper script detached
 	if m.launchHelperFn != nil {
-		// Use mock function (for testing)
 		if err := m.launchHelperFn(helperPath); err != nil {
-			return fmt.Errorf("failed to launch MSI update helper: %w", err)
+			return fmt.Errorf("launch update helper: %w", err)
 		}
-	} else {
-		// Production: use cmd /C start with proper quoting
-		cmd := exec.Command("cmd.exe", "/C", "start", "/min", "PrintMaster MSI Update", helperPath)
-		cmd.Dir = m.stateDir
-		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("failed to launch MSI update helper: %w", err)
-		}
+	} else if err := launchDetachedWindowsHelper(helperPath); err != nil {
+		return fmt.Errorf("launch update helper: %w", err)
 	}
-
-	m.logInfo("MSI update helper launched", "helper_path", helperPath, "msi_path", msiPath)
+	m.logInfo("Update helper launched", "helper_path", helperPath, "outcome_path", resultPath,
+		"run_id", descriptor.RunID, "msi", useMSI, "is_service", m.isService)
 	return nil
 }
 
@@ -1491,6 +1324,9 @@ func (m *Manager) writePendingUpdateState(targetVersion, method string, installa
 		FromVersion:   m.currentVersion,
 		StartedAt:     m.clock(),
 		Method:        method,
+	}
+	if runtime.GOOS == "windows" && len(installation) > 0 && (method == "binary" || method == "msi") {
+		state.HelperResultPath = filepath.Join(m.stateDir, windowsHelperResultFile)
 	}
 	if len(installation) > 0 {
 		state.Installation = installation[0]
@@ -1551,6 +1387,36 @@ func (m *Manager) ValidatePostUpdate() (bool, string, error) {
 		return true, state.FromVersion, err
 	}
 
+	var outcome *helperOutcome
+	if state.HelperResultPath != "" {
+		result, err := m.readHelperOutcome(state)
+		if err != nil {
+			m.setStatusWithError(StatusFailed, ErrCodeHealthCheck, err.Error())
+			return true, state.FromVersion, err
+		}
+		outcome = &result
+		if result.Status == "running" {
+			m.startHelperReconciliation(state)
+			return true, state.FromVersion, nil
+		}
+		if result.Status != "succeeded" {
+			message := result.Message
+			if message == "" {
+				message = fmt.Sprintf("Update helper ended with status %s", result.Status)
+			}
+			validationErr := fmt.Errorf("update helper failed: %s", message)
+			if err := m.publishProgress(StatusFailed, -1, message, validationErr.Error()); err != nil {
+				return true, state.FromVersion, errors.Join(validationErr, err)
+			}
+			if result.Status != "timed_out" {
+				if err := os.Remove(pendingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return true, state.FromVersion, errors.Join(validationErr, err)
+				}
+			}
+			return true, state.FromVersion, validationErr
+		}
+	}
+
 	m.logInfo("Checking post-update validation",
 		"expected_version", state.TargetVersion,
 		"current_version", m.currentVersion,
@@ -1564,8 +1430,12 @@ func (m *Manager) ValidatePostUpdate() (bool, string, error) {
 			"expected", state.TargetVersion,
 			"actual", m.currentVersion,
 			"from_version", state.FromVersion)
-		validationErr := fmt.Errorf("update validation failed: expected version %s but running %s",
+		message := fmt.Sprintf("update validation failed: expected version %s but running %s",
 			state.TargetVersion, m.currentVersion)
+		if outcome != nil && outcome.Message != "" {
+			message += "; helper: " + outcome.Message
+		}
+		validationErr := errors.New(message)
 		if err := m.publishProgress(StatusFailed, -1, validationErr.Error(), validationErr.Error()); err != nil {
 			return true, state.FromVersion, errors.Join(validationErr, err)
 		}
@@ -1614,6 +1484,96 @@ func (m *Manager) ValidatePostUpdate() (bool, string, error) {
 		return true, state.FromVersion, err
 	}
 	return true, state.FromVersion, nil
+}
+
+func (m *Manager) readHelperOutcome(state PendingUpdateState) (helperOutcome, error) {
+	expectedPath := filepath.Join(m.stateDir, windowsHelperResultFile)
+	if filepath.Clean(state.HelperResultPath) != filepath.Clean(expectedPath) {
+		return helperOutcome{}, fmt.Errorf("pending update contains an unexpected helper outcome path")
+	}
+	data, err := os.ReadFile(expectedPath)
+	if err != nil {
+		return helperOutcome{}, fmt.Errorf("read durable update helper outcome: %w", err)
+	}
+	var outcome helperOutcome
+	if err := json.Unmarshal(data, &outcome); err != nil {
+		return helperOutcome{}, fmt.Errorf("parse durable update helper outcome: %w", err)
+	}
+	if outcome.RunID != state.RunID || outcome.Target != state.TargetVersion ||
+		outcome.UpdatedAt.IsZero() ||
+		(outcome.Status != "running" && outcome.Status != "succeeded" &&
+			outcome.Status != "failed" && outcome.Status != "timed_out") {
+		return helperOutcome{}, fmt.Errorf("durable update helper outcome does not match the pending run")
+	}
+	return outcome, nil
+}
+
+func (m *Manager) startHelperReconciliation(state PendingUpdateState) {
+	m.mu.Lock()
+	if m.helperReconcile {
+		m.mu.Unlock()
+		return
+	}
+	m.helperReconcile = true
+	m.mu.Unlock()
+
+	go func() {
+		defer func() {
+			m.mu.Lock()
+			m.helperReconcile = false
+			m.mu.Unlock()
+		}()
+		reconciliationTimeout := windowsHelperParentExitTimeout + 2*windowsHelperServiceTimeout
+		if state.Method == "msi" {
+			reconciliationTimeout += windowsHelperMSITimeout
+		}
+		deadline := time.Now().Add(reconciliationTimeout)
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for time.Now().Before(deadline) {
+			outcome, err := m.readHelperOutcome(state)
+			if err == nil && outcome.Status != "running" {
+				if _, _, validationErr := m.ValidatePostUpdate(); validationErr != nil {
+					m.logError("Update helper outcome reconciliation failed", "run_id", state.RunID, "error", validationErr)
+				}
+				return
+			}
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				m.setStatusWithError(StatusFailed, ErrCodeHealthCheck, err.Error())
+				m.logError("Update helper outcome reconciliation failed", "run_id", state.RunID, "error", err)
+				return
+			}
+			<-ticker.C
+		}
+		err := fmt.Errorf("update helper did not report a final result before the reconciliation deadline")
+		m.setStatusWithError(StatusFailed, ErrCodeApplyFailed, err.Error())
+		m.logError("Update helper outcome remains unresolved", "run_id", state.RunID, "error", err)
+	}()
+}
+
+func (m *Manager) unresolvedHelperHandoff() error {
+	data, err := os.ReadFile(filepath.Join(m.stateDir, pendingUpdateFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect pending helper handoff: %w", err)
+	}
+	var state PendingUpdateState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("cannot start another update while pending handoff state is invalid: %w", err)
+	}
+	if state.HelperResultPath == "" {
+		return nil
+	}
+	outcome, err := m.readHelperOutcome(state)
+	if err != nil {
+		return fmt.Errorf("cannot start another update before the previous helper outcome is reconciled: %w", err)
+	}
+	if outcome.Status == "running" || outcome.Status == "timed_out" {
+		return fmt.Errorf("cannot start another update while the previous installer handoff is unresolved: %s", outcome.Message)
+	}
+	return nil
 }
 
 // ValidatePostUpdateWithHealthCheck performs post-update validation including a health check.

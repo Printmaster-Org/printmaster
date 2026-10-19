@@ -278,14 +278,14 @@ func checkWindowsObjectPermissions(path string, trusted func(*windows.SID) bool,
 func validateServiceInstallPath(path string) error {
 	expected := filepath.Join(os.Getenv("ProgramFiles"), "PrintMaster", "Agent", "printmaster-agent.exe")
 	if filepath.VolumeName(expected) == "" {
-		return fmt.Errorf("ProgramFiles is not configured")
+		return fmt.Errorf("program files directory is not configured")
 	}
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return err
 	}
 	if !strings.EqualFold(filepath.Clean(absPath), filepath.Clean(expected)) {
-		return fmt.Errorf("Windows service executable must be installed at %s", expected)
+		return fmt.Errorf("windows service executable must be installed at %s", expected)
 	}
 	return nil
 }
@@ -306,7 +306,7 @@ func secureWindowsServiceExecutable(path string) error {
 		return err
 	}
 	if attributes&(windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DIRECTORY) != 0 {
-		return fmt.Errorf("Windows service executable is not an ordinary file")
+		return fmt.Errorf("windows service executable is not an ordinary file")
 	}
 	return setPrivateWindowsACL(absPath)
 }

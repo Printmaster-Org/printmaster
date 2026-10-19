@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"printmaster/common/updatepolicy"
 	"printmaster/common/updatetrust"
@@ -169,6 +170,25 @@ func TestDescriptorPersistsThroughPendingAndStartupValidation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			pendingData, err := os.ReadFile(filepath.Join(m.stateDir, pendingUpdateFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var pending PendingUpdateState
+			if err := json.Unmarshal(pendingData, &pending); err != nil {
+				t.Fatal(err)
+			}
+			if pending.HelperResultPath != "" {
+				outcome, err := json.Marshal(helperOutcome{
+					RunID: pending.RunID, Target: pending.TargetVersion, Status: "succeeded", UpdatedAt: time.Now().UTC(),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := writeUpdateState(pending.HelperResultPath, outcome); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if mode == "receipt write failure" {
 				if err := os.Mkdir(filepath.Join(m.stateDir, "installation.json"), 0o700); err != nil {
 					t.Fatal(err)
@@ -190,6 +210,147 @@ func TestDescriptorPersistsThroughPendingAndStartupValidation(t *testing.T) {
 				t.Fatalf("lost authenticated installation receipt: %+v %v", receipt, err)
 			}
 		})
+	}
+}
+
+func TestReadHelperOutcomeRequiresMatchingPendingRun(t *testing.T) {
+	t.Parallel()
+	m := lifecycleManager(t, &mockUpdateClient{}, nil)
+	state := PendingUpdateState{
+		RunID: "run-123", TargetVersion: "1.1.0",
+		HelperResultPath: filepath.Join(m.stateDir, windowsHelperResultFile),
+	}
+	outcome := helperOutcome{
+		RunID: state.RunID, Target: state.TargetVersion, Status: "succeeded", UpdatedAt: time.Now().UTC(),
+	}
+	data, err := json.Marshal(outcome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeUpdateState(state.HelperResultPath, data); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := m.readHelperOutcome(state); err != nil ||
+		got.RunID != outcome.RunID || got.Target != outcome.Target || got.Status != outcome.Status {
+		t.Fatalf("valid helper outcome rejected: %+v %v", got, err)
+	}
+	state.RunID = "different-run"
+	if _, err := m.readHelperOutcome(state); err == nil {
+		t.Fatal("accepted a helper outcome from a different run")
+	}
+	state.RunID = outcome.RunID
+	state.HelperResultPath = filepath.Join(m.stateDir, "untrusted.json")
+	if _, err := m.readHelperOutcome(state); err == nil {
+		t.Fatal("accepted an unexpected helper outcome path")
+	}
+}
+
+func TestPostUpdateWaitsForDurableHelperCompletion(t *testing.T) {
+	t.Parallel()
+	m, descriptor := preparedInstallation(t)
+	if err := m.writePendingUpdateState("1.1.0", "binary", &descriptor); err != nil {
+		t.Fatal(err)
+	}
+	pendingPath := filepath.Join(m.stateDir, pendingUpdateFile)
+	data, err := os.ReadFile(pendingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state PendingUpdateState
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	state.HelperResultPath = filepath.Join(m.stateDir, windowsHelperResultFile)
+	data, err = json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeUpdateState(pendingPath, data); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyFile(descriptor.StagingPath, m.binaryPath); err != nil {
+		t.Fatal(err)
+	}
+	m.currentVersion = "1.1.0"
+	writeOutcome := func(status string) {
+		t.Helper()
+		result, err := json.Marshal(helperOutcome{
+			RunID: state.RunID, Target: state.TargetVersion, Status: status, UpdatedAt: time.Now().UTC(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeUpdateState(state.HelperResultPath, result); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeOutcome("running")
+	if wasUpdated, _, err := m.ValidatePostUpdate(); err != nil || !wasUpdated {
+		t.Fatalf("pending helper result was not deferred: updated=%v err=%v", wasUpdated, err)
+	}
+	if got := m.Progress().Status; got != string(StatusVerifying) {
+		t.Fatalf("helper handoff reported terminal state before completion: %s", got)
+	}
+	writeOutcome("succeeded")
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if m.Progress().Status == string(StatusSucceeded) {
+			if _, err := os.Stat(pendingPath); errors.Is(err, os.ErrNotExist) {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := m.Progress().Status; got != string(StatusSucceeded) {
+		t.Fatalf("durable helper completion was not reconciled: %s", got)
+	}
+	if _, err := os.Stat(pendingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending update state was not cleared after reconciliation: %v", err)
+	}
+}
+
+func TestTimedOutHelperOutcomeRemainsPendingAndBlocksUpdates(t *testing.T) {
+	t.Parallel()
+	m, descriptor := preparedInstallation(t)
+	if err := m.writePendingUpdateState("1.1.0", "binary", &descriptor); err != nil {
+		t.Fatal(err)
+	}
+
+	pendingPath := filepath.Join(m.stateDir, pendingUpdateFile)
+	data, err := os.ReadFile(pendingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state PendingUpdateState
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	state.HelperResultPath = filepath.Join(m.stateDir, windowsHelperResultFile)
+	data, err = json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeUpdateState(pendingPath, data); err != nil {
+		t.Fatal(err)
+	}
+	result, err := json.Marshal(helperOutcome{
+		RunID: state.RunID, Target: state.TargetVersion, Status: "timed_out", UpdatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeUpdateState(state.HelperResultPath, result); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := m.ValidatePostUpdate(); err == nil {
+		t.Fatal("timed-out helper outcome was treated as success")
+	}
+	if _, err := os.Stat(pendingPath); err != nil {
+		t.Fatalf("timed-out handoff was not retained for operator review: %v", err)
+	}
+	if err := m.unresolvedHelperHandoff(); err == nil {
+		t.Fatal("timed-out handoff did not block another update")
 	}
 }
 

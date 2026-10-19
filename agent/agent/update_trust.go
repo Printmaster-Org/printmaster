@@ -25,7 +25,7 @@ func (c *ServerClient) NewPublisherVerifier(root []byte, cacheDir string) (*upda
 		return nil, fmt.Errorf("invalid Server origin for publisher metadata")
 	}
 	if c.HTTPClient == nil {
-		return nil, fmt.Errorf("Server HTTP client required for publisher metadata")
+		return nil, fmt.Errorf("server HTTP client required for publisher metadata")
 	}
 	client := *c.HTTPClient
 	transport := client.Transport

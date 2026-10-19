@@ -64,7 +64,7 @@ func TestPublisherTransportUsesTLSAndCurrentAgentToken(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+expected.Load().(string) || !strings.HasPrefix(r.URL.Path, updatetrust.MetadataRoute) {
 			failures.Add(1)
-			http.Error(w, "bad authentication", 401)
+			http.Error(w, "bad authentication", http.StatusUnauthorized)
 			return
 		}
 		files.ServeHTTP(w, r)

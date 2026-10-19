@@ -323,13 +323,15 @@ func TestManagerForceInstallLatest(t *testing.T) {
 		t.Fatalf("failed to read updated binary: %v", err)
 	}
 	if runtime.GOOS == "windows" {
-		helperPath := filepath.Join(dataDir, "autoupdate", "update_helper.bat")
+		helperPath := filepath.Join(dataDir, "autoupdate", "update_helper.ps1")
 		if _, err := os.Stat(helperPath); err != nil {
 			t.Fatalf("expected update helper script on windows: %v", err)
 		}
 		script, err := os.ReadFile(helperPath)
-		if err != nil || !bytes.Contains(script, []byte("STOP_RETRIES=120")) || !bytes.Contains(script, []byte("binary was not replaced")) {
-			t.Fatalf("service stop loop lacks a bounded abort: %v", err)
+		if err != nil || !bytes.Contains(script, []byte("ServiceTimeoutSeconds")) ||
+			!bytes.Contains(script, []byte("[IO.File]::Replace")) ||
+			!bytes.Contains(script, []byte("Write-Outcome 'running'")) {
+			t.Fatalf("update helper lacks bounded, atomic handoff and durable outcomes: %v", err)
 		}
 	} else if !bytes.Equal(updated, payload) {
 		t.Fatalf("expected binary to be replaced with payload")

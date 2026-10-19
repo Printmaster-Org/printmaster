@@ -247,34 +247,3 @@ func (s *signingKeyPinStore) audit(manifest *UpdateManifest, now time.Time) (Sig
 	}
 	return audit, nil
 }
-
-// auditManifestSignature runs the log-only signature audit for a fetched
-// manifest. It never fails the update; results are logged for operators.
-func (m *Manager) auditManifestSignature(manifest *UpdateManifest) SignatureAudit {
-	pins := m.keyPins
-	if pins == nil {
-		// Managers built without NewManager (tests) get a transient store.
-		pins = newSigningKeyPinStore(m.stateDir)
-	}
-	audit, err := pins.audit(manifest, m.clock())
-	if err != nil {
-		m.logWarn("Could not persist update signing key pin", "error", err)
-	}
-	fields := []interface{}{"version", manifest.Version, "channel", manifest.Channel,
-		"key_id", audit.KeyID, "fingerprint", audit.Fingerprint, "enforced", false}
-	switch audit.Status {
-	case SignatureVerified:
-		m.logDebug("Update manifest signature verified", fields...)
-	case SignatureUnverifiable:
-		m.logInfo("Update manifest signature not verifiable; relying on SHA-256 check", append(fields, "reason", audit.Detail)...)
-	case SignatureKeyChanged:
-		m.logWarn("Update manifest signing key changed since it was pinned; re-pinned to the new key. Confirm the Server rotated its signing key",
-			append(fields, "previous_key_id", audit.PinnedKeyID, "previous_fingerprint", audit.PinnedPrint)...)
-	case SignatureMismatch:
-		m.logWarn("Update manifest fields differ from the signed payload; continuing (log-only)",
-			append(fields, "fields", strings.Join(audit.MismatchFields, ","))...)
-	default:
-		m.logWarn("Update manifest signature invalid; continuing (log-only)", append(fields, "reason", audit.Detail)...)
-	}
-	return audit
-}
