@@ -191,7 +191,6 @@ func PublishTransaction(opts TransactionOptions) (result error) {
 }
 
 func readSealedPublication(directory string, trustedRoot []byte, now time.Time) ([]byte, map[string][]byte, publicationRecord, error) {
-	var record publicationRecord
 	fail := func(err error) ([]byte, map[string][]byte, publicationRecord, error) {
 		return nil, nil, publicationRecord{}, err
 	}
@@ -202,11 +201,21 @@ func readSealedPublication(directory string, trustedRoot []byte, now time.Time) 
 	if err != nil {
 		return fail(fmt.Errorf("pending publication is not sealed; authorized manual recovery required: %w", err))
 	}
-	if err := json.Unmarshal(data, &record); err != nil {
-		return fail(err)
-	}
 	files, err := publicationFiles(directory)
 	if err != nil {
+		return fail(err)
+	}
+	record, err := validateSealedPublication(data, files, trustedRoot, now, false)
+	if err != nil {
+		return fail(err)
+	}
+	return data, files, record, nil
+}
+
+func validateSealedPublication(data []byte, files map[string][]byte, trustedRoot []byte, now time.Time, allowExpiredRoutine bool) (publicationRecord, error) {
+	fail := func(err error) (publicationRecord, error) { return publicationRecord{}, err }
+	var record publicationRecord
+	if err := json.Unmarshal(data, &record); err != nil {
 		return fail(err)
 	}
 	if record.RootSHA256 != digest(trustedRoot) || record.TimestampSHA256 != digest(files["timestamp.json"]) ||
@@ -246,10 +255,12 @@ func readSealedPublication(directory string, trustedRoot []byte, now time.Time) 
 	if sealedTimestamp.Signed.Version != record.TimestampVersion {
 		return fail(fmt.Errorf("sealed timestamp version does not match record"))
 	}
-	if err := deliveryExpiry(files, now); err != nil {
-		return fail(err)
+	if !allowExpiredRoutine {
+		if err := deliveryExpiry(files, now); err != nil {
+			return fail(err)
+		}
 	}
-	return data, files, record, nil
+	return record, nil
 }
 
 func digest(data []byte) string {

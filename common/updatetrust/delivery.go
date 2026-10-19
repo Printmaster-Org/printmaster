@@ -24,6 +24,9 @@ type DeliveryOptions struct {
 	Root      []byte
 	// ExpectedTimestampSHA256 pins the exact sealed publication being delivered.
 	ExpectedTimestampSHA256 string
+	// Optional caller pin used when independently recording the entire sealed
+	// inventory, including historical files outside the current signed chain.
+	ExpectedRecordSHA256 string
 	// ExpectedPreviousSHA256 must come from the independently held last remote
 	// publication record. Local signing may be ahead of remote distribution.
 	ExpectedPreviousSHA256 string
@@ -39,17 +42,6 @@ func DeliverPublication(ctx context.Context, opts DeliveryOptions) error {
 	if !opts.ExternalSerialization || opts.Recovery == nil || opts.Public == nil {
 		return fmt.Errorf("remote delivery requires externally serialized writers and separate recovery/public stores")
 	}
-	validPin := func(pin string) bool {
-		if len(pin) != 64 {
-			return false
-		}
-		for _, c := range pin {
-			if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
-				return false
-			}
-		}
-		return true
-	}
 	if !validPin(opts.ExpectedTimestampSHA256) || (opts.Bootstrap && opts.ExpectedPreviousSHA256 != "") ||
 		(!opts.Bootstrap && !validPin(opts.ExpectedPreviousSHA256)) {
 		return fmt.Errorf("exact publication pin and either explicit bootstrap or independently recorded previous remote pin required")
@@ -63,6 +55,9 @@ func DeliverPublication(ctx context.Context, opts DeliveryOptions) error {
 	}
 	if record.TimestampSHA256 != opts.ExpectedTimestampSHA256 {
 		return fmt.Errorf("sealed publication differs from the explicitly pinned delivery")
+	}
+	if opts.ExpectedRecordSHA256 != "" && (!validPin(opts.ExpectedRecordSHA256) || digest(recordData) != opts.ExpectedRecordSHA256) {
+		return fmt.Errorf("sealed publication record differs from the explicitly pinned inventory")
 	}
 	current, err := opts.Public.Get(ctx, "timestamp.json")
 	if errors.Is(err, fs.ErrNotExist) {
@@ -138,6 +133,18 @@ func DeliverPublication(ctx context.Context, opts DeliveryOptions) error {
 		return fmt.Errorf("timestamp read-back mismatch; preserve sealed publication for owner review")
 	}
 	return nil
+}
+
+func validPin(pin string) bool {
+	if len(pin) != 64 {
+		return false
+	}
+	for _, c := range pin {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func ensureRemote(ctx context.Context, store PublicationStore, name string, data []byte) error {

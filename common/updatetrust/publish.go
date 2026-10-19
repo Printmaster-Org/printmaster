@@ -48,6 +48,11 @@ func Publish(opts PublishOptions) error {
 	if opts.Directory == "" {
 		return fmt.Errorf("publisher metadata directory required")
 	}
+	if _, err := os.Lstat(filepath.Join(opts.Directory, ".restore-incomplete")); err == nil {
+		return fmt.Errorf("publisher restore is incomplete; preserve state for authorized owner recovery")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	now := opts.Now.UTC()
 	if now.IsZero() {
 		now = time.Now().UTC()

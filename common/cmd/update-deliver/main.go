@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"printmaster/common/updateb2"
@@ -42,6 +44,22 @@ func run(args []string, getenv func(string) string, output io.Writer) error {
 	if err != nil {
 		return err
 	}
+	recordFile, err := os.Open(filepath.Join(*directory, "record.json"))
+	if err != nil {
+		return err
+	}
+	recordData, readErr := io.ReadAll(io.LimitReader(recordFile, updatetrust.MaxMetadataBytes+1))
+	closeErr := recordFile.Close()
+	if readErr != nil {
+		return readErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if len(recordData) == 0 || int64(len(recordData)) > updatetrust.MaxMetadataBytes {
+		return fmt.Errorf("sealed record length invalid")
+	}
+	recordPin := fmt.Sprintf("%x", sha256.Sum256(recordData))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	connect := func(name, prefix string, retained bool) (*updateb2.Store, error) {
@@ -60,10 +78,11 @@ func run(args []string, getenv func(string) string, output io.Writer) error {
 	}
 	if err := updatetrust.DeliverPublication(ctx, updatetrust.DeliveryOptions{
 		Directory: *directory, Root: root, ExpectedTimestampSHA256: *pin, ExpectedPreviousSHA256: *previous,
-		Bootstrap: *bootstrap, ExternalSerialization: *serialized, Public: publicStore, Recovery: recoveryStore,
+		ExpectedRecordSHA256: recordPin,
+		Bootstrap:            *bootstrap, ExternalSerialization: *serialized, Public: publicStore, Recovery: recoveryStore,
 	}); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(output, "Verified remote delivery complete; retain independent latest remote timestamp SHA256: %s\n", *pin)
+	_, err = fmt.Fprintf(output, "Verified remote delivery complete; retain independent latest remote timestamp SHA256: %s\nMatching sealed record SHA256: %s\n", *pin, recordPin)
 	return err
 }

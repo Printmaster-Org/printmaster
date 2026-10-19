@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha1" // B2's upload checksum is transport-only, never publisher trust.
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -23,6 +24,7 @@ type Store struct {
 	auth     authorization
 	bucketID string
 	recovery bool
+	readOnly bool
 }
 
 type StoreOptions struct {
@@ -31,18 +33,40 @@ type StoreOptions struct {
 }
 
 func NewStore(ctx context.Context, opts StoreOptions) (*Store, error) {
+	return newStore(ctx, opts, false)
+}
+
+// NewRecoveryReader accepts only read-only credentials and cannot upload.
+func NewRecoveryReader(ctx context.Context, opts StoreOptions) (*Store, error) {
+	opts.Recovery = true
+	return newStore(ctx, opts, true)
+}
+
+func newStore(ctx context.Context, opts StoreOptions, readOnly bool) (*Store, error) {
+	return (checker{client: newHTTPClient()}).openStore(ctx, opts, readOnly)
+}
+
+func (c checker) openStore(ctx context.Context, opts StoreOptions, readOnly bool) (*Store, error) {
 	if opts.Bucket == "" || !validB2URL(opts.S3Endpoint) || opts.KeyID == "" || opts.ApplicationKey == "" {
 		return nil, fmt.Errorf("B2 delivery requires bucket, HTTPS S3 endpoint and private credentials")
 	}
-	c := checker{client: newHTTPClient()}
-	auth, err := c.inspect(ctx, opts.Bucket, opts.S3Endpoint, opts.KeyID, opts.ApplicationKey, opts.Recovery, true)
+	auth, err := c.inspect(ctx, opts.Bucket, opts.S3Endpoint, opts.KeyID, opts.ApplicationKey, opts.Recovery, !readOnly)
 	if err != nil {
 		return nil, err
 	}
 	if !validB2URL(auth.APIInfo.Storage.DownloadURL) {
 		return nil, fmt.Errorf("unexpected B2 download endpoint")
 	}
-	return &Store{checker: c, auth: auth, bucketID: auth.APIInfo.Storage.Allowed.Buckets[0].ID, recovery: opts.Recovery}, nil
+	if readOnly {
+		capabilities := make(map[string]bool)
+		for _, name := range auth.APIInfo.Storage.Allowed.Capabilities {
+			capabilities[name] = true
+		}
+		if !capabilities["listFiles"] || !capabilities["readFiles"] || !capabilities["readFileRetentions"] {
+			return nil, fmt.Errorf("recovery reader requires listFiles, readFiles and readFileRetentions")
+		}
+	}
+	return &Store{checker: c, auth: auth, bucketID: auth.APIInfo.Storage.Allowed.Buckets[0].ID, recovery: opts.Recovery, readOnly: readOnly}, nil
 }
 
 type fileInfo struct {
@@ -147,9 +171,86 @@ func (s *Store) Get(ctx context.Context, name string) ([]byte, error) {
 	return s.download(ctx, listing.Files[0])
 }
 
+// GetPinned is explicit recovery: unlike ordinary Get, it may inspect behind
+// hide markers/newer poisoned versions, but accepts only the independently
+// pinned bytes from a still-retained valid recovery version.
+func (s *Store) GetPinned(ctx context.Context, name, expectedSHA256 string) ([]byte, error) {
+	expected, err := hex.DecodeString(expectedSHA256)
+	if !s.recovery || !validObjectName(name) || err != nil || len(expected) != sha256.Size {
+		return nil, fmt.Errorf("pinned recovery requires a recovery store, valid name and SHA256")
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	cursor := ""
+	seen := make(map[string]bool)
+	var downloaded int64
+	for page := 0; page < 10; page++ {
+		var listing struct {
+			Files    []fileInfo `json:"files"`
+			NextName string     `json:"nextFileName"`
+			NextID   string     `json:"nextFileId"`
+		}
+		input := map[string]interface{}{"bucketId": s.bucketID, "prefix": name, "startFileName": name, "maxFileCount": 10}
+		if cursor != "" {
+			input["startFileId"] = cursor
+		}
+		if err := s.call(ctx, "b2_list_file_versions", input, &listing); err != nil {
+			return nil, err
+		}
+		if listing.Files == nil || len(listing.Files) > 10 {
+			return nil, fmt.Errorf("invalid pinned recovery version listing")
+		}
+		for _, info := range listing.Files {
+			if info.Name != name {
+				if strings.HasPrefix(info.Name, name) && info.Name > name {
+					return nil, fmt.Errorf("pinned recovery version not found")
+				}
+				return nil, fmt.Errorf("unexpected recovery listing identity")
+			}
+			if info.ID == "" || info.BucketID != s.bucketID || seen[info.ID] {
+				return nil, fmt.Errorf("invalid or repeated recovery version")
+			}
+			seen[info.ID] = true
+			if info.Action == "hide" {
+				continue
+			}
+			if info.Action != "upload" || info.Length < 1 || info.Length > objectLimit {
+				return nil, fmt.Errorf("invalid recovery version action/length")
+			}
+			downloaded += info.Length
+			if downloaded > 64<<20 {
+				return nil, fmt.Errorf("pinned recovery scan exceeds 64 MiB download limit")
+			}
+			data, err := s.download(ctx, info)
+			if err != nil {
+				return nil, err
+			}
+			actual := sha256.Sum256(data)
+			if bytes.Equal(actual[:], expected) {
+				if err := s.validateInfo(info, name); err != nil {
+					return nil, err
+				}
+				return data, nil
+			}
+		}
+		if listing.NextName == "" && listing.NextID == "" {
+			return nil, fmt.Errorf("pinned recovery version not found")
+		}
+		if listing.NextName != name || listing.NextID == "" || listing.NextID == cursor ||
+			seen[listing.NextID] || len(listing.Files) == 0 {
+			return nil, fmt.Errorf("invalid pinned recovery pagination")
+		}
+		cursor = listing.NextID
+	}
+	return nil, fmt.Errorf("pinned recovery exceeds 100-version scan limit; owner review required")
+}
+
 // Put verifies the uploaded version's identity, retention and exact bytes by
 // file ID. It never retries automatically after an ambiguous upload outcome.
 func (s *Store) Put(ctx context.Context, name string, data []byte) error {
+	if s.readOnly {
+		return fmt.Errorf("read-only recovery store cannot upload")
+	}
 	if !validObjectName(name) || len(data) == 0 || len(data) > objectLimit {
 		return fmt.Errorf("invalid B2 upload name or length")
 	}

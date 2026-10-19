@@ -227,7 +227,7 @@ func TestRemoteDeliveryFailureAndResume(t *testing.T) {
 
 func TestRemoteDeliveryRejectsInvalidInputWithoutWrites(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"not serialized", "missing pin", "wrong pin", "missing previous",
+	for _, scenario := range []string{"not serialized", "missing pin", "wrong pin", "wrong record pin", "missing previous",
 		"bootstrap and previous", "missing remote", "wrong remote", "rollback", "tampered", "expired", "canceled", "unsealed"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
@@ -240,6 +240,8 @@ func TestRemoteDeliveryRejectsInvalidInputWithoutWrites(t *testing.T) {
 				opts.ExpectedTimestampSHA256 = ""
 			case "wrong pin":
 				opts.ExpectedTimestampSHA256 = strings.Repeat("a", 64)
+			case "wrong record pin":
+				opts.ExpectedRecordSHA256 = strings.Repeat("a", 64)
 			case "missing previous":
 				opts.ExpectedPreviousSHA256 = ""
 			case "bootstrap and previous":
