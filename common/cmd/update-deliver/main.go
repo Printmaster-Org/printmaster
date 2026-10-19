@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"printmaster/common/updateb2"
+	"printmaster/common/updatestate"
 	"printmaster/common/updatetrust"
 )
 
@@ -32,6 +33,7 @@ func run(args []string, getenv func(string) string, output io.Writer) error {
 	public := flags.String("metadata-bucket", "", "public metadata bucket")
 	recovery := flags.String("recovery-bucket", "", "private retained recovery bucket")
 	endpoint := flags.String("s3-endpoint", "", "expected HTTPS B2 S3 endpoint")
+	stateRepository := flags.String("state-repository", "", "protected independent GitHub owner/repository for pending/committed publication custody")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -62,6 +64,14 @@ func run(args []string, getenv func(string) string, output io.Writer) error {
 	recordPin := fmt.Sprintf("%x", sha256.Sum256(recordData))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
+	var custody updatetrust.PublicationCustody
+	if *stateRepository != "" {
+		backend, err := updatestate.NewGitHub(ctx, *stateRepository, getenv("UPDATE_STATE_TOKEN"))
+		if err != nil {
+			return err
+		}
+		custody = updatestate.Journal{Backend: backend}
+	}
 	connect := func(name, prefix string, retained bool) (*updateb2.Store, error) {
 		return updateb2.NewStore(ctx, updateb2.StoreOptions{
 			Bucket: name, S3Endpoint: *endpoint, Recovery: retained,
@@ -79,7 +89,7 @@ func run(args []string, getenv func(string) string, output io.Writer) error {
 	if err := updatetrust.DeliverPublication(ctx, updatetrust.DeliveryOptions{
 		Directory: *directory, Root: root, ExpectedTimestampSHA256: *pin, ExpectedPreviousSHA256: *previous,
 		ExpectedRecordSHA256: recordPin,
-		Bootstrap:            *bootstrap, ExternalSerialization: *serialized, Public: publicStore, Recovery: recoveryStore,
+		Bootstrap:            *bootstrap, ExternalSerialization: *serialized, Public: publicStore, Recovery: recoveryStore, Custody: custody,
 	}); err != nil {
 		return err
 	}

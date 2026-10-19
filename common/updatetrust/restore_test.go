@@ -104,7 +104,7 @@ func TestPinnedRestoreRejectsInvalidStateWithoutOutput(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []string{"missing timestamp pin", "missing record pin", "wrong record pin",
 		"wrong root", "not serialized", "missing object", "tampered object", "unsafe record name",
-		"wrong record timestamp", "wrong record version", "missing root history", "missing current dependency",
+		"wrong record timestamp", "wrong record version", "wrong authority version", "missing root history", "missing current dependency",
 		"invalid signature", "too many files",
 		"mismatched retained records", "corrupt json", "nonempty workspace", "nonempty records",
 		"overlapping directories", "linked directory", "lock conflict", "canceled"} {
@@ -139,6 +139,8 @@ func TestPinnedRestoreRejectsInvalidStateWithoutOutput(t *testing.T) {
 				record.TimestampSHA256 = strings.Repeat("a", 64)
 			case "wrong record version":
 				record.TimestampVersion++
+			case "wrong authority version":
+				opts.ExpectedTimestampVersion = record.TimestampVersion + 1
 			case "missing root history":
 				delete(record.Files, "1.root.json")
 			case "missing current dependency":

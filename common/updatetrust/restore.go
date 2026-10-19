@@ -25,8 +25,10 @@ type RestoreOptions struct {
 	// that the current timestamp's signed dependency chain does not cover.
 	ExpectedTimestampSHA256 string
 	ExpectedRecordSHA256    string
-	ExternalSerialization   bool
-	Recovery                PinnedPublicationReader
+	// Optional independent authority version; zero preserves manual-pin recovery.
+	ExpectedTimestampVersion int64
+	ExternalSerialization    bool
+	Recovery                 PinnedPublicationReader
 }
 
 // RestorePublication reads remote public metadata only. It requires two existing,
@@ -122,7 +124,9 @@ func RestorePublication(ctx context.Context, opts RestoreOptions) (result error)
 		return fmt.Errorf("decode pinned recovery record: %w", err)
 	}
 	if record.TimestampSHA256 != opts.ExpectedTimestampSHA256 || record.RootSHA256 != digest(opts.Root) ||
-		record.TimestampVersion <= 0 || len(record.Files) == 0 || len(record.Files) > 4096 {
+		record.TimestampVersion <= 0 || opts.ExpectedTimestampVersion < 0 ||
+		(opts.ExpectedTimestampVersion > 0 && record.TimestampVersion != opts.ExpectedTimestampVersion) ||
+		len(record.Files) == 0 || len(record.Files) > 4096 {
 		return fmt.Errorf("pinned record identity/version/file count invalid")
 	}
 	names := make([]string, 0, len(record.Files))

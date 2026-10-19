@@ -19,6 +19,21 @@ type PublicationStore interface {
 	Put(context.Context, string, []byte) error
 }
 
+// PublicationIdentity contains public recovery pins, never signing material.
+type PublicationIdentity struct {
+	RootSHA256      string `json:"root_sha256"`
+	TimestampSHA256 string `json:"timestamp_sha256"`
+	RecordSHA256    string `json:"record_sha256"`
+	Version         int64  `json:"timestamp_version"`
+}
+
+// PublicationCustody reserves a single exact publication before any remote
+// delivery writes. It is not a distributed lock on the metadata buckets.
+type PublicationCustody interface {
+	Prepare(context.Context, PublicationIdentity, string, bool) (string, error)
+	Complete(context.Context, string, PublicationIdentity) error
+}
+
 type DeliveryOptions struct {
 	Directory string
 	Root      []byte
@@ -34,6 +49,7 @@ type DeliveryOptions struct {
 	// ExternalSerialization is an explicit caller assertion, not a remote lock.
 	ExternalSerialization bool
 	Recovery, Public      PublicationStore
+	Custody               PublicationCustody
 }
 
 // DeliverPublication transfers an already sealed signed publication. It cannot
@@ -75,6 +91,17 @@ func DeliverPublication(ctx context.Context, opts DeliveryOptions) error {
 		previous, parseErr := metadataTimestampVersion(current)
 		if parseErr != nil || previous >= record.TimestampVersion {
 			return fmt.Errorf("remote timestamp version must advance; rollback/conflict requires owner recovery")
+		}
+	}
+	identity := PublicationIdentity{
+		RootSHA256: record.RootSHA256, TimestampSHA256: record.TimestampSHA256,
+		RecordSHA256: digest(recordData), Version: record.TimestampVersion,
+	}
+	var reservation string
+	if opts.Custody != nil {
+		reservation, err = opts.Custody.Prepare(ctx, identity, opts.ExpectedPreviousSHA256, opts.Bootstrap)
+		if err != nil {
+			return fmt.Errorf("reserve independent publication record: %w", err)
 		}
 	}
 	names := make([]string, 0, len(files))
@@ -131,6 +158,11 @@ func DeliverPublication(ctx context.Context, opts DeliveryOptions) error {
 	}
 	if !bytes.Equal(actual, files["timestamp.json"]) {
 		return fmt.Errorf("timestamp read-back mismatch; preserve sealed publication for owner review")
+	}
+	if opts.Custody != nil {
+		if err := opts.Custody.Complete(ctx, reservation, identity); err != nil {
+			return fmt.Errorf("remote delivery verified but independent record completion failed or ambiguous; retry only this same sealed publication: %w", err)
+		}
 	}
 	return nil
 }
