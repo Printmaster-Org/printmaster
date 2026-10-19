@@ -27,8 +27,8 @@ type PublicationIdentity struct {
 	Version         int64  `json:"timestamp_version"`
 }
 
-// PublicationCustody reserves a single exact publication before any remote
-// delivery writes. It is not a distributed lock on the metadata buckets.
+// PublicationCustody reserves a single exact publication after retaining its
+// payload but before public writes. It is not a distributed bucket lock.
 type PublicationCustody interface {
 	Prepare(context.Context, PublicationIdentity, string, bool) (string, error)
 	Complete(context.Context, string, PublicationIdentity) error
@@ -97,13 +97,6 @@ func DeliverPublication(ctx context.Context, opts DeliveryOptions) error {
 		RootSHA256: record.RootSHA256, TimestampSHA256: record.TimestampSHA256,
 		RecordSHA256: digest(recordData), Version: record.TimestampVersion,
 	}
-	var reservation string
-	if opts.Custody != nil {
-		reservation, err = opts.Custody.Prepare(ctx, identity, opts.ExpectedPreviousSHA256, opts.Bootstrap)
-		if err != nil {
-			return fmt.Errorf("reserve independent publication record: %w", err)
-		}
-	}
 	names := make([]string, 0, len(files))
 	for name := range files {
 		if name != "timestamp.json" {
@@ -125,10 +118,23 @@ func DeliverPublication(ctx context.Context, opts DeliveryOptions) error {
 	if err := ensureRemote(ctx, opts.Recovery, "records/"+record.TimestampSHA256+".json", recordData); err != nil {
 		return fmt.Errorf("retain publication record: %w", err)
 	}
+	// A pending authority must always have recoverable exact signed bytes.
+	// A crash before reservation leaves only orphaned content-addressed backup,
+	// never public version conflicts or a pending record without its payload.
+	var reservation string
+	if opts.Custody != nil {
+		reservation, err = opts.Custody.Prepare(ctx, identity, opts.ExpectedPreviousSHA256, opts.Bootstrap)
+		if err != nil {
+			return fmt.Errorf("reserve independent publication record: %w", err)
+		}
+	}
 	for _, name := range names {
 		if err := ensureRemote(ctx, opts.Public, name, files[name]); err != nil {
 			return fmt.Errorf("distribute immutable metadata %s: %w", name, err)
 		}
+	}
+	if err := ensureRemote(ctx, opts.Public, "records/"+record.TimestampSHA256+".json", recordData); err != nil {
+		return fmt.Errorf("distribute public sealed inventory: %w", err)
 	}
 	// Recheck before the commit point. This detects intervening writes but is
 	// not compare-and-swap; external single-writer ownership is mandatory.
@@ -136,6 +142,7 @@ func DeliverPublication(ctx context.Context, opts DeliveryOptions) error {
 	if errors.Is(err, fs.ErrNotExist) && opts.Bootstrap && len(current) == 0 {
 		check, err = nil, nil
 	}
+
 	if err != nil || !bytes.Equal(current, check) {
 		return fmt.Errorf("remote commit changed during delivery; preserve sealed state for explicit retry")
 	}
@@ -165,6 +172,17 @@ func DeliverPublication(ctx context.Context, opts DeliveryOptions) error {
 		}
 	}
 	return nil
+}
+
+// SealedIdentity authenticates a captured publication before returning public
+// recovery pins. It does not mutate state or authorize an expired delivery.
+func SealedIdentity(directory string, root []byte) (PublicationIdentity, error) {
+	data, _, record, err := readSealedPublication(directory, root, time.Now())
+	if err != nil {
+		return PublicationIdentity{}, err
+	}
+	return PublicationIdentity{RootSHA256: record.RootSHA256, TimestampSHA256: record.TimestampSHA256,
+		RecordSHA256: digest(data), Version: record.TimestampVersion}, nil
 }
 
 func validPin(pin string) bool {

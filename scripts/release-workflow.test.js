@@ -8,6 +8,39 @@ const picomatch = require('picomatch');
 const root = path.resolve(__dirname, '..');
 const workflow = fs.readFileSync(path.join(root, '.github/workflows/cd-agent.yml'), 'utf8');
 
+test('publisher workflow is serialized, opt-in, scoped and preserves failure evidence', () => {
+    const publisher = yaml.load(fs.readFileSync(path.join(root, '.github', 'workflows', 'update-publisher.yml'), 'utf8'));
+    expect(publisher.on.workflow_dispatch.inputs.lane.options).toEqual(['rehearsal', 'production']);
+    expect(publisher.on.schedule).toEqual([{ cron: '17 */12 * * *' }]);
+    expect(publisher.permissions).toEqual({ contents: 'read' });
+    expect(publisher.concurrency['cancel-in-progress']).toBe(false);
+    expect(publisher.concurrency.group).toBe("update-publisher-${{ inputs.lane || 'production' }}");
+    const publish = publisher.jobs.publish;
+    expect(publish.if).toContain("github.ref == 'refs/heads/main'");
+    expect(publish.if).toContain("vars.ENABLE_UPDATE_PUBLISHER_REHEARSAL == 'true'");
+    expect(publish.if).toContain("vars.ENABLE_UPDATE_PUBLISHER == 'true'");
+    expect(publish.environment).toBe("update-publisher-${{ inputs.lane || 'production' }}");
+    expect(publish['timeout-minutes']).toBe(20);
+    expect(publish.steps[0].with['persist-credentials']).toBe(false);
+    const build = publish.steps.find(step => step.name === 'Build and test without credentials');
+    expect(build.env).toBeUndefined();
+    const operation = publish.steps.find(step => step.env);
+    expect(publish.steps.indexOf(build)).toBeLessThan(publish.steps.indexOf(operation));
+    expect(operation.run).toContain('-externally-serialized');
+    expect(operation.run).toContain('test "$LANE" = rehearsal');
+    expect(operation.run).not.toContain('${{');
+    expect(operation.env.UPDATE_STATE_TOKEN).toBe('${{ secrets.UPDATE_STATE_TOKEN }}');
+    expect(operation.env.B2_RECOVERY_RESTORE_APPLICATION_KEY).toBe('${{ secrets.B2_RECOVERY_RESTORE_APPLICATION_KEY }}');
+    const artifact = publish.steps.find(step => step.uses?.startsWith('actions/upload-artifact@'));
+    expect(artifact.with.path).toBe('${{ runner.temp }}/publisher-mirror/*.json');
+    expect(artifact.with['include-hidden-files']).toBe(false);
+    for (const step of publish.steps.filter(step => step.uses)) expect(step.uses).toMatch(/@[a-f0-9]{40}$/);
+    expect(publisher.jobs.notify.permissions).toEqual({ contents: 'read', issues: 'write' });
+    expect(publisher.jobs.notify.steps[0].run).toContain('gh issue create');
+    expect(publisher.jobs.notify.steps[0].run).toContain('gh issue close');
+    expect(JSON.stringify(publisher)).not.toMatch(/root\.pem|continue-on-error|cancel-in-progress":true/);
+});
+
 test('B2 preflight is manual, opt-in, environment-scoped and cannot publish', () => {
     const preflight = yaml.load(fs.readFileSync(path.join(root, '.github', 'workflows', 'update-storage-preflight.yml'), 'utf8'));
     expect(preflight.on).toEqual({ workflow_dispatch: {} });

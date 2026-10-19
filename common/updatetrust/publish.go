@@ -372,6 +372,12 @@ func LoadSigningKey(path string) (ed25519.PrivateKey, error) {
 	if err != nil {
 		return nil, err
 	}
+	return ParseSigningKey(data)
+}
+
+// ParseSigningKey accepts the same single PKCS#8 PEM as LoadSigningKey, without
+// requiring unattended callers to write environment secrets to disk.
+func ParseSigningKey(data []byte) (ed25519.PrivateKey, error) {
 	block, rest := pem.Decode(data)
 	if block == nil || block.Type != "PRIVATE KEY" || len(rest) != 0 {
 		return nil, fmt.Errorf("publisher key must be a single PKCS#8 PRIVATE KEY PEM")

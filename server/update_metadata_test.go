@@ -2,14 +2,105 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"printmaster/common/updatetrust"
 )
+
+type directoryPinnedSource struct{ directory string }
+
+func (s directoryPinnedSource) GetPinned(_ context.Context, name, pin string) ([]byte, error) {
+	parts := strings.Split(name, "/")
+	file := parts[len(parts)-1]
+	if len(parts) == 2 {
+		file = "record.json"
+	}
+	data, err := os.ReadFile(filepath.Join(s.directory, file))
+	if err != nil {
+		return nil, err
+	}
+	if fmt.Sprintf("%x", sha256.Sum256(data)) != pin {
+		return nil, fmt.Errorf("source hash mismatch")
+	}
+	return data, nil
+}
+
+func TestAuthenticatedMirrorServesPublisherTargetToRealVerifier(t *testing.T) {
+	newBoundaryFixture(t)
+	previous := serverConfig
+	t.Cleanup(func() { serverConfig = previous })
+	keys := make(map[string]ed25519.PrivateKey)
+	pubs := make(map[string]crypto.PublicKey)
+	for _, role := range []string{"root", "targets", "snapshot", "timestamp"} {
+		pub, key, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys[role] = key
+		pubs[role] = pub
+	}
+	root, err := updatetrust.InitializeRoot(keys["root"], pubs, time.Now().Add(365*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(keys, "root")
+	artifact := []byte("disposable qualification artifact")
+	file := filepath.Join(t.TempDir(), "agent.exe")
+	if err := os.WriteFile(file, artifact, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := updatetrust.Target{Component: "agent", Channel: "beta", Version: "0.32.0-beta.qualification",
+		Platform: "windows", Arch: "amd64", Format: "exe", SHA256: fmt.Sprintf("%x", sha256.Sum256(artifact)), SizeBytes: int64(len(artifact))}
+	workspace, backup, records, local := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	if err := updatetrust.PublishTransaction(updatetrust.TransactionOptions{Publish: updatetrust.PublishOptions{
+		Directory: workspace, Root: root, Keys: keys, Targets: []updatetrust.PublishTarget{{Target: target, File: file}}},
+		BackupDirectory: backup, RecordDirectory: records, MirrorDirectory: local}); err != nil {
+		t.Fatal(err)
+	}
+	timestamp, err := os.ReadFile(filepath.Join(workspace, "timestamp.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed := filepath.Join(backup, fmt.Sprintf("%x", sha256.Sum256(timestamp)))
+	identity, err := updatetrust.SealedIdentity(sealed, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mirror := t.TempDir()
+	if err := updatetrust.MirrorPublication(context.Background(), mirror, root, identity, directoryPinnedSource{sealed}); err != nil {
+		t.Fatal(err)
+	}
+	serverConfig = &Config{Releases: ReleasesConfig{PublisherMetadataDir: mirror}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("Authorization", "Bearer boundary-machine-a")
+		requireAuth(handleAgentUpdateMetadata)(w, r)
+	}))
+	defer server.Close()
+	client, err := updatetrust.NewClient(updatetrust.Options{TrustedRoot: root,
+		MetadataURL: server.URL + updatetrust.MetadataRoute, CacheDir: filepath.Join(t.TempDir(), "metadata")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Verify(context.Background(), target); err != nil {
+		t.Fatal(err)
+	}
+	target.SHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte("substituted")))
+	if err := client.Verify(context.Background(), target); err == nil {
+		t.Fatal("Server substituted target identity")
+	}
+}
 
 func TestPublisherMetadataDeliveryBoundary(t *testing.T) {
 	fixture := newBoundaryFixture(t)

@@ -32,8 +32,8 @@ func TestCustodySurroundsVerifiedDelivery(t *testing.T) {
 			stop := errors.New("injected custody failure")
 			opts.Custody = testCustody{
 				prepare: func(p PublicationIdentity) (string, error) {
-					if len(recovery.writes)+len(public.writes) != 0 {
-						t.Fatal("delivery writes preceded independent pending record")
+					if len(public.writes) != 0 || len(recovery.files) == 0 {
+						t.Fatal("reservation must follow retained payload and precede public writes")
 					}
 					if scenario == "prepare failure" {
 						return "", stop
