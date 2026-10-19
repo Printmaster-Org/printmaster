@@ -450,6 +450,17 @@ function Build-Component {
     Push-Location (Join-Path $ProjectRoot $Component)
     
     try {
+        if ($Component -eq 'agent' -and $IsRelease) {
+            Push-Location (Join-Path $ProjectRoot 'common')
+            try {
+                go run .\cmd\update-keys check-root -root ..\agent\update_publisher_root.json
+                if ($LASTEXITCODE -ne 0) {
+                    throw 'Agent release requires an owner-provisioned publisher root'
+                }
+            } finally {
+                Pop-Location
+            }
+        }
         # Read version from VERSION file
         $versionFile = Join-Path $ProjectRoot "$Component\VERSION"
         if (Test-Path $versionFile) {

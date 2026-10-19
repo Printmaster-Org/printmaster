@@ -88,6 +88,11 @@ jobs:
       run: |
         bash scripts/release-version.sh agent "$GITHUB_REF" >> "$GITHUB_OUTPUT"
     
+    - name: Require provisioned publisher root for tagged releases
+      if: startsWith(github.ref, 'refs/tags/agent-v')
+      working-directory: ./common
+      run: go run ./cmd/update-keys check-root -root ../agent/update_publisher_root.json
+
     - name: Build Agent
       working-directory: ./agent
       env:

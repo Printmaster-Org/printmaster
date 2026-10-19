@@ -206,6 +206,10 @@ build_component() {
     return 0
   fi
 
+  if [[ "$component" == "agent" && "$RELEASE" == "1" ]]; then
+    (cd "$PROJECT_ROOT/common" && go run ./cmd/update-keys check-root -root ../agent/update_publisher_root.json)
+  fi
+
   version="$(tr -d '\r\n' < "$version_file" 2>/dev/null || printf '0.0.0')"
   last_version="$(tr -d '\r\n' < "$last_version_file" 2>/dev/null || true)"
 

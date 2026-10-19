@@ -39,6 +39,34 @@ test('dev publication pins built SHA and rejects missing uploads', () => {
     expect(dev).toContain('bash scripts/prepare-agent-dev-release.sh artifacts "$DEV_VERSION"');
 });
 
+test('tagged Agent builds require a valid provisioned public root before packaging', () => {
+    const steps = yaml.load(workflow).jobs['build-agent'].steps;
+    const guard = steps.findIndex(step => step.name === 'Require provisioned publisher root for tagged releases');
+    expect(guard).toBeGreaterThan(-1);
+    expect(steps[guard].if).toBe("startsWith(github.ref, 'refs/tags/agent-v')");
+    expect(steps[guard]['working-directory']).toBe('./common');
+    expect(steps[guard].run).toBe('go run ./cmd/update-keys check-root -root ../agent/update_publisher_root.json');
+    expect(steps[guard]['continue-on-error']).toBeUndefined();
+    expect(guard).toBeLessThan(steps.findIndex(step => step.name === 'Build Agent'));
+});
+
+test('local release and nondev container builds enforce the same public-root guard', () => {
+    const powershell = fs.readFileSync(path.join(root, 'build.ps1'), 'utf8');
+    const bash = fs.readFileSync(path.join(root, 'build.sh'), 'utf8');
+    const docker = fs.readFileSync(path.join(root, 'agent', 'Dockerfile'), 'utf8');
+    expect(powershell).toContain("if ($Component -eq 'agent' -and $IsRelease)");
+    expect(powershell).toContain('go run .\\cmd\\update-keys check-root -root ..\\agent\\update_publisher_root.json');
+    expect(powershell).toContain("throw 'Agent release requires an owner-provisioned publisher root'");
+    expect(powershell.indexOf('go run .\\cmd\\update-keys')).toBeLessThan(powershell.indexOf('if ($IsRelease -and $IncrementVersion)'));
+    expect(bash).toContain('if [[ "$component" == "agent" && "$RELEASE" == "1" ]]');
+    expect(bash).toContain('go run ./cmd/update-keys check-root -root ../agent/update_publisher_root.json');
+    expect(bash.indexOf('go run ./cmd/update-keys')).toBeLessThan(bash.indexOf('if [[ "$RELEASE" == "1" && "$INCREMENT_VERSION" == "1" ]]'));
+    expect(docker).toContain('set -eu;');
+    expect(docker).toContain('if [ "$BUILD_TYPE" != "dev" ]; then');
+    expect(docker).toContain('go run ./cmd/update-keys check-root -root ../agent/update_publisher_root.json');
+    expect(docker.indexOf('go run ./cmd/update-keys')).toBeLessThan(docker.indexOf('GOOS=linux'));
+});
+
 test('Fedora RPM job trusts only the checkout before reading Git version metadata', () => {
     const rpm = job('build-rpm');
     expect(rpm).toContain('container:\n      image: fedora:latest');

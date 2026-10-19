@@ -4,10 +4,96 @@ import (
 	"crypto"
 	"crypto/ed25519"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/theupdateframework/go-tuf/v2/metadata"
 )
+
+// ValidateBootstrapRoot enforces the initial single-maintainer release policy.
+// This checks a root's structure and self-signature, not its provenance: the
+// owner must independently confirm the public fingerprint before embedding it.
+func ValidateBootstrapRoot(data []byte, now time.Time) error {
+	root, err := validateRootPolicy(data)
+	if err != nil {
+		return err
+	}
+	if !root.Signed.Expires.After(now) {
+		return fmt.Errorf("publisher root has expired; offline root maintenance required")
+	}
+	return nil
+}
+
+// VerifySigningKeys checks restored keys, including after root expiry. It does
+// not authorize releases or bypass clients' final metadata expiry checks.
+func VerifySigningKeys(data []byte, keys map[string]ed25519.PrivateKey) error {
+	root, err := validateRootPolicy(data)
+	if err != nil {
+		return err
+	}
+	for _, role := range []string{"root", "targets", "snapshot", "timestamp"} {
+		key := keys[role]
+		if len(key) != ed25519.PrivateKeySize {
+			return fmt.Errorf("restored %s key is missing or invalid", role)
+		}
+		public, err := metadata.KeyFromPublicKey(key.Public())
+		if err != nil {
+			return err
+		}
+		id, err := public.ID()
+		if err != nil {
+			return err
+		}
+		if id != root.Signed.Roles[role].KeyIDs[0] {
+			return fmt.Errorf("restored %s key does not match the trusted public root", role)
+		}
+	}
+	return nil
+}
+
+func validateRootPolicy(data []byte) (*metadata.Metadata[metadata.RootType], error) {
+	if len(data) == 0 || int64(len(data)) > MaxMetadataBytes {
+		return nil, fmt.Errorf("publisher root is missing or oversized")
+	}
+	root, err := metadata.Root().FromBytes(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse publisher root: %w", err)
+	}
+	if root.Signed.Version <= 0 || !root.Signed.ConsistentSnapshot {
+		return nil, fmt.Errorf("publisher root requires a positive version and consistent snapshots")
+	}
+	if len(root.Signed.Roles) != 4 || len(root.Signed.Keys) != 4 {
+		return nil, fmt.Errorf("publisher root requires exactly four distinct role keys")
+	}
+	seen := make(map[string]bool)
+	for _, role := range []string{"root", "targets", "snapshot", "timestamp"} {
+		spec := root.Signed.Roles[role]
+		if spec == nil || spec.Threshold != 1 || len(spec.KeyIDs) != 1 || seen[spec.KeyIDs[0]] {
+			return nil, fmt.Errorf("publisher role %s requires one distinct key and threshold one", role)
+		}
+		id := spec.KeyIDs[0]
+		key := root.Signed.Keys[id]
+		if key == nil {
+			return nil, fmt.Errorf("publisher role %s key is missing", role)
+		}
+		public, err := key.ToPublicKey()
+		if err != nil {
+			return nil, fmt.Errorf("publisher role %s public key: %w", role, err)
+		}
+		if _, ok := public.(ed25519.PublicKey); !ok {
+			return nil, fmt.Errorf("publisher role %s requires Ed25519", role)
+		}
+		actualID, err := key.ID()
+		if err != nil || actualID != id {
+			return nil, fmt.Errorf("publisher role %s key ID mismatch", role)
+		}
+		seen[id] = true
+	}
+	if err := root.VerifyDelegate("root", root); err != nil {
+		return nil, fmt.Errorf("publisher root self-authorization: %w", err)
+	}
+	return root, nil
+}
 
 // InitializeRoot is an explicit offline provisioning operation. Routine
 // publishing never calls it and never needs the root private key.
@@ -57,15 +143,14 @@ func RotateRoot(previous []byte, oldKey, newKey ed25519.PrivateKey, expires time
 	if len(oldKey) != ed25519.PrivateKeySize || len(newKey) != ed25519.PrivateKeySize || !expires.After(time.Now()) {
 		return nil, fmt.Errorf("valid old/new offline keys and future expiry required")
 	}
-	oldRoot, err := metadata.Root().FromBytes(previous)
+	// TUF permits an expired previous root to authorize its successor.
+	// The release/bootstrap check still requires an unexpired final root.
+	oldRoot, err := validateRootPolicy(previous)
 	if err != nil {
 		return nil, err
 	}
-	if err := oldRoot.VerifyDelegate("root", oldRoot); err != nil {
-		return nil, err
-	}
-	if oldRoot.Signed.Roles["root"].Threshold != 1 {
-		return nil, fmt.Errorf("root threshold requires a multi-signer ceremony")
+	if oldRoot.Signed.Version <= 0 || oldRoot.Signed.Version == math.MaxInt64 {
+		return nil, fmt.Errorf("root version cannot be incremented")
 	}
 	next, err := metadata.Root().FromBytes(previous)
 	if err != nil {

@@ -31,6 +31,10 @@ ARG BUILD_TYPE=dev
 ARG TARGETARCH
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
+    set -eu; \
+    if [ "$BUILD_TYPE" != "dev" ]; then \
+        (cd /build/common && go run ./cmd/update-keys check-root -root ../agent/update_publisher_root.json); \
+    fi; \
     APP_VERSION="${VERSION}"; \
     if [ -z "$APP_VERSION" ] || [ "$APP_VERSION" = "dev" ] || [ "$APP_VERSION" = "latest" ]; then \
         APP_VERSION="$(tr -d '[:space:]' < VERSION)-dev"; \
