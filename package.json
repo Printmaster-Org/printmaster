@@ -5,7 +5,7 @@
   "devDependencies": {
     "jest": "^30.5.2",
     "jest-environment-jsdom": "^30.5.2",
-    "@playwright/test": "^1.64.0"
+    "@playwright/test": "^1.64.1"
   },
   "jest": {
     "testPathIgnorePatterns": ["<rootDir>/common/web/__tests__/playwright/"]
