@@ -23,7 +23,7 @@ func lifecycleManager(t *testing.T, client UpdateClient, callback func(updatepol
 	}
 	manager, err := NewManager(Options{
 		Enabled: true, CurrentVersion: "1.0.0", DataDir: t.TempDir(), BinaryPath: binary,
-		ServerClient: client, MaxRetries: 1, SnapshotCallback: callback,
+		ServerClient: client, PublisherVerifier: fixtureVerifier(), MaxRetries: 1, SnapshotCallback: callback,
 	})
 	if err != nil {
 		t.Fatal(err)

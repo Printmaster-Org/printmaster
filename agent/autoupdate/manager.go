@@ -21,6 +21,7 @@ import (
 
 	"printmaster/common/logger"
 	"printmaster/common/updatepolicy"
+	"printmaster/common/updatetrust"
 
 	"github.com/Masterminds/semver/v3"
 )
@@ -60,25 +61,32 @@ type DownloadProgressCallback func(percent int, bytesRead int64)
 
 // Options configure the auto-update manager.
 type Options struct {
-	Log              *logger.Logger
-	DataDir          string
-	Enabled          bool
-	CurrentVersion   string
-	Platform         string
-	Arch             string
-	Channel          string
-	ChannelProvider  func() string // Optional managed channel, read at each operation.
-	BinaryPath       string
-	ServiceName      string
-	IsService        bool // True if running as a Windows service (determines update restart method)
-	MinDiskSpaceMB   int64
-	MaxRetries       int
-	Clock            func() time.Time
-	ServerClient     UpdateClient
-	PolicyProvider   PolicyProvider
-	TelemetrySink    TelemetrySink
-	ProgressCallback ProgressCallback
-	SnapshotCallback func(updatepolicy.ProgressSnapshot)
+	Log               *logger.Logger
+	DataDir           string
+	Enabled           bool
+	CurrentVersion    string
+	Platform          string
+	Arch              string
+	Channel           string
+	ChannelProvider   func() string // Optional managed channel, read at each operation.
+	BinaryPath        string
+	ServiceName       string
+	IsService         bool // True if running as a Windows service (determines update restart method)
+	MinDiskSpaceMB    int64
+	MaxRetries        int
+	Clock             func() time.Time
+	ServerClient      UpdateClient
+	PublisherVerifier PublisherVerifier
+	PolicyProvider    PolicyProvider
+	TelemetrySink     TelemetrySink
+	ProgressCallback  ProgressCallback
+	SnapshotCallback  func(updatepolicy.ProgressSnapshot)
+}
+
+// PublisherVerifier authorizes the exact candidate against independently pinned
+// publisher trust. A Server manifest signature is not an implementation of it.
+type PublisherVerifier interface {
+	Verify(context.Context, updatetrust.Target) error
 }
 
 // UpdateClient abstracts the server communication needed for updates.
@@ -105,33 +113,34 @@ type TelemetrySink interface {
 
 // Manager coordinates agent auto-update operations.
 type Manager struct {
-	log              *logger.Logger
-	stateDir         string
-	enabled          bool
-	disabledReason   string
-	currentVersion   string
-	currentSemver    *semver.Version
-	platform         string
-	arch             string
-	channel          string
-	channelProvider  func() string
-	binaryPath       string
-	serviceName      string
-	isService        bool
-	minDiskSpace     int64
-	maxRetries       int
-	clock            func() time.Time
-	client           UpdateClient
-	policyProvider   PolicyProvider
-	telemetry        TelemetrySink
-	restartFn        func() error
-	launchHelperFn   func(helperPath string) error // For testing: allows mocking the helper launch
-	progressCallback ProgressCallback
-	snapshotCallback func(updatepolicy.ProgressSnapshot)
-	progressMu       sync.Mutex
-	progress         updatepolicy.ProgressSnapshot
-	progressErr      error
-	keyPins          *signingKeyPinStore // Log-only manifest signing key pin.
+	log               *logger.Logger
+	stateDir          string
+	enabled           bool
+	disabledReason    string
+	currentVersion    string
+	currentSemver     *semver.Version
+	platform          string
+	arch              string
+	channel           string
+	channelProvider   func() string
+	binaryPath        string
+	serviceName       string
+	isService         bool
+	minDiskSpace      int64
+	maxRetries        int
+	clock             func() time.Time
+	client            UpdateClient
+	publisherVerifier PublisherVerifier
+	policyProvider    PolicyProvider
+	telemetry         TelemetrySink
+	restartFn         func() error
+	launchHelperFn    func(helperPath string) error // For testing: allows mocking the helper launch
+	progressCallback  ProgressCallback
+	snapshotCallback  func(updatepolicy.ProgressSnapshot)
+	progressMu        sync.Mutex
+	progress          updatepolicy.ProgressSnapshot
+	progressErr       error
+	keyPins           *signingKeyPinStore // Log-only manifest signing key pin.
 
 	// Package manager support (Linux dpkg/apt/dnf/rpm)
 	usePackageManager bool   // True if binary is managed by a package manager
@@ -288,6 +297,7 @@ func NewManager(opts Options) (*Manager, error) {
 		maxRetries:        maxRetries,
 		clock:             clock,
 		client:            opts.ServerClient,
+		publisherVerifier: opts.PublisherVerifier,
 		policyProvider:    opts.PolicyProvider,
 		telemetry:         opts.TelemetrySink,
 		progressCallback:  opts.ProgressCallback,
@@ -302,6 +312,10 @@ func NewManager(opts Options) (*Manager, error) {
 	}
 
 	mgr.restartFn = mgr.restartService
+	if mgr.publisherVerifier == nil {
+		mgr.logWarn("Publisher trust not configured; update candidates will be rejected",
+			"error_code", ErrCodeManifestError)
+	}
 	if err := mgr.restoreProgress(); err != nil {
 		return nil, err
 	}
@@ -601,7 +615,11 @@ func (m *Manager) acquireOperation() error {
 }
 
 func (m *Manager) executeUpdate(ctx context.Context, manifest *UpdateManifest) error {
-	// If using package manager, use simplified flow (no download needed)
+	if err := m.authorizeManifest(ctx, manifest); err != nil {
+		m.logWarn("Blocked update before installation", "error", err)
+		m.reportTelemetry(ctx, StatusFailed, ErrCodeManifestError, err.Error())
+		return err
+	}
 	if m.usePackageManager && m.packageName != "" {
 		return m.executeUpdateViaPackageManager(ctx, manifest)
 	}
@@ -783,12 +801,18 @@ func (m *Manager) fetchManifest(ctx context.Context) (*UpdateManifest, error) {
 	if err != nil || manifest == nil {
 		return manifest, err
 	}
+	// Own a snapshot: the transport must not retain mutable installation inputs.
+	candidate := *manifest
+	manifest = &candidate
 	if err := validateManifestFormat(manifest, format); err != nil {
 		m.logWarn("Rejected update manifest", "requested_format", format, "manifest_format", manifest.Format, "version", manifest.Version, "error", err)
 		return nil, err
 	}
-	// Log-only: the audit reports signature problems but never blocks.
-	m.auditManifestSignature(manifest)
+	if err := m.authorizeManifest(ctx, manifest); err != nil {
+		m.logWarn("Rejected update publisher authorization", "version", manifest.Version,
+			"channel", m.operationChannel(ctx), "error", err)
+		return nil, err
+	}
 	return manifest, nil
 }
 
@@ -799,7 +823,7 @@ var errManifestFormat = errors.New("update manifest format mismatch")
 
 // manifestErrorCode maps a manifest fetch failure to its telemetry code.
 func manifestErrorCode(err error) string {
-	if errors.Is(err, errManifestFormat) {
+	if errors.Is(err, errManifestFormat) || errors.Is(err, ErrPublisherTrust) {
 		return ErrCodeManifestError
 	}
 	return ErrCodeServerError
@@ -822,70 +846,14 @@ func validateManifestFormat(manifest *UpdateManifest, requested updatepolicy.Art
 	return nil
 }
 
-// executeUpdateViaPackageManager performs an update using apt-get/dnf/yum.
-// This skips download/staging phases since the package manager handles everything.
+// A verified discovery binary does not authenticate repository packages.
+// Keep every package handoff blocked until authenticated package delivery exists.
 func (m *Manager) executeUpdateViaPackageManager(ctx context.Context, manifest *UpdateManifest) error {
-	run := &UpdateRun{
-		ID:             m.Progress().RunID,
-		Status:         StatusApplying,
-		RequestedAt:    m.clock(),
-		CurrentVersion: m.currentVersion,
-		TargetVersion:  manifest.Version,
-		Channel:        m.operationChannel(ctx),
-		Platform:       m.platform,
-		Arch:           m.arch,
-	}
-
-	m.mu.Lock()
-	m.currentRun = run
-	m.mu.Unlock()
-
-	run.StartedAt = m.clock()
-
-	// Check for cancellation before starting
-	if m.IsCancelled() {
-		run.Status = StatusCancelled
-		run.CompletedAt = m.clock()
-		m.setStatus(StatusCancelled)
-		return fmt.Errorf("update cancelled by user")
-	}
-
-	// Progress callback for package manager phases
-	progressFn := func(percent int, message string) {
-		m.setStatusWithProgress(StatusApplying, percent*80/100, message)
-	}
-
-	// Initial status
-	progressFn(0, fmt.Sprintf("Starting update to %s via %s...", manifest.Version, m.packageManager))
-	run.Status = StatusApplying
-	m.reportTelemetry(ctx, StatusApplying, "", "")
-
-	if err := m.writePendingUpdateState(manifest.Version, m.packageManager); err != nil {
-		return err
-	}
-	if err := m.applyUpdateViaPackageManager(manifest.Version, progressFn); err != nil {
-		run.Status = StatusFailed
-		run.ErrorCode = ErrCodeApplyFailed
-		run.ErrorMessage = err.Error()
-		run.CompletedAt = m.clock()
-		m.setStatusWithError(StatusFailed, ErrCodeApplyFailed, err.Error())
-		m.reportTelemetry(ctx, StatusFailed, ErrCodeApplyFailed, err.Error())
-		return err
-	}
-
-	run.Status = StatusRestarting
-	m.setStatusWithProgress(StatusRestarting, 80, "Restarting agent...")
-	m.reportTelemetry(ctx, StatusRestarting, "", "")
-
-	m.logInfo("Update applied successfully via package manager",
-		"from", m.currentVersion, "to", manifest.Version, "package", m.packageName, "manager", m.packageManager)
-
-	// The package's postinst script should restart the service,
-	// but we explicitly restart to ensure we're running the new version
-	if m.restartFn != nil {
-		return m.restartFn()
-	}
-	return m.restartService()
+	err := fmt.Errorf("%w: %s package delivery is not yet publisher-authenticated; unattended update blocked",
+		ErrPublisherTrust, m.packageManager)
+	m.logWarn("Blocked unauthenticated package update", "package_manager", m.packageManager, "error", err)
+	m.reportTelemetry(ctx, StatusFailed, ErrCodeManifestError, err.Error())
+	return err
 }
 
 func (m *Manager) downloadWithRetry(ctx context.Context, manifest *UpdateManifest, destPath string) error {

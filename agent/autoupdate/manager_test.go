@@ -21,7 +21,7 @@ type mockUpdateClient struct {
 }
 
 func (m *mockUpdateClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel, format string) (*UpdateManifest, error) {
-	return m.manifest, m.err
+	return fixtureManifest(m.manifest), m.err
 }
 
 func (m *mockUpdateClient) DownloadArtifact(ctx context.Context, manifest *UpdateManifest, destPath string, resumeFrom int64) (int64, error) {
@@ -297,6 +297,7 @@ func TestManagerForceInstallLatest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager error = %v", err)
 	}
+	manager.publisherVerifier = fixtureVerifier()
 	manager.restartFn = func() error { return nil }
 	// Mock the helper launch to avoid spawning a real process that holds files open
 	manager.launchHelperFn = func(helperPath string) error { return nil }
@@ -332,7 +333,7 @@ type forceInstallClient struct {
 }
 
 func (m *forceInstallClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel, format string) (*UpdateManifest, error) {
-	return m.manifest, nil
+	return fixtureManifest(m.manifest), nil
 }
 
 func (m *forceInstallClient) DownloadArtifact(ctx context.Context, manifest *UpdateManifest, destPath string, resumeFrom int64) (int64, error) {

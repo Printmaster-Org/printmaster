@@ -15,7 +15,7 @@ type channelTestClient struct {
 
 func (c *channelTestClient) GetLatestManifest(ctx context.Context, component, platform, arch, channel, format string) (*UpdateManifest, error) {
 	c.channel = channel
-	return c.manifest, c.err
+	return fixtureManifest(c.manifest), c.err
 }
 
 func TestManualChannelDoesNotChangeScheduledChannel(t *testing.T) {
@@ -68,6 +68,7 @@ func TestManualChannelRejectsInvalidOrMismatchedManifest(t *testing.T) {
 		t.Fatal("failed selection was not reported")
 	}
 	client.manifest = &UpdateManifest{Version: "1.0.0", Channel: "stable"}
+	manager.publisherVerifier = fixtureVerifier()
 	if err := manager.CheckNow(context.Background()); err != nil {
 		t.Fatalf("failed selection blocked a retry: %v", err)
 	}

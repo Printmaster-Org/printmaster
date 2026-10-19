@@ -97,14 +97,15 @@ func TestManagerCheckNow(t *testing.T) {
 	}
 
 	opts := Options{
-		Enabled:        true,
-		CurrentVersion: "1.0.0",
-		Platform:       runtime.GOOS,
-		Arch:           runtime.GOARCH,
-		Channel:        "stable",
-		DataDir:        dataDir,
-		ServerClient:   wrappedClient,
-		PolicyProvider: &mockPolicyProvider{enabled: true},
+		Enabled:           true,
+		CurrentVersion:    "1.0.0",
+		Platform:          runtime.GOOS,
+		Arch:              runtime.GOARCH,
+		Channel:           "stable",
+		DataDir:           dataDir,
+		ServerClient:      wrappedClient,
+		PublisherVerifier: fixtureVerifier(),
+		PolicyProvider:    &mockPolicyProvider{enabled: true},
 	}
 
 	manager, err := NewManager(opts)
@@ -161,6 +162,7 @@ func TestManagerUpdateAvailable(t *testing.T) {
 	}
 
 	ctx := context.Background()
+	manager.publisherVerifier = fixtureVerifier()
 	_ = manager.CheckNow(ctx)
 
 	status := manager.Status()

@@ -125,16 +125,15 @@ func TestSigningKeyPinRecoversFromCorruptFile(t *testing.T) {
 	}
 }
 
-// TestFetchManifestAuditIsLogOnly ensures an invalid signature never blocks
-// the manifest from being returned.
-func TestFetchManifestAuditIsLogOnly(t *testing.T) {
+// Legacy signature fields cannot override independently authorized metadata.
+func TestPublisherAuthorizationDoesNotRequireLegacySignature(t *testing.T) {
 	t.Parallel()
 	m := signedTestManifest(t, newTestKey(t), "k1")
 	m.Signature = base64.StdEncoding.EncodeToString(make([]byte, 64))
 	manager := &Manager{stateDir: t.TempDir(), platform: "linux", arch: "amd64", channel: "stable", clock: time.Now,
-		client: &mockUpdateClient{manifest: m}}
+		client: &mockUpdateClient{manifest: m}, publisherVerifier: fixtureVerifier()}
 	got, err := manager.fetchManifest(t.Context())
-	if err != nil || got != m {
-		t.Fatalf("log-only audit blocked manifest: %v %v", got, err)
+	if err != nil || got == nil || got.SHA256 != m.SHA256 {
+		t.Fatalf("legacy signature blocked publisher-authorized manifest: %v %v", got, err)
 	}
 }
