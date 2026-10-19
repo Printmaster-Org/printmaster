@@ -1,0 +1,47 @@
+name: Update Storage Preflight
+run-name: "Read-only update storage preflight"
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-storage-preflight
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    if: github.ref == 'refs/heads/main' && vars.ENABLE_UPDATE_STORAGE_PREFLIGHT == 'true'
+    environment: update-storage-preflight
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: common/go.mod
+          cache: false
+      - name: Build checker without credentials
+        working-directory: common
+        run: go build -o "$RUNNER_TEMP/update-storage-check" ./cmd/update-storage-check
+      - name: Inspect bucket configuration without mutation
+        working-directory: common
+        env:
+          B2_METADATA_CHECK_KEY_ID: ${{ secrets.B2_METADATA_CHECK_KEY_ID }}
+          B2_METADATA_CHECK_APPLICATION_KEY: ${{ secrets.B2_METADATA_CHECK_APPLICATION_KEY }}
+          B2_RECOVERY_CHECK_KEY_ID: ${{ secrets.B2_RECOVERY_CHECK_KEY_ID }}
+          B2_RECOVERY_CHECK_APPLICATION_KEY: ${{ secrets.B2_RECOVERY_CHECK_APPLICATION_KEY }}
+          B2_METADATA_BUCKET: ${{ vars.B2_METADATA_BUCKET }}
+          B2_RECOVERY_BUCKET: ${{ vars.B2_RECOVERY_BUCKET }}
+          B2_S3_ENDPOINT: ${{ vars.B2_S3_ENDPOINT }}
+        run: |
+          "$RUNNER_TEMP/update-storage-check" \
+            -metadata-bucket "$B2_METADATA_BUCKET" \
+            -recovery-bucket "$B2_RECOVERY_BUCKET" \
+            -s3-endpoint "$B2_S3_ENDPOINT"

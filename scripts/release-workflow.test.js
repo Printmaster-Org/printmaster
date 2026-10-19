@@ -7,6 +7,33 @@ const picomatch = require('picomatch');
 
 const root = path.resolve(__dirname, '..');
 const workflow = fs.readFileSync(path.join(root, '.github/workflows/cd-agent.yml'), 'utf8');
+
+test('B2 preflight is manual, opt-in, environment-scoped and cannot publish', () => {
+    const preflight = yaml.load(fs.readFileSync(path.join(root, '.github', 'workflows', 'update-storage-preflight.yml'), 'utf8'));
+    expect(preflight.on).toEqual({ workflow_dispatch: {} });
+    expect(preflight.permissions).toEqual({ contents: 'read' });
+    expect(preflight.concurrency['cancel-in-progress']).toBe(false);
+    const inspect = preflight.jobs.inspect;
+    expect(inspect.if).toBe("github.ref == 'refs/heads/main' && vars.ENABLE_UPDATE_STORAGE_PREFLIGHT == 'true'");
+    expect(inspect.environment).toBe('update-storage-preflight');
+    expect(inspect['timeout-minutes']).toBe(5);
+    expect(inspect.steps[0].with['persist-credentials']).toBe(false);
+    for (const step of inspect.steps.filter(step => step.uses)) {
+        expect(step.uses).toMatch(/@[0-9a-f]{40}$/);
+    }
+    const build = inspect.steps.find(step => step.name === 'Build checker without credentials');
+    expect(build.env).toBeUndefined();
+    expect(build.run).toContain('go build');
+    const check = inspect.steps.find(step => step.name === 'Inspect bucket configuration without mutation');
+    expect(check['working-directory']).toBe('common');
+    expect(check.run).toContain('"$RUNNER_TEMP/update-storage-check"');
+    expect(inspect.steps.indexOf(build)).toBeLessThan(inspect.steps.indexOf(check));
+    expect(check.env.B2_RECOVERY_CHECK_APPLICATION_KEY).toBe('${{ secrets.B2_RECOVERY_CHECK_APPLICATION_KEY }}');
+    expect(check.env.B2_METADATA_BUCKET).toBe('${{ vars.B2_METADATA_BUCKET }}');
+    expect(inspect.steps.filter(step => step.env)).toHaveLength(1);
+    expect(JSON.stringify(preflight)).not.toMatch(/root\.pem|targets\.pem|update-metadata|upload-artifact|continue-on-error/);
+});
+
 function job(name) {
     const match = workflow.match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z][a-z-]*:|$(?![\\s\\S]))`, 'm'));
     if (!match) throw new Error(`Missing job ${name}`);
