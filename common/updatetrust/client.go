@@ -49,7 +49,7 @@ func (t Target) Path() (string, error) {
 type Options struct {
 	TrustedRoot []byte
 	MetadataURL string
-	CacheDir    string // Exclusively owned by one running Client.
+	CacheDir    string // Exclusive metadata cache; preserve its sibling .state.json record.
 	HTTPClient  *http.Client
 }
 
@@ -77,6 +77,13 @@ func NewClient(opts Options) (*Client, error) {
 	if opts.CacheDir == "" {
 		return nil, fmt.Errorf("persistent TUF cache directory required")
 	}
+	opts.CacheDir, err = filepath.Abs(opts.CacheDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve publisher metadata directory: %w", err)
+	}
+	if filepath.Dir(opts.CacheDir) == opts.CacheDir {
+		return nil, fmt.Errorf("publisher metadata directory cannot be a filesystem root")
+	}
 	if opts.HTTPClient == nil {
 		opts.HTTPClient = &http.Client{Timeout: 30 * time.Second}
 	}
@@ -86,7 +93,7 @@ func NewClient(opts Options) (*Client, error) {
 
 // Verify refreshes trusted metadata before authorizing the Server's exact
 // candidate. There is deliberately no legacy or expired-metadata fallback.
-func (c *Client) Verify(ctx context.Context, target Target) error {
+func (c *Client) Verify(ctx context.Context, target Target) (result error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	select {
@@ -102,6 +109,9 @@ func (c *Client) Verify(ctx context.Context, target Target) error {
 	hash, err := hex.DecodeString(target.SHA256)
 	if err != nil || len(hash) != 32 || target.SizeBytes <= 0 {
 		return fmt.Errorf("invalid publisher target size or SHA-256")
+	}
+	if err := c.prepareTrustState(); err != nil {
+		return err
 	}
 	root := c.options.TrustedRoot
 	cached, err := os.ReadFile(filepath.Join(c.options.CacheDir, "root.json"))
@@ -133,6 +143,12 @@ func (c *Client) Verify(ctx context.Context, target Target) error {
 	cfg.LocalMetadataDir = c.options.CacheDir
 	cfg.LocalTargetsDir = filepath.Join(c.options.CacheDir, "targets")
 	cfg.Fetcher = &contextFetcher{ctx: ctx, client: c.options.HTTPClient}
+	// Refresh may advance authenticated root/timestamp state before a later
+	// network or target failure. Preserve that state even when authorization
+	// fails; otherwise retries could lose the library's rollback protection.
+	defer func() {
+		result = errors.Join(result, c.checkpointTrustState())
+	}()
 	client, err := updater.New(cfg)
 	if err != nil {
 		return fmt.Errorf("load publisher trust: %w", err)

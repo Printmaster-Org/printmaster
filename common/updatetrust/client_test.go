@@ -257,6 +257,11 @@ func TestPublisherRefreshesExpiredLocalMetadataWithoutLosingTrust(t *testing.T) 
 	if err := repo.timestamp.ToFile(filepath.Join(client.options.CacheDir, "timestamp.json"), false); err != nil {
 		t.Fatal(err)
 	}
+	// Model consistently persisted metadata that has aged, not accidental
+	// modification of one file without its integrity checkpoint.
+	if err := client.checkpointTrustState(); err != nil {
+		t.Fatal(err)
+	}
 	repo.timestamp.Signed.Version++
 	repo.timestamp.Signed.Expires = time.Now().Add(7 * 24 * time.Hour)
 	repo.publish(t)
