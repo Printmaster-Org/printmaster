@@ -46,7 +46,7 @@ jobs:
       - name: Build and test without credentials
         working-directory: common
         run: |
-          go test ./updatepublisher ./updatestate ./updatetrust ./cmd/update-publisher
+          go test ./updatepublisher ./updatestate ./updatetrust ./updateb2 ./cmd/update-publisher
           go build -o "$RUNNER_TEMP/update-publisher" ./cmd/update-publisher
       - name: Publish or check exact independent state
         working-directory: common

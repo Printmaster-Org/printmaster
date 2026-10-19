@@ -12,12 +12,16 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"printmaster/common/updatestate"
 	"printmaster/common/updatetrust"
+
+	"github.com/theupdateframework/go-tuf/v2/metadata"
 )
 
 type memoryJournal struct {
@@ -168,15 +172,45 @@ func (p publicLayout) GetPinned(ctx context.Context, name, pin string) ([]byte, 
 func TestNormalRefreshAndFailClosedInputs(t *testing.T) {
 	t.Parallel()
 	opts, _, recovery, public, loads := publisherFixture(t)
+	artifact := []byte("disposable artifact for retained inventory")
+	file := filepath.Join(t.TempDir(), "artifact")
+	if err := os.WriteFile(file, artifact, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := updatetrust.Target{Component: "agent", Channel: "beta", Version: "0.32.0-beta.test",
+		Platform: "windows", Arch: "amd64", Format: "exe", SHA256: fmt.Sprintf("%x", sha256.Sum256(artifact)), SizeBytes: int64(len(artifact))}
+	opts.Targets = []updatetrust.PublishTarget{{Target: target, File: file}}
 	first, err := Run(context.Background(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	opts.Bootstrap = false
+	opts.Targets = nil
 	opts.Work = t.TempDir()
 	second, err := Run(context.Background(), opts)
 	if err != nil || second.Publication.Version != first.Publication.Version+1 || second.RecoveredPending || *loads != 2 {
 		t.Fatalf("refresh did not advance: %+v %v", second, err)
+	}
+	// The refreshed targets version is deliberately found through its signed
+	// dependencies, not an assumed timestamp/targets version equality.
+	timestamp, err := metadata.Timestamp().FromBytes(public.files["timestamp.json"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := metadata.Snapshot().FromBytes(public.files[fmt.Sprintf("%d.snapshot.json", timestamp.Signed.Meta["snapshot.json"].Version)])
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets, err := metadata.Targets().FromBytes(public.files[fmt.Sprintf("%d.targets.json", snap.Signed.Meta["targets.json"].Version)])
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := target.Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if targets.Signed.Targets[path] == nil || targets.Signed.Targets[path].Length != target.SizeBytes {
+		t.Fatal("freshness refresh discarded retained release inventory")
 	}
 	// A lost retained dependency cannot trigger fresh signing or reset.
 	delete(recovery.files, "publications/"+second.Publication.TimestampSHA256+"/1.root.json")
