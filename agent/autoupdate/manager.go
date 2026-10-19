@@ -805,7 +805,11 @@ func (m *Manager) executeUpdate(ctx context.Context, manifest *UpdateManifest) e
 		m.setStatusWithError(StatusFailed, run.ErrorCode, err.Error())
 		m.reportTelemetry(ctx, StatusFailed, run.ErrorCode, err.Error())
 		// Attempt rollback
-		if !errors.Is(err, errInstallationNotStarted) {
+		if errors.Is(err, errInstallationNotStarted) {
+			if removeErr := os.Remove(filepath.Join(m.stateDir, pendingUpdateFile)); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				return errors.Join(err, fmt.Errorf("remove pending update after rejected handoff: %w", removeErr))
+			}
+		} else {
 			if rollbackErr := m.rollback(descriptor); rollbackErr != nil {
 				m.logError("Rollback failed", "error", rollbackErr)
 			}

@@ -44,7 +44,6 @@ $PreviousSHA256 = %s
 $ParentExitTimeoutSeconds = %d
 $ServiceTimeoutSeconds = %d
 $MSITimeoutSeconds = %d
-$ServiceWasRunning = $false
 $BinaryChanged = $false
 
 function Write-Outcome([string]$Status, [string]$ErrorCode, [string]$Message, [int]$ExitCode) {
@@ -62,7 +61,7 @@ function Write-Outcome([string]$Status, [string]$ErrorCode, [string]$Message, [i
         $json = ConvertTo-Json -InputObject $record -Compress
         [IO.File]::WriteAllText($tempPath, $json, [Text.UTF8Encoding]::new($false))
         if ([IO.File]::Exists($ResultPath)) {
-            [IO.File]::Replace($tempPath, $ResultPath, $null)
+            [IO.File]::Replace($tempPath, $ResultPath, [NullString]::Value)
         } else {
             [IO.File]::Move($tempPath, $ResultPath)
         }
@@ -91,8 +90,11 @@ function Wait-Service([string]$Status) {
 }
 
 function Start-PreviousService {
-    if ($ServiceMode -and $ServiceWasRunning) {
-        Start-Service -Name $ServiceName -ErrorAction Stop
+    if ($ServiceMode) {
+        $service = Get-Service -Name $ServiceName -ErrorAction Stop
+        if ($service.Status -ne 'Running' -and $service.Status -ne 'StartPending') {
+            $service.Start()
+        }
         Wait-Service 'Running'
     }
 }
@@ -103,7 +105,7 @@ function Restore-PreviousBinary {
     try {
         [IO.File]::Copy($BackupPath, $rollbackPath, $true)
         Test-Artifact $rollbackPath $PreviousLength $PreviousSHA256
-        [IO.File]::Replace($rollbackPath, $BinaryPath, $null)
+        [IO.File]::Replace($rollbackPath, $BinaryPath, [NullString]::Value)
     } finally {
         if ([IO.File]::Exists($rollbackPath)) { [IO.File]::Delete($rollbackPath) }
     }
@@ -116,7 +118,7 @@ function Install-BinaryAtomically {
     try {
         [IO.File]::Copy($StagingPath, $tempPath, $true)
         Test-Artifact $tempPath $ExpectedLength $ExpectedSHA256
-        [IO.File]::Replace($tempPath, $BinaryPath, $null)
+        [IO.File]::Replace($tempPath, $BinaryPath, [NullString]::Value)
     } finally {
         if ([IO.File]::Exists($tempPath)) { [IO.File]::Delete($tempPath) }
     }
@@ -125,11 +127,10 @@ function Install-BinaryAtomically {
 function Stop-PreviousService {
     if (-not $ServiceMode) { return }
     $service = Get-Service -Name $ServiceName -ErrorAction Stop
-    $script:ServiceWasRunning = $service.Status -eq 'Running'
-    if ($ServiceWasRunning) {
-        Stop-Service -Name $ServiceName -ErrorAction Stop
-        Wait-Service 'Stopped'
+    if ($service.Status -ne 'Stopped' -and $service.Status -ne 'StopPending') {
+        $service.Stop()
     }
+    Wait-Service 'Stopped'
 }
 
 try {
@@ -170,18 +171,8 @@ try {
     Install-BinaryAtomically
     $script:BinaryChanged = $true
     if ($ServiceMode) {
-        if ($ServiceWasRunning) {
-            Start-Service -Name $ServiceName -ErrorAction Stop
-            try {
-                Wait-Service 'Running'
-            } catch {
-                Stop-Service -Name $ServiceName -ErrorAction SilentlyContinue
-                Wait-Service 'Stopped'
-                Restore-PreviousBinary
-                $script:BinaryChanged = $false
-                throw "Updated service failed to start; the previous binary was restored."
-            }
-        }
+        # This handoff came from a running service, even if SCM now reports it stopped.
+        Start-PreviousService
     } else {
         Start-Process -FilePath $BinaryPath -ErrorAction Stop | Out-Null
     }
@@ -192,8 +183,7 @@ try {
     if ($BinaryChanged) {
         try {
             if ($ServiceMode) {
-                Stop-Service -Name $ServiceName -ErrorAction SilentlyContinue
-                Wait-Service 'Stopped'
+                Stop-PreviousService
             }
             Restore-PreviousBinary
             $script:BinaryChanged = $false
@@ -216,4 +206,13 @@ try {
 
 func psLiteral(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func validateWindowsHelperPolicy(policy string) error {
+	switch policy {
+	case "Bypass", "Unrestricted", "RemoteSigned":
+		return nil
+	default:
+		return fmt.Errorf("windows PowerShell execution policy %q does not permit the generated unsigned update helper; use an owner-managed installation or an approved script-signing deployment; no policy was changed", policy)
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -181,6 +182,36 @@ func TestUpdateApplyJournalsBeforeHandoffAndRestartFailureIsRetryable(t *testing
 	client.manifest.Version = "1.0.0"
 	if err := m.CheckNow(context.Background()); err != nil {
 		t.Fatalf("retry after restart failure: %v", err)
+	}
+}
+
+func TestRejectedWindowsHandoffClearsPendingWithoutRestart(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows helper launch path")
+	}
+	payload := []byte("new binary")
+	hash := sha256.Sum256(payload)
+	client := &forceInstallClient{payload: payload, manifest: &UpdateManifest{
+		Version: "1.1.0", SHA256: hex.EncodeToString(hash[:]), Channel: "stable", SizeBytes: int64(len(payload)),
+	}}
+	m := lifecycleManager(t, client, nil)
+	m.launchHelperFn = func(string) error { return errInstallationNotStarted }
+	m.restartFn = func() error {
+		t.Fatal("rejected helper triggered Agent exit")
+		return nil
+	}
+	if err := m.ForceInstallLatest(context.Background(), "test"); !errors.Is(err, errInstallationNotStarted) {
+		t.Fatalf("handoff rejection lost: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(m.stateDir, pendingUpdateFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rejected handoff retained pending state: %v", err)
+	}
+	body, err := os.ReadFile(m.binaryPath)
+	if err != nil || string(body) != "old binary" {
+		t.Fatalf("rejected handoff changed running binary: %q %v", body, err)
+	}
+	if err := m.unresolvedHelperHandoff(); err != nil {
+		t.Fatalf("rejected handoff blocks retry: %v", err)
 	}
 }
 
