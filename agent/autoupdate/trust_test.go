@@ -17,8 +17,8 @@ func (c *rawManifestClient) GetLatestManifest(context.Context, string, string, s
 	return c.manifest, c.err
 }
 
-func (f verifierFunc) Verify(ctx context.Context, target updatetrust.Target) error {
-	return f(ctx, target)
+func (f verifierFunc) Authorize(ctx context.Context, target updatetrust.Target) (updatetrust.Authorization, error) {
+	return updatetrust.Authorization{Target: target}, f(ctx, target)
 }
 
 // Lifecycle fixtures test orchestration separately from publisher cryptography.

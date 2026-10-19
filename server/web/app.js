@@ -12130,7 +12130,7 @@ function showAgentUpdateChannelConfirm() {
                     </select></label>
                     <p id="agent_update_channel_hint" class="muted-text">Check for an update using this agent's configured channel and update policy.</p>
                     <details><summary>Advanced channel installation</summary>
-                        <p class="muted-text">Explicit channel installs can reinstall or downgrade the agent and bypass maintenance windows and version pins. Scheduled settings stay unchanged. Beta/Dev requires prerelease intake and cached artifacts.</p>
+                        <p class="muted-text">Updated Agents bypass maintenance windows, not publisher trust, version pins or downgrade restrictions. Same-version reinstalls require the same authenticated artifact. Older Agents may still bypass pins or downgrade. Scheduled settings stay unchanged. Beta/Dev requires prerelease intake and cached artifacts.</p>
                         <p class="muted-text">Set the persistent channel in Fleet Settings &rarr; Agent Updates. For older agents (including 0.31.1), save the channel there and choose Force install Fleet channel. Explicit Stable/Beta/Dev choices require an updated agent.</p>
                     </details>
                 </div>
@@ -12144,7 +12144,7 @@ function showAgentUpdateChannelConfirm() {
             confirm.textContent = explicit ? 'Install Channel' : 'Check for Update';
             confirm.className = `modal-button ${explicit ? 'modal-button-danger' : 'modal-button-primary'}`;
             overlay.querySelector('#agent_update_channel_hint').textContent = explicit
-                ? 'Force install the latest cached release for this channel. This may downgrade or reinstall the agent and will bypass maintenance windows and version pins.'
+                ? 'Request the latest cached release for this channel outside maintenance windows. Updated Agents enforce version pins and reject downgrades; an exact same-version reinstall is allowed. Older Agents may still bypass pins or downgrade.'
                 : "Check for an update using this agent's configured channel and update policy.";
         });
         const finish = value => {

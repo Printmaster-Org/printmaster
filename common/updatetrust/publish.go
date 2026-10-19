@@ -111,6 +111,9 @@ func Publish(opts PublishOptions) error {
 			(old.Length != info.Length || hex.EncodeToString(old.Hashes["sha256"]) != entry.Target.SHA256) {
 			return fmt.Errorf("refusing to replace immutable publisher target %s", path)
 		}
+		if err := assignReleaseSequence(targets.Signed.Targets, path, info); err != nil {
+			return err
+		}
 		targets.Signed.Targets[path] = info
 	}
 	if err := signMetadata(targets, opts.Keys["targets"]); err != nil {

@@ -101,10 +101,9 @@ func TestStableOnlyInstallsPinScheduledChecksToStable(t *testing.T) {
 			if client.channel != wantChannel {
 				t.Fatalf("requested channel %q, want %q", client.channel, wantChannel)
 			}
-			// Stable-only installs must mark Stable explicit so a Fleet-managed
-			// Beta setting on the Server cannot override it.
-			if client.explicit != im.stable {
-				t.Fatalf("explicit = %v, want %v", client.explicit, im.stable)
+			// The Agent pins its resolved channel; the Server cannot override it.
+			if !client.explicit {
+				t.Fatal("resolved channel was not explicit")
 			}
 
 			status := manager.Status()
@@ -184,7 +183,7 @@ func TestPackageManagerUpdateRequiresExactVersion(t *testing.T) {
 func TestApplyUpdateRefusesBinarySwapForPackageManagedInstall(t *testing.T) {
 	t.Parallel()
 	manager := &Manager{binaryPath: "/usr/bin/printmaster-agent", usePackageManager: true, packageManager: "dnf", packageName: "printmaster-agent"}
-	err := manager.applyUpdate("/tmp/staged")
+	err := manager.applyUpdate(context.Background(), InstallationDescriptor{StagingPath: "/tmp/staged"})
 	if err == nil || !strings.Contains(err.Error(), "dnf") {
 		t.Fatalf("err = %v, want refusal naming the package manager", err)
 	}

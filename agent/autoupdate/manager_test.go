@@ -259,7 +259,7 @@ func TestManagerForceInstallLatest(t *testing.T) {
 	}
 	binaryPath := filepath.Join(dataDir, binaryName)
 
-	if err := os.WriteFile(binaryPath, []byte("old-binary"), 0o755); err != nil {
+	if err := os.WriteFile(binaryPath, []byte("new-agent-binary"), 0o755); err != nil {
 		t.Fatalf("failed to create fake binary: %v", err)
 	}
 

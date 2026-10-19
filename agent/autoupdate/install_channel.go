@@ -16,6 +16,8 @@ const (
 	channelDev    = "dev"
 )
 
+type operationChannelKey struct{}
+
 // errChannelUnsupported marks an explicit request for a channel that this
 // install method cannot receive, so telemetry reports CHANNEL_UNSUPPORTED
 // instead of a Server or apply failure.
@@ -56,6 +58,9 @@ func (m *Manager) requestedChannel(ctx context.Context) string {
 // operationChannel is the channel this install actually follows: the
 // requested channel, constrained to Stable for Stable-only install methods.
 func (m *Manager) operationChannel(ctx context.Context) string {
+	if channel, ok := ctx.Value(operationChannelKey{}).(string); ok {
+		return channel
+	}
 	if m.stableOnlyInstallMethod() != "" {
 		return channelStable
 	}
@@ -80,7 +85,7 @@ func (m *Manager) channelNote(ctx context.Context) string {
 func (m *Manager) manifestContext(ctx context.Context) context.Context {
 	method := m.stableOnlyInstallMethod()
 	if method == "" {
-		return ctx
+		return updatepolicy.WithExplicitChannel(ctx)
 	}
 	if requested := m.requestedChannel(ctx); requested != channelStable && requested != "" {
 		m.logWarn("Install method only receives Stable releases; following Stable instead",

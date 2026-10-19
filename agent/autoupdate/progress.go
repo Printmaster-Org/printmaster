@@ -135,6 +135,7 @@ func (m *Manager) finishOperation(err error) (operationErr error) {
 }
 
 func (m *Manager) operationContext(ctx context.Context) (context.Context, func()) {
+	ctx = context.WithValue(ctx, operationChannelKey{}, m.operationChannel(ctx))
 	ctx, cancel := context.WithCancel(ctx)
 	m.mu.Lock()
 	m.operationCancel = cancel

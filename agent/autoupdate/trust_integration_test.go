@@ -17,7 +17,7 @@ import (
 	"printmaster/common/updatetrust"
 )
 
-func runtimeTrustRepository(t *testing.T, manifest *UpdateManifest, artifact []byte, publishedAt time.Time) (*updatetrust.Client, string) {
+func runtimeTrustRepository(t *testing.T, manifest *UpdateManifest, artifact []byte, publishedAt time.Time, earlier ...updatetrust.PublishTarget) (*updatetrust.Client, string) {
 	t.Helper()
 	directory := t.TempDir()
 	file := filepath.Join(t.TempDir(), "artifact")
@@ -46,7 +46,7 @@ func runtimeTrustRepository(t *testing.T, manifest *UpdateManifest, artifact []b
 		Format: "binary", SHA256: manifest.SHA256, SizeBytes: manifest.SizeBytes}
 	if err := updatetrust.Publish(updatetrust.PublishOptions{
 		Directory: directory, Root: root, Keys: keys, Now: publishedAt,
-		Targets: []updatetrust.PublishTarget{{Target: target, File: file}},
+		Targets: append(earlier, updatetrust.PublishTarget{Target: target, File: file}),
 	}); err != nil {
 		t.Fatal(err)
 	}

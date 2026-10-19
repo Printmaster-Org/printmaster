@@ -11,6 +11,28 @@ describe('shared dialog lifecycle', () => {
         document.getElementById('opener').focus();
     });
 
+    test('channel confirmation distinguishes hardened policy from legacy Force behavior', async () => {
+        const fs = require('fs');
+        const path = require('path');
+        const source = fs.readFileSync(path.join(__dirname, '../../../server/web/app.js'), 'utf8');
+        const match = source.match(/function showAgentUpdateChannelConfirm\(\) \{[\s\S]*?\n\}/);
+        expect(match).not.toBeNull();
+        const show = new Function(`${match[0]}; return showAgentUpdateChannelConfirm;`)();
+        const result = show();
+        const dialog = document.querySelector('[aria-labelledby="agent_update_channel_title"]');
+        expect(dialog.textContent).toContain('not publisher trust, version pins or downgrade restrictions');
+        expect(dialog.textContent).toContain('Older Agents may still bypass pins or downgrade');
+        const select = dialog.querySelector('select');
+        for (const channel of ['fleet', 'stable', 'beta', 'dev']) {
+            select.value = channel;
+            select.dispatchEvent(new Event('change'));
+            expect(dialog.querySelector('#agent_update_channel_hint').textContent)
+                .toContain('Updated Agents enforce version pins and reject downgrades');
+        }
+        dialog.querySelector('[data-action="cancel"]').click();
+        expect(await result).toBeNull();
+    });
+
     test('focuses, traps, cancels, and restores focus using existing handlers', async () => {
         const promise = window.__pm_shared.showPrompt('Location', '', 'Edit Location');
         await settle();

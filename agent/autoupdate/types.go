@@ -127,18 +127,19 @@ type TelemetryPayload struct {
 
 // ErrorCode constants for structured error reporting.
 const (
-	ErrCodeDiskSpace      = "DISK_SPACE"
-	ErrCodeDownloadFailed = "DOWNLOAD_FAILED"
-	ErrCodeHashMismatch   = "HASH_MISMATCH"
-	ErrCodeStagingFailed  = "STAGING_FAILED"
-	ErrCodeApplyFailed    = "APPLY_FAILED"
-	ErrCodeRestartFailed  = "RESTART_FAILED"
-	ErrCodeHealthCheck    = "HEALTH_CHECK"
-	ErrCodeRollbackFailed = "ROLLBACK_FAILED"
-	ErrCodeManifestError  = "MANIFEST_ERROR"
-	ErrCodePolicyDisabled = "POLICY_DISABLED"
-	ErrCodeOutsideWindow  = "OUTSIDE_WINDOW"
-	ErrCodeServerError    = "SERVER_ERROR"
+	ErrCodeDiskSpace         = "DISK_SPACE"
+	ErrCodeDownloadFailed    = "DOWNLOAD_FAILED"
+	ErrCodeHashMismatch      = "HASH_MISMATCH"
+	ErrCodeStagingFailed     = "STAGING_FAILED"
+	ErrCodeApplyFailed       = "APPLY_FAILED"
+	ErrCodeRestartFailed     = "RESTART_FAILED"
+	ErrCodeHealthCheck       = "HEALTH_CHECK"
+	ErrCodeRollbackFailed    = "ROLLBACK_FAILED"
+	ErrCodeManifestError     = "MANIFEST_ERROR"
+	ErrCodePolicyDisabled    = "POLICY_DISABLED"
+	ErrCodeOutsideWindow     = "OUTSIDE_WINDOW"
+	ErrCodeServerError       = "SERVER_ERROR"
+	ErrCodeApplicationPolicy = "APPLICATION_POLICY"
 	// ErrCodeChannelUnsupported reports an explicit Beta or Dev request on an
 	// install method that only receives Stable (MSI or package-managed).
 	ErrCodeChannelUnsupported = "CHANNEL_UNSUPPORTED"

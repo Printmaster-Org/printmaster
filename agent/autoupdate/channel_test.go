@@ -124,7 +124,7 @@ func TestBetaReleaseVersionOrdering(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if got := manager.isUpdateNeeded(&UpdateManifest{Version: tc.target}); got != tc.newer {
+			if got, _ := manager.applicationPolicy(context.Background(), &UpdateManifest{Version: tc.target}, false); got != tc.newer {
 				t.Fatalf("update needed = %v, want %v", got, tc.newer)
 			}
 		})
@@ -140,8 +140,8 @@ func TestDevReleaseUpdateNeeded(t *testing.T) {
 		spec    updatepolicy.PolicySpec
 		want    bool
 	}{
-		{name: "lower hash", current: "0.32.0-dev.f829bdb", target: "0.32.0-dev.00a4d92", want: true},
-		{name: "higher hash", current: "0.32.0-dev.00a4d92", target: "0.32.0-dev.f829bdb", want: true},
+		{name: "lower hash needs authenticated ordering", current: "0.32.0-dev.f829bdb", target: "0.32.0-dev.00a4d92"},
+		{name: "higher hash needs authenticated ordering", current: "0.32.0-dev.00a4d92", target: "0.32.0-dev.f829bdb"},
 		{name: "same build", current: "0.32.0-dev.f829bdb", target: "0.32.0-dev.f829bdb"},
 		{name: "older line", current: "0.32.0-dev.00a4d92", target: "0.31.0-dev.f829bdb"},
 		{name: "stable to dev", current: "0.32.0", target: "0.32.0-dev.f829bdb"},
@@ -161,7 +161,7 @@ func TestDevReleaseUpdateNeeded(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := manager.isUpdateNeeded(&UpdateManifest{Version: tc.target, Channel: "dev"}); got != tc.want {
+			if got, _ := manager.applicationPolicy(context.Background(), &UpdateManifest{Version: tc.target, Channel: "dev"}, false); got != tc.want {
 				t.Fatalf("update needed = %v, want %v", got, tc.want)
 			}
 		})

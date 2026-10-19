@@ -94,6 +94,23 @@ func NewClient(opts Options) (*Client, error) {
 // Verify refreshes trusted metadata before authorizing the Server's exact
 // candidate. There is deliberately no legacy or expired-metadata fallback.
 func (c *Client) Verify(ctx context.Context, target Target) (result error) {
+	return c.authorize(ctx, target, nil)
+}
+
+// Authorization contains only values obtained from authenticated TUF metadata.
+// ReleaseSequence orders immutable releases within one channel/platform/format.
+type Authorization struct {
+	Target          Target `json:"target"`
+	ReleaseSequence int64  `json:"release_sequence"`
+}
+
+func (c *Client) Authorize(ctx context.Context, target Target) (Authorization, error) {
+	var authorization Authorization
+	err := c.authorize(ctx, target, &authorization)
+	return authorization, err
+}
+
+func (c *Client) authorize(ctx context.Context, target Target, authorization *Authorization) (result error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	select {
@@ -162,6 +179,13 @@ func (c *Client) Verify(ctx context.Context, target Target) (result error) {
 	}
 	if info.Length != target.SizeBytes || !strings.EqualFold(hex.EncodeToString(info.Hashes["sha256"]), target.SHA256) {
 		return fmt.Errorf("publisher target %s does not match offered artifact", path)
+	}
+	sequence, err := releaseSequence(info)
+	if err != nil {
+		return fmt.Errorf("publisher target %s: %w", path, err)
+	}
+	if authorization != nil {
+		*authorization = Authorization{Target: target, ReleaseSequence: sequence}
 	}
 	return nil
 }

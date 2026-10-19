@@ -43,11 +43,12 @@ const (
 
 // PendingUpdateState stores information about an in-progress update for post-restart validation.
 type PendingUpdateState struct {
-	RunID         string    `json:"run_id,omitempty"`
-	TargetVersion string    `json:"target_version"`
-	FromVersion   string    `json:"from_version"`
-	StartedAt     time.Time `json:"started_at"`
-	Method        string    `json:"method"` // "binary", "msi", "dnf", "apt", "yum"
+	RunID         string                  `json:"run_id,omitempty"`
+	TargetVersion string                  `json:"target_version"`
+	FromVersion   string                  `json:"from_version"`
+	StartedAt     time.Time               `json:"started_at"`
+	Method        string                  `json:"method"` // "binary", "msi", "dnf", "apt", "yum"
+	Installation  *InstallationDescriptor `json:"installation,omitempty"`
 }
 
 // ProgressCallback is invoked when update status changes, allowing real-time
@@ -86,7 +87,7 @@ type Options struct {
 // PublisherVerifier authorizes the exact candidate against independently pinned
 // publisher trust. A Server manifest signature is not an implementation of it.
 type PublisherVerifier interface {
-	Verify(context.Context, updatetrust.Target) error
+	Authorize(context.Context, updatetrust.Target) (updatetrust.Authorization, error)
 }
 
 // UpdateClient abstracts the server communication needed for updates.
@@ -153,16 +154,17 @@ type Manager struct {
 
 	// operationMu owns the entire check/install lifecycle, including pending
 	// transitions where status alone does not indicate exclusive ownership.
-	operationMu     sync.Mutex
-	mu              sync.RWMutex
-	status          Status
-	lastCheck       time.Time
-	nextCheck       time.Time
-	latestVersion   string
-	latestManifest  *UpdateManifest
-	currentRun      *UpdateRun
-	cancelled       bool
-	operationCancel context.CancelFunc
+	operationMu      sync.Mutex
+	mu               sync.RWMutex
+	status           Status
+	lastCheck        time.Time
+	nextCheck        time.Time
+	latestVersion    string
+	latestManifest   *UpdateManifest
+	latestApplicable bool
+	currentRun       *UpdateRun
+	cancelled        bool
+	operationCancel  context.CancelFunc
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -194,7 +196,7 @@ func NewManager(opts Options) (*Manager, error) {
 
 	currentSemver, parseErr := parseSemverVersion(opts.CurrentVersion)
 	if parseErr != nil {
-		// Log but don't fail - we can still check for updates by string comparison
+		// Discovery remains available, but installation fails closed without ordering.
 		if opts.Log != nil {
 			opts.Log.Warn("Failed to parse current version as semver", "version", opts.CurrentVersion, "error", parseErr)
 		}
@@ -363,7 +365,7 @@ func (m *Manager) Status() ManagerStatus {
 		DisabledReason:    m.disabledReason,
 		CurrentVersion:    m.currentVersion,
 		LatestVersion:     m.latestVersion,
-		UpdateAvailable:   m.latestManifest != nil && m.latestVersion != m.currentVersion,
+		UpdateAvailable:   m.latestApplicable,
 		Status:            m.status,
 		LastCheckAt:       ptrIfNonZero(m.lastCheck),
 		NextCheckAt:       ptrIfNonZero(m.nextCheck),
@@ -385,7 +387,8 @@ func (m *Manager) CheckNow(ctx context.Context) error {
 }
 
 // ForceInstallLatest downloads and installs the latest manifest even when the
-// version matches the current build or falls outside normal policy/maintenance windows.
+// version matches the current build or falls outside maintenance windows.
+// Publisher trust, version pins and downgrade restrictions are never bypassed.
 func (m *Manager) ForceInstallLatest(ctx context.Context, reason string) error {
 	return m.ForceInstallLatestFromChannel(ctx, reason, "")
 }
@@ -395,6 +398,7 @@ type manualUpdateChannelKey struct{}
 // ForceInstallLatestFromChannel selects a channel for this operation only.
 // Scheduled policy and the configured channel are not changed by a manual install.
 func (m *Manager) ForceInstallLatestFromChannel(ctx context.Context, reason, channel string) (operationErr error) {
+	ctx = context.WithValue(ctx, manualInstallKey{}, true)
 	channel = strings.ToLower(strings.TrimSpace(channel))
 	if channel != "" && !isKnownChannel(channel) {
 		return fmt.Errorf("invalid update channel: %s", channel)
@@ -452,6 +456,7 @@ func (m *Manager) ForceInstallLatestFromChannel(ctx context.Context, reason, cha
 	m.lastCheck = m.clock()
 	m.latestVersion = manifest.Version
 	m.latestManifest = manifest
+	m.latestApplicable = false
 	m.currentRun.TargetVersion = manifest.Version
 	m.mu.Unlock()
 
@@ -459,6 +464,11 @@ func (m *Manager) ForceInstallLatestFromChannel(ctx context.Context, reason, cha
 		reason = "manual"
 	}
 	m.logInfo("Force update requested", "current", m.currentVersion, "target", manifest.Version, "reason", reason)
+	if _, err := m.applicationPolicy(ctx, manifest, true); err != nil {
+		m.setStatusWithError(StatusFailed, ErrCodeApplicationPolicy, err.Error())
+		m.reportTelemetry(ctx, StatusFailed, ErrCodeApplicationPolicy, err.Error())
+		return err
+	}
 
 	if err := m.checkDiskSpace(manifest.SizeBytes); err != nil {
 		m.reportTelemetry(ctx, StatusFailed, ErrCodeDiskSpace, err.Error())
@@ -573,14 +583,24 @@ func (m *Manager) performCheck(ctx context.Context) (operationErr error) {
 	m.lastCheck = m.clock()
 	m.latestVersion = manifest.Version
 	m.latestManifest = manifest
+	m.latestApplicable = false
 	m.currentRun.TargetVersion = manifest.Version
 	m.mu.Unlock()
 
 	// Check if update is needed
-	if !m.isUpdateNeeded(manifest) {
+	needed, err := m.applicationPolicy(ctx, manifest, false)
+	if err != nil {
+		m.setStatusWithError(StatusFailed, ErrCodeApplicationPolicy, err.Error())
+		m.reportTelemetry(ctx, StatusFailed, ErrCodeApplicationPolicy, err.Error())
+		return err
+	}
+	if !needed {
 		m.logDebug("No update needed", "current", m.currentVersion, "latest", manifest.Version)
 		return nil
 	}
+	m.mu.Lock()
+	m.latestApplicable = true
+	m.mu.Unlock()
 
 	m.logInfo("Update available", "current", m.currentVersion, "target", manifest.Version)
 
@@ -615,9 +635,24 @@ func (m *Manager) acquireOperation() error {
 }
 
 func (m *Manager) executeUpdate(ctx context.Context, manifest *UpdateManifest) error {
+	ctx = context.WithValue(ctx, operationChannelKey{}, m.operationChannel(ctx))
+	if manifest != nil {
+		candidate := *manifest
+		manifest = &candidate
+	}
 	if err := m.authorizeManifest(ctx, manifest); err != nil {
 		m.logWarn("Blocked update before installation", "error", err)
 		m.reportTelemetry(ctx, StatusFailed, ErrCodeManifestError, err.Error())
+		return err
+	}
+	manual, _ := ctx.Value(manualInstallKey{}).(bool)
+	allowed, err := m.applicationPolicy(ctx, manifest, manual)
+	if err != nil || !allowed {
+		if err == nil {
+			err = fmt.Errorf("%w: candidate is not applicable", ErrApplicationPolicy)
+		}
+		m.setStatusWithError(StatusFailed, ErrCodeApplicationPolicy, err.Error())
+		m.reportTelemetry(ctx, StatusFailed, ErrCodeApplicationPolicy, err.Error())
 		return err
 	}
 	if m.usePackageManager && m.packageName != "" {
@@ -657,7 +692,8 @@ func (m *Manager) executeUpdate(ctx context.Context, manifest *UpdateManifest) e
 		manifest.Version, m.platform, m.arch, m.binaryExtension()))
 
 	downloadStart := m.clock()
-	if err := m.downloadWithRetry(ctx, manifest, downloadPath); err != nil {
+	downloadManifest := *manifest
+	if err := m.downloadWithRetry(ctx, &downloadManifest, downloadPath); err != nil {
 		// Check if this was a cancellation
 		if m.IsCancelled() {
 			run.Status = StatusCancelled
@@ -736,9 +772,12 @@ func (m *Manager) executeUpdate(ctx context.Context, manifest *UpdateManifest) e
 	// Backup current binary
 	backupPath := filepath.Join(m.stateDir, backupDirName, fmt.Sprintf("agent-%s-%s-%s%s",
 		m.currentVersion, m.platform, m.arch, m.binaryExtension()))
+	descriptor, err := m.installationDescriptor(ctx, manifest, stagingPath, backupPath)
+	if err != nil {
+		return err
+	}
 	if err := m.backupBinary(backupPath); err != nil {
-		m.logWarn("Failed to backup current binary", "error", err)
-		// Continue anyway - new install may still work
+		return fmt.Errorf("cannot apply update without a recovery backup: %w", err)
 	}
 
 	updateMethod := "binary"
@@ -750,19 +789,24 @@ func (m *Manager) executeUpdate(ctx context.Context, manifest *UpdateManifest) e
 	run.Status = StatusApplying
 	m.reportTelemetry(ctx, StatusApplying, "", "")
 
-	if err := m.writePendingUpdateState(manifest.Version, updateMethod); err != nil {
+	if err := m.writePendingUpdateState(manifest.Version, updateMethod, &descriptor); err != nil {
 		return err
 	}
-	if err := m.applyUpdate(stagingPath); err != nil {
+	if err := m.applyUpdate(ctx, descriptor); err != nil {
 		run.Status = StatusFailed
 		run.ErrorCode = ErrCodeApplyFailed
+		if errors.Is(err, errInstallationNotStarted) {
+			run.ErrorCode = installationErrorCode(err)
+		}
 		run.ErrorMessage = err.Error()
 		run.CompletedAt = m.clock()
-		m.setStatusWithError(StatusFailed, ErrCodeApplyFailed, err.Error())
-		m.reportTelemetry(ctx, StatusFailed, ErrCodeApplyFailed, err.Error())
+		m.setStatusWithError(StatusFailed, run.ErrorCode, err.Error())
+		m.reportTelemetry(ctx, StatusFailed, run.ErrorCode, err.Error())
 		// Attempt rollback
-		if rollbackErr := m.rollback(backupPath); rollbackErr != nil {
-			m.logError("Rollback failed", "error", rollbackErr)
+		if !errors.Is(err, errInstallationNotStarted) {
+			if rollbackErr := m.rollback(descriptor); rollbackErr != nil {
+				m.logError("Rollback failed", "error", rollbackErr)
+			}
 		}
 		return err
 	}
@@ -965,7 +1009,7 @@ func (m *Manager) backupBinary(backupPath string) error {
 	return copyFile(m.binaryPath, backupPath)
 }
 
-func (m *Manager) applyUpdate(stagingPath string) error {
+func (m *Manager) applyUpdate(ctx context.Context, descriptor InstallationDescriptor) error {
 	if m.binaryPath == "" {
 		return fmt.Errorf("binary path not set")
 	}
@@ -977,15 +1021,18 @@ func (m *Manager) applyUpdate(stagingPath string) error {
 	if m.usePackageManager && m.packageName != "" {
 		return fmt.Errorf("package-managed install must be updated through %s, not by replacing the binary", m.packageManager)
 	}
+	if err := m.validateInstallation(ctx, descriptor); err != nil {
+		return fmt.Errorf("%w: %w", errInstallationNotStarted, err)
+	}
 
 	// On Windows, we can't replace a running binary directly.
 	// We need to use a helper process or schedule the replacement.
 	if runtime.GOOS == "windows" {
-		return m.applyUpdateWindows(stagingPath)
+		return m.applyUpdateWindows(descriptor)
 	}
 
 	// On Unix, we can typically just rename
-	return m.applyUpdateUnix(stagingPath)
+	return m.applyUpdateUnix(descriptor.StagingPath)
 }
 
 func (m *Manager) applyUpdateUnix(stagingPath string) error {
@@ -1204,10 +1251,11 @@ func (m *Manager) wrapSudoError(operation string, err error, output []byte) erro
 	return fmt.Errorf("%s failed: %w (output: %s)", operation, err, outStr)
 }
 
-func (m *Manager) applyUpdateWindows(stagingPath string) error {
+func (m *Manager) applyUpdateWindows(descriptor InstallationDescriptor) error {
+	stagingPath := descriptor.StagingPath
 	// If using MSI, delegate to MSI-specific update method
 	if m.useMSI {
-		return m.applyUpdateWindowsMSI(stagingPath)
+		return m.applyUpdateWindowsMSI(descriptor)
 	}
 
 	// On Windows, we write a helper batch file that:
@@ -1230,6 +1278,7 @@ func (m *Manager) applyUpdateWindows(stagingPath string) error {
 		helperScript = fmt.Sprintf(`@echo off
 echo PrintMaster Agent Update Helper
 echo ============================================
+%s
 echo Stopping service to prevent auto-restart...
 sc stop PrintMasterAgent
 if %%errorlevel%% neq 0 (
@@ -1251,6 +1300,7 @@ if %%errorlevel%% neq 0 (
 )
 echo Service stopped.
 
+%s
 echo Copying new binary...
 copy /y "%s" "%s"
 if %%errorlevel%% neq 0 (
@@ -1270,7 +1320,9 @@ if %%errorlevel%% neq 0 (
 echo Update complete, cleaning up...
 timeout /t 2 /nobreak >nul
 del "%%~f0"
-`, stagingPath, m.binaryPath)
+`, helperIntegrityCommand(stagingPath, ArtifactIdentity{descriptor.Authorization.Target.SHA256, descriptor.Authorization.Target.SizeBytes}),
+			helperIntegrityCommand(stagingPath, ArtifactIdentity{descriptor.Authorization.Target.SHA256, descriptor.Authorization.Target.SizeBytes}),
+			stagingPath, descriptor.BinaryPath)
 	} else {
 		// Running standalone - just start the binary
 		helperScript = fmt.Sprintf(`@echo off
@@ -1278,6 +1330,7 @@ echo PrintMaster Agent Update Helper
 echo Waiting for agent to stop...
 timeout /t 3 /nobreak >nul
 
+%s
 echo Copying new binary...
 copy /y "%s" "%s"
 if %%errorlevel%% neq 0 (
@@ -1291,7 +1344,8 @@ start "" "%s"
 echo Update complete, cleaning up...
 timeout /t 2 /nobreak >nul
 del "%%~f0"
-`, stagingPath, m.binaryPath, m.binaryPath)
+`, helperIntegrityCommand(stagingPath, ArtifactIdentity{descriptor.Authorization.Target.SHA256, descriptor.Authorization.Target.SizeBytes}),
+			stagingPath, descriptor.BinaryPath, descriptor.BinaryPath)
 	}
 
 	helperPath := filepath.Join(m.stateDir, "update_helper.bat")
@@ -1333,7 +1387,8 @@ del "%%~f0"
 
 // applyUpdateWindowsMSI applies an update using the Windows MSI installer.
 // This method downloads an MSI and runs msiexec to perform an upgrade.
-func (m *Manager) applyUpdateWindowsMSI(msiPath string) error {
+func (m *Manager) applyUpdateWindowsMSI(descriptor InstallationDescriptor) error {
+	msiPath := descriptor.StagingPath
 	m.logInfo("Applying update via MSI", "msi_path", msiPath)
 
 	// Create a helper batch script that:
@@ -1354,6 +1409,7 @@ echo ============================================
 echo Waiting for agent to exit...
 timeout /t 3 /nobreak >nul
 
+%s
 echo Running MSI installer...
 msiexec /i "%s" /qn /norestart /l*v "%s"
 set MSI_EXIT=%%errorlevel%%
@@ -1372,7 +1428,8 @@ timeout /t 2 /nobreak >nul
 del "%s"
 del "%%~f0"
 exit /b %%MSI_EXIT%%
-`, msiPath, logPath, logPath, msiPath)
+`, helperIntegrityCommand(msiPath, ArtifactIdentity{descriptor.Authorization.Target.SHA256, descriptor.Authorization.Target.SizeBytes}),
+		msiPath, logPath, logPath, msiPath)
 
 	helperPath := filepath.Join(m.stateDir, "msi_update_helper.bat")
 
@@ -1409,21 +1466,28 @@ exit /b %%MSI_EXIT%%
 	return nil
 }
 
-func (m *Manager) rollback(backupPath string) error {
-	if backupPath == "" || m.binaryPath == "" {
-		return fmt.Errorf("rollback not possible: missing paths")
+func (m *Manager) rollback(descriptor InstallationDescriptor) error {
+	if m.Progress().Status != string(StatusFailed) ||
+		descriptor.RunID == "" || descriptor.RunID != m.Progress().RunID ||
+		descriptor.FromVersion != m.currentVersion || descriptor.BinaryPath != m.binaryPath ||
+		filepath.Dir(descriptor.BackupPath) != filepath.Join(m.stateDir, backupDirName) {
+		return fmt.Errorf("rollback is limited to the recorded previous installation of this failed run")
+	}
+	if err := descriptor.Previous.verify(descriptor.BackupPath); err != nil {
+		return fmt.Errorf("rollback backup verification failed: %w", err)
 	}
 
-	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
-		return fmt.Errorf("backup file not found: %s", backupPath)
+	if err := copyFile(descriptor.BackupPath, descriptor.BinaryPath); err != nil {
+		return err
 	}
-
-	return copyFile(backupPath, m.binaryPath)
+	m.logInfo("Restored recorded previous installation after failed update",
+		"run_id", descriptor.RunID, "version", descriptor.FromVersion)
+	return nil
 }
 
 // writePendingUpdateState saves the expected target version before restart.
 // This allows the new version to validate the update was successful on startup.
-func (m *Manager) writePendingUpdateState(targetVersion, method string) error {
+func (m *Manager) writePendingUpdateState(targetVersion, method string, installation ...*InstallationDescriptor) error {
 	m.mu.RLock()
 	journalErr := m.progressErr
 	m.mu.RUnlock()
@@ -1436,6 +1500,9 @@ func (m *Manager) writePendingUpdateState(targetVersion, method string) error {
 		FromVersion:   m.currentVersion,
 		StartedAt:     m.clock(),
 		Method:        method,
+	}
+	if len(installation) > 0 {
+		state.Installation = installation[0]
 	}
 
 	data, err := json.Marshal(state)
@@ -1517,6 +1584,31 @@ func (m *Manager) ValidatePostUpdate() (bool, string, error) {
 		return true, state.FromVersion, validationErr
 	}
 
+	if state.Installation != nil {
+		descriptor := state.Installation
+		if descriptor.RunID != state.RunID || descriptor.FromVersion != state.FromVersion ||
+			descriptor.Authorization.Target.Version != state.TargetVersion {
+			err := fmt.Errorf("pending installation descriptor does not match the recorded run")
+			m.setStatusWithError(StatusFailed, ErrCodeHealthCheck, err.Error())
+			return true, state.FromVersion, err
+		}
+		if state.Method == "binary" {
+			target := descriptor.Authorization.Target
+			if err := (ArtifactIdentity{target.SHA256, target.SizeBytes}).verify(m.binaryPath); err != nil {
+				m.setStatusWithError(StatusFailed, ErrCodeHealthCheck, err.Error())
+				return true, state.FromVersion, fmt.Errorf("running installation does not match recorded artifact: %w", err)
+			}
+		}
+		receipt, err := json.Marshal(descriptor)
+		if err != nil {
+			m.setStatusWithError(StatusFailed, ErrCodeHealthCheck, err.Error())
+			return true, state.FromVersion, err
+		}
+		if err := writeUpdateState(filepath.Join(m.stateDir, "installation.json"), receipt); err != nil {
+			m.setStatusWithError(StatusFailed, ErrCodeHealthCheck, err.Error())
+			return true, state.FromVersion, fmt.Errorf("persist installation receipt: %w", err)
+		}
+	}
 	// Success!
 	m.logInfo("Post-update validation PASSED",
 		"new_version", m.currentVersion,
@@ -1616,46 +1708,11 @@ func (m *Manager) restartService() error {
 	return nil // Never reached
 }
 
-func (m *Manager) isUpdateNeeded(manifest *UpdateManifest) bool {
-	if manifest == nil || manifest.Version == "" {
-		return false
-	}
-
-	// Simple string comparison fallback
-	if m.currentSemver == nil {
-		return manifest.Version != m.currentVersion
-	}
-
-	targetSemver, err := parseSemverVersion(manifest.Version)
-	if err != nil {
-		return manifest.Version != m.currentVersion
-	}
-
-	// Check version pin strategy
-	if m.policyProvider != nil {
-		spec, _, ok := m.policyProvider.EffectivePolicy()
-		if ok {
-			if !m.isVersionAllowed(targetSemver, spec) {
-				return false
-			}
-		}
-	}
-
-	// The server selects the latest published dev build; its hash has no ordering.
-	targetPrerelease, currentPrerelease := targetSemver.Prerelease(), m.currentSemver.Prerelease()
-	if (targetPrerelease == "dev" || strings.HasPrefix(targetPrerelease, "dev.")) &&
-		(currentPrerelease == "dev" || strings.HasPrefix(currentPrerelease, "dev.")) &&
-		targetSemver.Major() == m.currentSemver.Major() && targetSemver.Minor() == m.currentSemver.Minor() && targetSemver.Patch() == m.currentSemver.Patch() {
-		return !targetSemver.Equal(m.currentSemver)
-	}
-	return targetSemver.GreaterThan(m.currentSemver)
-}
-
 func (m *Manager) isVersionAllowed(target *semver.Version, spec updatepolicy.PolicySpec) bool {
 	if spec.TargetVersion != "" {
 		// Specific target version pinned
-		targetPinned, err := semver.NewVersion(strings.TrimPrefix(spec.TargetVersion, "v"))
-		if err == nil && !target.Equal(targetPinned) {
+		targetPinned, err := parseSemverVersion(spec.TargetVersion)
+		if err != nil || !target.Equal(targetPinned) {
 			return false
 		}
 	}
@@ -1674,8 +1731,7 @@ func (m *Manager) isVersionAllowed(target *semver.Version, spec updatepolicy.Pol
 			}
 		}
 	case updatepolicy.VersionPinPatch:
-		// Only allow same major.minor.patch line (shouldn't reach here if same)
-		return false
+		return target.Equal(m.currentSemver)
 	}
 
 	return true
@@ -1753,12 +1809,26 @@ func (m *Manager) checkDiskSpace(requiredBytes int64) error {
 }
 
 func parseSemverVersion(raw string) (*semver.Version, error) {
-	trimmed := strings.TrimSpace(strings.TrimPrefix(raw, "v"))
+	trimmed := strings.TrimPrefix(strings.TrimSpace(raw), "v")
 	if trimmed == "" {
 		return nil, fmt.Errorf("empty version")
 	}
 	if ver, err := semver.NewVersion(trimmed); err == nil {
 		return ver, nil
+	}
+	// Git's short hash can be all digits with a leading zero. That is a valid
+	// Dev build identity but not a SemVer numeric prerelease identifier.
+	if base, hash, ok := strings.Cut(trimmed, "-dev."); ok && len(hash) >= 7 && len(hash) <= 40 && hash[0] == '0' {
+		digits := true
+		for _, char := range hash {
+			if char < '0' || char > '9' {
+				digits = false
+				break
+			}
+		}
+		if digits {
+			return semver.NewVersion(base + "-dev.g" + hash)
+		}
 	}
 	core := trimmed
 	build := ""
