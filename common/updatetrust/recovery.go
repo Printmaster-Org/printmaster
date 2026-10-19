@@ -31,12 +31,18 @@ func verifyPublisherRootHistory(directory string, current *metadata.Metadata[met
 	if err != nil {
 		return err
 	}
-	if current.Signed.Version > int64(len(entries)) {
+	return verifyRootHistory(current, len(entries), func(name string) ([]byte, error) {
+		return readPublisherMetadata(filepath.Join(directory, name))
+	})
+}
+
+func verifyRootHistory(current *metadata.Metadata[metadata.RootType], count int, read func(string) ([]byte, error)) error {
+	if current.Signed.Version > int64(count) {
 		return fmt.Errorf("incomplete versioned root history")
 	}
 	var previous *metadata.Metadata[metadata.RootType]
 	for version := int64(1); version <= current.Signed.Version; version++ {
-		data, err := readPublisherMetadata(filepath.Join(directory, fmt.Sprintf("%d.root.json", version)))
+		data, err := read(fmt.Sprintf("%d.root.json", version))
 		if err != nil {
 			return err
 		}

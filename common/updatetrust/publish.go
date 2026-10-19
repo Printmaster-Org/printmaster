@@ -206,6 +206,14 @@ func restorePublication(directory string, root *metadata.Metadata[metadata.RootT
 	if err != nil {
 		return err
 	}
+	return restorePublicationData(data, func(name string) ([]byte, error) {
+		return readPublisherMetadata(filepath.Join(directory, name))
+	}, root, targets, snapshot, timestamp)
+}
+
+func restorePublicationData(data []byte, read func(string) ([]byte, error), root *metadata.Metadata[metadata.RootType],
+	targets *metadata.Metadata[metadata.TargetsType], snapshot *metadata.Metadata[metadata.SnapshotType],
+	timestamp *metadata.Metadata[metadata.TimestampType]) error {
 	oldTimestamp, err := metadata.Timestamp().FromBytes(data)
 	if err != nil {
 		return err
@@ -220,7 +228,7 @@ func restorePublication(directory string, root *metadata.Metadata[metadata.RootT
 		if info == nil || info.Version <= 0 {
 			return nil, fmt.Errorf("missing %s publication reference", role)
 		}
-		data, err := readPublisherMetadata(filepath.Join(directory, fmt.Sprintf("%d.%s.json", info.Version, role)))
+		data, err := read(fmt.Sprintf("%d.%s.json", info.Version, role))
 		if err != nil {
 			return nil, err
 		}

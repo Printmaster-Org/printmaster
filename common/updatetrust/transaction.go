@@ -133,68 +133,13 @@ func PublishTransaction(opts TransactionOptions) (result error) {
 			return err
 		}
 	}
-	if err := ordinaryAncestors(stage); err != nil {
-		return err
-	}
-	data, err := readPublisherMetadata(marker)
-	if err != nil {
-		return fmt.Errorf("pending publication is not sealed; authorized manual recovery required: %w", err)
-	}
-	var record publicationRecord
-	if err := json.Unmarshal(data, &record); err != nil {
-		return err
-	}
-	files, err := publicationFiles(stage)
-	if err != nil {
-		return err
-	}
-	if record.RootSHA256 != digest(opts.Publish.Root) || record.TimestampSHA256 != digest(files["timestamp.json"]) ||
-		len(record.Files) != len(files) {
-		return fmt.Errorf("pending publication does not match its protected record/root")
-	}
-	for name, body := range files {
-		if record.Files[name] != digest(body) {
-			return fmt.Errorf("pending metadata changed: %s", name)
-		}
-	}
 	now := opts.Publish.Now
 	if now.IsZero() {
 		now = time.Now()
 	}
-	if err := ValidateBootstrapRoot(opts.Publish.Root, now); err != nil {
-		return err
-	}
-	root, err := metadata.Root().FromBytes(opts.Publish.Root)
+	data, files, record, err := readSealedPublication(stage, opts.Publish.Root, now)
 	if err != nil {
 		return err
-	}
-	if err := verifyPublisherRootHistory(stage, root); err != nil {
-		return err
-	}
-	targets, snapshot, timestamp := metadata.Targets(), metadata.Snapshot(), metadata.Timestamp()
-	if err := restorePublication(stage, root, targets, snapshot, timestamp, record.TimestampSHA256); err != nil {
-		return err
-	}
-	// Recovery accepts expired input; distribution must check sealed expiry.
-	sealedTimestamp, err := metadata.Timestamp().FromBytes(files["timestamp.json"])
-	if err != nil {
-		return err
-	}
-	if sealedTimestamp.Signed.Version != record.TimestampVersion {
-		return fmt.Errorf("sealed timestamp version does not match record")
-	}
-	snapshotInfo := sealedTimestamp.Signed.Meta["snapshot.json"]
-	sealedSnapshot, err := metadata.Snapshot().FromBytes(files[fmt.Sprintf("%d.snapshot.json", snapshotInfo.Version)])
-	if err != nil {
-		return err
-	}
-	targetsInfo := sealedSnapshot.Signed.Meta["targets.json"]
-	sealedTargets, err := metadata.Targets().FromBytes(files[fmt.Sprintf("%d.targets.json", targetsInfo.Version)])
-	if err != nil {
-		return err
-	}
-	if !sealedTimestamp.Signed.Expires.After(now) || !sealedSnapshot.Signed.Expires.After(now) || !sealedTargets.Signed.Expires.After(now) {
-		return fmt.Errorf("pending publication expired; authorized recovery required, not stale distribution")
 	}
 	if opts.Resume {
 		if err := checkPublicationHighWater(workspace, records, record.PreviousTimestampSHA256, record.TimestampSHA256); err != nil {
@@ -243,6 +188,68 @@ func PublishTransaction(opts TransactionOptions) (result error) {
 		return err
 	}
 	return os.Remove(stage)
+}
+
+func readSealedPublication(directory string, trustedRoot []byte, now time.Time) ([]byte, map[string][]byte, publicationRecord, error) {
+	var record publicationRecord
+	fail := func(err error) ([]byte, map[string][]byte, publicationRecord, error) {
+		return nil, nil, publicationRecord{}, err
+	}
+	if err := ordinaryAncestors(directory); err != nil {
+		return fail(err)
+	}
+	data, err := readPublisherMetadata(filepath.Join(directory, "record.json"))
+	if err != nil {
+		return fail(fmt.Errorf("pending publication is not sealed; authorized manual recovery required: %w", err))
+	}
+	if err := json.Unmarshal(data, &record); err != nil {
+		return fail(err)
+	}
+	files, err := publicationFiles(directory)
+	if err != nil {
+		return fail(err)
+	}
+	if record.RootSHA256 != digest(trustedRoot) || record.TimestampSHA256 != digest(files["timestamp.json"]) ||
+		len(record.Files) != len(files) {
+		return fail(fmt.Errorf("pending publication does not match its protected record/root"))
+	}
+	for name, body := range files {
+		if record.Files[name] != digest(body) {
+			return fail(fmt.Errorf("pending metadata changed: %s", name))
+		}
+	}
+	if err := ValidateBootstrapRoot(trustedRoot, now); err != nil {
+		return fail(err)
+	}
+	root, err := metadata.Root().FromBytes(trustedRoot)
+	if err != nil {
+		return fail(err)
+	}
+	read := func(name string) ([]byte, error) {
+		data, ok := files[name]
+		if !ok {
+			return nil, fmt.Errorf("sealed publication missing %s", name)
+		}
+		return data, nil
+	}
+	if err := verifyRootHistory(root, len(files), read); err != nil {
+		return fail(err)
+	}
+	targets, snapshot, timestamp := metadata.Targets(), metadata.Snapshot(), metadata.Timestamp()
+	if err := restorePublicationData(files["timestamp.json"], read, root, targets, snapshot, timestamp); err != nil {
+		return fail(err)
+	}
+	sealedTimestamp, err := metadata.Timestamp().FromBytes(files["timestamp.json"])
+	if err != nil {
+		return fail(err)
+	}
+	if sealedTimestamp.Signed.Version != record.TimestampVersion {
+		return fail(fmt.Errorf("sealed timestamp version does not match record"))
+	}
+	if err := deliveryExpiry(files, now); err != nil {
+		return fail(err)
+	}
+	return data, files, record, nil
 }
 
 func digest(data []byte) string {
