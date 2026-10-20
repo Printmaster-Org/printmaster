@@ -2,11 +2,8 @@ package autoupdate
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -126,25 +123,17 @@ func (m *Manager) acquireRepositoryPackage(ctx context.Context, manifest *Update
 			result = errors.Join(result, fmt.Errorf("close repository package: %w", err))
 		}
 	}()
-	info, err := file.Stat()
+	target, err := packageTargetFromFile(ctx, file, updatetrust.Target{Component: "agent", Channel: "stable", Version: manifest.Version,
+		Platform: "linux", Arch: m.arch, Format: format})
 	if err != nil {
 		return authorization, err
 	}
-	if !info.Mode().IsRegular() || info.Size() <= 0 {
-		return authorization, fmt.Errorf("%w: empty or nonregular package", ErrPublisherTrust)
-	}
-	hash := sha256.New()
-	if _, err := io.Copy(hash, io.NewSectionReader(file, 0, info.Size())); err != nil {
-		return authorization, fmt.Errorf("hash repository package: %w", err)
-	}
-	target := updatetrust.Target{Component: "agent", Channel: "stable", Version: manifest.Version,
-		Platform: "linux", Arch: m.arch, Format: format, SHA256: hex.EncodeToString(hash.Sum(nil)), SizeBytes: info.Size()}
-	authorization, err = verifier.AuthorizeFile(ctx, target, file)
+	err = withAuthenticatedPackage(ctx, dir, file, target, verifier, func(_ string, verified updatetrust.Authorization) error {
+		authorization = verified
+		return nil
+	})
 	if err != nil {
-		return updatetrust.Authorization{}, fmt.Errorf("%w: authenticate repository package: %w", ErrPublisherTrust, err)
-	}
-	if authorization.Target != target {
-		return updatetrust.Authorization{}, fmt.Errorf("%w: verifier returned another package identity", ErrPublisherTrust)
+		return updatetrust.Authorization{}, err
 	}
 	return authorization, nil
 }
