@@ -25,6 +25,13 @@ func TestPrivilegedRepositoryPackageProcessChild(t *testing.T) {
 	if mode == "exit" {
 		os.Exit(7)
 	}
+	if mode == "survive cancellation" {
+		time.Sleep(200 * time.Millisecond)
+		if err := os.WriteFile(os.Getenv("PRINTMASTER_PACKAGE_TEST_MARKER"), []byte("completed"), 0o600); err != nil {
+			os.Exit(14)
+		}
+		os.Exit(0)
+	}
 	if mode == "stall" {
 		time.Sleep(30 * time.Second)
 		os.Exit(8)
@@ -132,44 +139,28 @@ func TestPrivilegedRepositoryPackageSubprocessExchange(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
+			budget := 4 * time.Second
 			if mode == "stall" {
-				ctx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
-				defer cancel()
+				budget = 100 * time.Millisecond
 			}
-			childInput, request, err := os.Pipe()
-			if err != nil {
-				t.Fatal(err)
-			}
-			response, childOutput, err := os.Pipe()
-			if err != nil {
-				t.Fatal(err)
-			}
-			cmd := exec.CommandContext(ctx, executable, "-test.run=^TestPrivilegedRepositoryPackageProcessChild$")
-			cmd.Env = append(os.Environ(), "PRINTMASTER_PACKAGE_TEST_CHILD="+mode, "PRINTMASTER_PACKAGE_TEST_ROOT="+rootPath,
-				"PRINTMASTER_PACKAGE_TEST_URL="+server.URL, "PRINTMASTER_PACKAGE_TEST_STATE="+state, "PRINTMASTER_PACKAGE_TEST_POLICY="+policy)
-			cmd.Stdin, cmd.Stdout = childInput, childOutput
-			diagnostics := &commandOutput{}
-			cmd.Stderr = diagnostics
-			cmd.WaitDelay = time.Second
-			if err := cmd.Start(); err != nil {
-				t.Fatal(err)
-			}
-			if err := errors.Join(childInput.Close(), childOutput.Close()); err != nil {
-				t.Fatal(err)
-			}
-			got, exchangeErr := ExchangeRepositoryPackage(ctx, request, response, source, target)
-			exitErr := cmd.Wait()
+			got, exchangeErr := launchRepositoryPackage(ctx, source, target, budget, func(independent context.Context) *exec.Cmd {
+				cmd := exec.CommandContext(independent, executable, "-test.run=^TestPrivilegedRepositoryPackageProcessChild$")
+				cmd.Env = append(os.Environ(), "PRINTMASTER_PACKAGE_TEST_CHILD="+mode, "PRINTMASTER_PACKAGE_TEST_ROOT="+rootPath,
+					"PRINTMASTER_PACKAGE_TEST_URL="+server.URL, "PRINTMASTER_PACKAGE_TEST_STATE="+state, "PRINTMASTER_PACKAGE_TEST_POLICY="+policy)
+				return cmd
+			})
 			if mode == "valid" {
-				if exchangeErr != nil || exitErr != nil || got.Status != "awaiting-startup" || got.RunID == "" {
-					t.Fatalf("child exchange failed: %+v exchange=%v exit=%v diagnostics=%s", got, exchangeErr, exitErr, diagnostics.bytes())
+				if exchangeErr != nil || got.Status != "awaiting-startup" || got.RunID == "" {
+					t.Fatalf("child exchange failed: %+v exchange=%v", got, exchangeErr)
 				}
 			} else if mode == "exit after reply" {
-				if exchangeErr != nil || exitErr == nil || got.Status != "awaiting-startup" {
-					t.Fatalf("reply/exit distinction lost: %+v exchange=%v exit=%v", got, exchangeErr, exitErr)
+				if exchangeErr == nil || got.Status != "awaiting-startup" {
+					t.Fatalf("reply/exit distinction lost: %+v exchange=%v", got, exchangeErr)
 				}
-			} else if exchangeErr == nil || exitErr == nil {
-				t.Fatalf("failed child claimed completion: %+v exchange=%v exit=%v", got, exchangeErr, exitErr)
+			} else if exchangeErr == nil {
+				t.Fatalf("failed child claimed completion: %+v exchange=%v", got, exchangeErr)
 			}
+
 			if mode == "valid" || mode == "install failure" || mode == "exit after reply" {
 				journal, err := InspectPrivilegedRepositoryPackage(context.Background(), state)
 				if err != nil {

@@ -65,26 +65,37 @@ func runPrivilegedPackageCommand(parent context.Context, timeout time.Duration, 
 	default:
 		return nil, fmt.Errorf("unsupported privileged package executable %q", name)
 	}
-	if err := checkRootPackageAncestors(filepath.Dir(name)); err != nil {
-		return nil, fmt.Errorf("unsafe privileged package executable directory: %w", err)
-	}
-	if err := validateInstallPath(name); err != nil {
-		return nil, fmt.Errorf("unsafe privileged package executable: %w", err)
-	}
-	info, err := os.Stat(name)
-	if err != nil {
+	if err := checkRootPackageExecutable(name); err != nil {
 		return nil, err
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || stat.Uid != 0 {
-		return nil, fmt.Errorf("privileged package executable must be root-owned")
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
-	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "HOME=/root", "LANG=C", "LC_ALL=C", "DEBIAN_FRONTEND=noninteractive"}
+	cmd.Env = packageCommandEnvironment()
 	return (&Manager{}).executeUpdateCommand(ctx, timeout, cmd)
+}
+
+func packageCommandEnvironment() []string {
+	return []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "HOME=/root", "LANG=C", "LC_ALL=C", "DEBIAN_FRONTEND=noninteractive"}
+}
+
+func checkRootPackageExecutable(name string) error {
+	if err := checkRootPackageAncestors(filepath.Dir(name)); err != nil {
+		return fmt.Errorf("unsafe privileged package executable directory: %w", err)
+	}
+	if err := validateInstallPath(name); err != nil {
+		return fmt.Errorf("unsafe privileged package executable: %w", err)
+	}
+	info, err := os.Stat(name)
+	if err != nil {
+		return err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != 0 || info.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("privileged package executable must be root-owned and executable")
+	}
+	return nil
 }
 
 // WithPrivilegedRepositoryPackage is the root-side intake boundary, not an
