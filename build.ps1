@@ -646,7 +646,7 @@ function Test-Storage {
     try {
         $testArgs = @((Join-Path $ProjectRoot 'scripts\run-tests.js'), '--suite', 'go', '--module', 'agent', '--package', './storage')
         
-        Write-BuildLog "Command: go $($testArgs -join ' ')"
+        Write-BuildLog "Command: node $($testArgs -join ' ')"
         
         $testOutput = & node @testArgs 2>&1
         $testExitCode = $LASTEXITCODE
@@ -685,7 +685,7 @@ function Test-All {
     try {
         $testArgs = @((Join-Path $ProjectRoot 'scripts\run-tests.js'), '--suite', 'go')
         
-        Write-BuildLog "Command: go $($testArgs -join ' ')"
+        Write-BuildLog "Command: node $($testArgs -join ' ')"
         
         $testOutput = & node @testArgs 2>&1
         $testExitCode = $LASTEXITCODE

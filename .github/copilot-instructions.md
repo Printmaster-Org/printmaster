@@ -50,8 +50,9 @@ Agent (site) ──WebSocket/HTTP──▶ Server (central) ◀── Agent (sit
 # Run tests
 .\tests.ps1                         # Go/lint/Jest/all Playwright projects
 .\tests.ps1 --skip-playwright       # Explicitly omit browsers for a focused run
-.\tests.ps1 --all --privileged      # Add Docker/docs/native/root fixtures (Unix only)
+.\tests.ps1 --all                   # Add Docker/docs/native fixtures
 # Unix/macOS: ./tests.sh with the same flags; --help lists prerequisites/options.
+# Unix-only root fixtures: ./tests.sh --all --privileged (requires sudo -n).
 # CI uses the same runner. Report omissions and test-level skips; a partial
 # selection is not a complete release baseline. Live installers are never enabled.
 # Release (NEVER edit VERSION files manually)

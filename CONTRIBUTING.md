@@ -33,9 +33,11 @@ git checkout -b feature/your-feature-name
 
 ### Prerequisites
 
-- **Go 1.24+** - [Download](https://go.dev/dl/)
+- **Go matching the module files** (CI: 1.27.0) - [Download](https://go.dev/dl/)
 - **Git** - For version control
 - **PowerShell** (Windows) or Bash (Linux/macOS) - For build scripts
+- **Node.js 26**, locked npm test dependencies, compatible **staticcheck**, and
+  installed Playwright browsers - For the shared test runner (see `--help`)
 
 ### Building
 
@@ -53,12 +55,20 @@ git checkout -b feature/your-feature-name
 ### Running Tests
 
 ```powershell
-# Test agent packages
-cd agent; go test ./... -v
-
-# Test server packages
-cd server; go test ./... -v
+# Core baseline: Go/lint/Jest/all browser projects
+.\tests.ps1
+# Focused iteration with browsers explicitly omitted
+.\tests.ps1 --skip-playwright
+# Optional Docker and sibling-docs validation
+.\tests.ps1 --all
 ```
+
+On Unix/macOS use `./tests.sh` with the same flags. Both wrappers and CI use
+`scripts/run-tests.js`; `--suite`, `--module`, `--package`, `--dry-run` and
+`--help` support focused runs. `--privileged` explicitly adds isolated Unix
+root fixtures; it never enables live installers. Missing prerequisites fail
+visibly, and omitted/test-level skipped checks are not qualification evidence.
+See the [canonical testing guide](https://docs.printmaster.work/development/testing/).
 
 ### Quick Development Workflow
 
@@ -134,11 +144,11 @@ Examples:
 ### Running Tests
 
 ```bash
-# Run all tests for a component
-cd agent && go test ./...
-cd server && go test ./...
+# Run a focused component suite from the repository root
+./tests.sh --suite go --module agent
+./tests.sh --suite go --module server
 
-# Run specific test
+# Direct Go commands remain useful for individual-test diagnostics (inside a module)
 go test -v -run TestFunctionName ./package/
 
 # Run with race detection
