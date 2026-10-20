@@ -22,13 +22,14 @@ const packageTransactionFile = "native-transaction.json"
 // RepositoryPackageTransaction is root-owned native installation evidence.
 // Inspection is not authorization to retry, clear or roll back this run.
 type RepositoryPackageTransaction struct {
-	Schema          int                `json:"schema"`
-	RunID           string             `json:"run_id"`
-	Target          updatetrust.Target `json:"target"`
-	PreviousVersion string             `json:"previous_version"`
-	Phase           string             `json:"phase"`
-	StartedAt       time.Time          `json:"started_at"`
-	UpdatedAt       time.Time          `json:"updated_at"`
+	Schema          int                       `json:"schema"`
+	RunID           string                    `json:"run_id"`
+	Target          updatetrust.Target        `json:"target"`
+	PreviousVersion string                    `json:"previous_version"`
+	Phase           string                    `json:"phase"`
+	StartedAt       time.Time                 `json:"started_at"`
+	UpdatedAt       time.Time                 `json:"updated_at"`
+	Startup         *RepositoryPackageStartup `json:"startup,omitempty"`
 	path            string
 }
 
@@ -51,7 +52,10 @@ func InspectPrivilegedRepositoryPackage(ctx context.Context, stateDir string) (R
 }
 
 func readPackageTransaction(stateDir string) (transaction RepositoryPackageTransaction, result error) {
-	path := filepath.Join(stateDir, packageTransactionFile)
+	return readPackageTransactionFile(filepath.Join(stateDir, packageTransactionFile))
+}
+
+func readPackageTransactionFile(path string) (transaction RepositoryPackageTransaction, result error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return transaction, fmt.Errorf("open native package transaction: %w", err)
@@ -91,6 +95,13 @@ func readPackageTransaction(stateDir string) (transaction RepositoryPackageTrans
 	}
 	switch transaction.Phase {
 	case "installing", "awaiting-startup", "recovery-required":
+		if transaction.Startup != nil {
+			return transaction, fmt.Errorf("unconfirmed native package transaction contains startup evidence")
+		}
+	case "startup-confirmed":
+		if transaction.Startup == nil || !transaction.Startup.valid() {
+			return transaction, fmt.Errorf("confirmed native package transaction lacks valid startup evidence")
+		}
 	default:
 		return transaction, fmt.Errorf("unknown native package transaction phase %q", transaction.Phase)
 	}

@@ -42,6 +42,9 @@ func TestPrivilegedRepositoryPackageInspection(t *testing.T) {
 		if _, err := AssessPrivilegedRepositoryPackage(context.Background(), dir); err == nil {
 			t.Fatal("non-root recovery assessment accepted")
 		}
+		if _, err := ReconcilePrivilegedRepositoryPackage(context.Background(), dir, journal.RunID); err == nil {
+			t.Fatal("non-root startup reconciliation accepted")
+		}
 		return
 	}
 	if err != nil || !reflect.DeepEqual(got, *journal) {
@@ -53,6 +56,9 @@ func TestPrivilegedRepositoryPackageInspection(t *testing.T) {
 		}
 		if _, err := AssessPrivilegedRepositoryPackage(context.Background(), dir); err == nil {
 			t.Fatal("recovery assessment ignored intake lock")
+		}
+		if _, err := ReconcilePrivilegedRepositoryPackage(context.Background(), dir, journal.RunID); err == nil {
+			t.Fatal("startup reconciliation ignored intake lock")
 		}
 		return nil
 	}); err != nil {
@@ -66,6 +72,9 @@ func TestPrivilegedRepositoryPackageInspection(t *testing.T) {
 	if _, err := AssessPrivilegedRepositoryPackage(ctx, dir); err == nil {
 		t.Fatal("cancelled recovery assessment accepted")
 	}
+	if _, err := ReconcilePrivilegedRepositoryPackage(ctx, dir, journal.RunID); err == nil {
+		t.Fatal("cancelled startup reconciliation accepted")
+	}
 	missing := filepath.Join(dir, "missing")
 	if _, err := InspectPrivilegedRepositoryPackage(context.Background(), missing); err == nil {
 		t.Fatal("missing state accepted")
@@ -77,7 +86,7 @@ func TestPrivilegedRepositoryPackageInspection(t *testing.T) {
 
 func TestPrivilegedRepositoryPackageJournalValidation(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"valid", "schema", "run", "digest", "arch", "channel", "component", "format", "size", "previous", "downgrade", "timestamps", "phase", "unknown field", "duplicate field", "trailing json", "oversized"} {
+	for _, mode := range []string{"valid", "schema", "run", "digest", "arch", "channel", "component", "format", "size", "previous", "downgrade", "timestamps", "phase", "unknown field", "duplicate field", "trailing json", "oversized", "premature startup", "missing startup", "invalid startup"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
@@ -107,6 +116,13 @@ func TestPrivilegedRepositoryPackageJournalValidation(t *testing.T) {
 				journal.UpdatedAt = journal.StartedAt.Add(-1)
 			case "phase":
 				journal.Phase = "success"
+			case "premature startup":
+				journal.Startup = &RepositoryPackageStartup{PID: 1234, InvocationID: strings.Repeat("a", 32)}
+			case "missing startup":
+				journal.Phase = "startup-confirmed"
+			case "invalid startup":
+				journal.Phase = "startup-confirmed"
+				journal.Startup = &RepositoryPackageStartup{PID: 0, InvocationID: strings.Repeat("a", 32)}
 			}
 			data, err := json.Marshal(journal)
 			if err != nil {

@@ -40,7 +40,7 @@ func InstallPrivilegedRepositoryPackage(ctx context.Context, root []byte, metada
 
 func runPrivilegedPackageCommand(parent context.Context, timeout time.Duration, dir string, _ []string, name string, args ...string) ([]byte, error) {
 	switch name {
-	case "/usr/bin/dpkg", "/usr/bin/dpkg-query", "/usr/bin/dpkg-deb", "/usr/bin/rpm":
+	case "/usr/bin/dpkg", "/usr/bin/dpkg-query", "/usr/bin/dpkg-deb", "/usr/bin/rpm", "/usr/bin/systemctl":
 	default:
 		return nil, fmt.Errorf("unsupported privileged package executable %q", name)
 	}
