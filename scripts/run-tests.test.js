@@ -28,7 +28,7 @@ test.each([
     ['--typo'], ['--suite'], ['--workers=0'], ['--workers=1x'],
     ['--suite=unknown'], ['--module=missing'], ['--all', '--suite=go'],
     ['--suite=privileged'], ['--coverage=true'], ['--suite=go', '--skip-go'],
-    ['--package=../agent'], ['--package=./../agent']
+    ['--package=../agent'], ['--package=./../agent'], ['--keep-going=true']
 ])('rejects invalid input without running anything: %j', (...args) => {
     expect(() => parseArgs(args)).toThrow();
 });
@@ -90,15 +90,33 @@ test('Windows PostgreSQL endpoint discovery never changes subsequent Docker CLI 
     } finally { Object.defineProperty(process, 'platform', platform); }
 });
 
-test('command failures and missing prerequisites fail visibly while later suites still run', () => {
-    const execute = jest.fn()
+test('keep-going collects failures while later modules and suites still run', () => {
+    const execute = jest.fn(() => ({ status: 0 }))
         .mockReturnValueOnce({ error: new Error('missing go') })
         .mockReturnValueOnce({ status: 0 });
-    const runner = new Runner(parseArgs(['--suite=go,js', '--module=agent']), execute);
+    const runner = new Runner(parseArgs(['--suite=go,js', '--module=agent,common', '--keep-going']), execute);
     expect(runner.run()).toBe(1);
     expect(runner.results).toEqual([{ suite: 'go', status: 'FAIL' }, { suite: 'js', status: 'PASS' }]);
+    expect(execute).toHaveBeenCalledTimes(3);
     expect(error).toHaveBeenCalledWith(expect.stringContaining('missing go'));
     expect(new Runner(parseArgs(['--suite=go']), () => ({ status: null, signal: 'SIGTERM' })).run()).toBe(1);
+});
+
+test.each(['lint', 'go'])('default stops at the first failed %s command without running later checks, modules or suites', suite => {
+    const execute = jest.fn(() => ({ status: 1 }));
+    const runner = new Runner(parseArgs([`--suite=${suite},js`, '--module=agent,common']), execute);
+    expect(runner.run()).toBe(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(runner.results).toEqual([{ suite, status: 'FAIL' }, { suite: 'js', status: 'NOT RUN' }]);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('Stopped after the first failed command'));
+});
+
+test('lint keep-going collects failures from both checks and every module', () => {
+    const execute = jest.fn(() => ({ status: 1 }));
+    const runner = new Runner(parseArgs(['--suite=lint,js', '--module=agent,common', '--keep-going']), execute);
+    expect(runner.run()).toBe(1);
+    expect(execute).toHaveBeenCalledTimes(5);
+    expect(runner.results).toEqual([{ suite: 'lint', status: 'FAIL' }, { suite: 'js', status: 'FAIL' }]);
 });
 
 test('dry run never executes commands and inherited live-installer opt-ins are removed', () => {

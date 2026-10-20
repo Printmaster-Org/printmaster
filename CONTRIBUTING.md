@@ -68,6 +68,8 @@ On Unix/macOS use `./tests.sh` with the same flags. Both wrappers and CI use
 `--help` support focused runs. `--privileged` explicitly adds isolated Unix
 root fixtures; it never enables live installers. Missing prerequisites fail
 visibly, and omitted/test-level skipped checks are not qualification evidence.
+The runner stops at the first failed command by default. Use `--keep-going`
+to collect independent failures; Docker log capture and cleanup still run on failure.
 See the [canonical testing guide](https://docs.printmaster.work/development/testing/).
 
 ### Quick Development Workflow

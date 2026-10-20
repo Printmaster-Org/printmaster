@@ -17,7 +17,7 @@ function modulesAt(directory) {
 
 function parseArgs(args, availableModules = modulesAt(root)) {
     const options = {
-        suites: [...core], modules: availableModules, coverage: false, dryRun: false,
+        suites: [...core], modules: availableModules, coverage: false, dryRun: false, keepGoing: false,
         workers: '2', staticcheck: 'staticcheck', hugo: 'hugo',
         docsDir: path.resolve(root, '..', 'docs.printmaster.work')
     };
@@ -43,6 +43,7 @@ function parseArgs(args, availableModules = modulesAt(root)) {
             else if (key === 'privileged') privileged = true;
             else if (key === 'coverage') options.coverage = true;
             else if (key === 'dry-run') options.dryRun = true;
+            else if (key === 'keep-going') options.keepGoing = true;
             else if (key === 'help') options.help = true;
             else if (key.startsWith('skip-') && suites.includes(key.slice(5))) skipped.push(key.slice(5));
             else throw new Error(`Unknown option: --${key}; use --help`);
@@ -88,6 +89,7 @@ Default: ${core.join(', ')}. Go modules are discovered from top-level go.mod fil
   --hugo PATH         Existing Hugo executable for docs
   --docs-dir PATH     Documentation checkout
   --dry-run           Print selection without executing commands
+  --keep-going        Collect independent failures instead of stopping at the first
   --help              Show this help
 Prerequisites are never silently installed or missing suites treated as passes.
 Live installer/service replacement tests are NEVER enabled by this runner.`;
@@ -147,6 +149,7 @@ class Runner {
                     ];
                 for (const check of checks) {
                     try { check(); } catch (error) {
+                        if (!o.keepGoing) throw error;
                         console.error(`${module}: ${error.message}`);
                         failures.push(error);
                     }
@@ -276,6 +279,12 @@ class Runner {
             } catch (error) {
                 console.error(`FAIL ${suite}: ${error.message}`);
                 this.results.push({ suite, status: 'FAIL' });
+                if (!this.options.keepGoing) {
+                    const remaining = this.options.suites.slice(this.results.length);
+                    for (const pending of remaining) this.results.push({ suite: pending, status: 'NOT RUN' });
+                    console.error('Stopped after the first failed command. Use --keep-going to collect independent failures.');
+                    break;
+                }
             }
         }
         console.table(this.results);
