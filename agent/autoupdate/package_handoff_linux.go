@@ -5,15 +5,58 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 
+	"printmaster/common/updatepolicy"
 	"printmaster/common/updatetrust"
 )
+
+// InstallPrivilegedRepositoryPackage is an in-process native installer for a
+// trusted helper, not an externally callable CLI. All configuration and policy
+// sources must be root-controlled. It does not resolve missing dependencies or
+// restart/reconcile the Agent; the automatic update entrypoint stays disabled.
+func InstallPrivilegedRepositoryPackage(ctx context.Context, root []byte, metadataURL, stateDir string,
+	source *os.File, target updatetrust.Target, policy func() (updatepolicy.PolicySpec, error)) error {
+	return WithPrivilegedRepositoryPackage(ctx, root, metadataURL, stateDir, source, target,
+		func(snapshot string, authorization updatetrust.Authorization) error {
+			return consumeNativePackage(ctx, snapshot, authorization, policy, runPrivilegedPackageCommand)
+		})
+}
+
+func runPrivilegedPackageCommand(parent context.Context, timeout time.Duration, dir string, _ []string, name string, args ...string) ([]byte, error) {
+	switch name {
+	case "/usr/bin/dpkg", "/usr/bin/dpkg-query", "/usr/bin/dpkg-deb", "/usr/bin/rpm":
+	default:
+		return nil, fmt.Errorf("unsupported privileged package executable %q", name)
+	}
+	if err := checkRootPackageAncestors(filepath.Dir(name)); err != nil {
+		return nil, fmt.Errorf("unsafe privileged package executable directory: %w", err)
+	}
+	if err := validateInstallPath(name); err != nil {
+		return nil, fmt.Errorf("unsafe privileged package executable: %w", err)
+	}
+	info, err := os.Stat(name)
+	if err != nil {
+		return nil, err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != 0 {
+		return nil, fmt.Errorf("privileged package executable must be root-owned")
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "HOME=/root", "LANG=C", "LC_ALL=C", "DEBIAN_FRONTEND=noninteractive"}
+	return (&Manager{}).executeUpdateCommand(ctx, timeout, cmd)
+}
 
 // WithPrivilegedRepositoryPackage is the root-side intake boundary, not an
 // installation entrypoint. Root, metadataURL, stateDir and consume must come

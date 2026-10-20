@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"time"
 
 	"printmaster/common/updatetrust"
@@ -34,22 +33,16 @@ func (m *Manager) acquireRepositoryPackage(ctx context.Context, manifest *Update
 		!stablePackageVersion.MatchString(manifest.Version) {
 		return authorization, fmt.Errorf("%w: repository acquisition requires a Stable Linux printmaster-agent release", ErrPublisherTrust)
 	}
-	var arch string
-	switch m.arch {
-	case "amd64":
-		arch = "amd64"
-	case "arm64":
-		arch = "arm64"
-	case "arm":
-		arch = "armhf"
-	default:
-		return authorization, fmt.Errorf("%w: unsupported package architecture %q", ErrPublisherTrust, m.arch)
-	}
 	format, tool := "deb", "apt-get"
-	args := []string{"download", m.packageName + ":" + arch + "=" + manifest.Version}
 	if m.packageManager == "dnf" || m.packageManager == "yum" {
 		format = "rpm"
-		arch = map[string]string{"amd64": "x86_64", "arm64": "aarch64", "arm": "armv7hl"}[m.arch]
+	}
+	arch, err := nativePackageArch(m.arch, format)
+	if err != nil {
+		return authorization, err
+	}
+	args := []string{"download", m.packageName + ":" + arch + "=" + manifest.Version}
+	if m.packageManager == "dnf" || m.packageManager == "yum" {
 		tool = "dnf"
 		if m.packageManager == "yum" {
 			tool = "yumdownloader"
@@ -99,16 +92,12 @@ func (m *Manager) acquireRepositoryPackage(ctx context.Context, manifest *Update
 	if err != nil {
 		return authorization, fmt.Errorf("inspect native package identity: %w: %s", err, output)
 	}
-	fields := strings.Split(strings.TrimSuffix(strings.ReplaceAll(string(output), "\r\n", "\n"), "\n"), "\n")
-	wantFields := 3
-	if format == "rpm" {
-		wantFields = 5
+	version, err := nativePackageFields(output, updatetrust.Target{Arch: m.arch, Format: format}, false)
+	if err != nil {
+		return authorization, err
 	}
-	if len(fields) != wantFields || fields[0] != m.packageName || fields[1] != manifest.Version || fields[2] != arch {
-		return authorization, fmt.Errorf("%w: native package name/version/architecture mismatch", ErrPublisherTrust)
-	}
-	if format == "rpm" && (fields[3] != "0" || !packageRPMRelease.MatchString(fields[4])) {
-		return authorization, fmt.Errorf("%w: unexpected RPM epoch or release", ErrPublisherTrust)
+	if version != manifest.Version {
+		return authorization, fmt.Errorf("%w: native package version mismatch", ErrPublisherTrust)
 	}
 	if err := ctx.Err(); err != nil {
 		return authorization, err

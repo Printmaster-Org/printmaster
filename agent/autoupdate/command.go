@@ -23,6 +23,10 @@ func (m *Manager) runUpdateCommandIn(parent context.Context, timeout time.Durati
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), env...)
+	return m.executeUpdateCommand(ctx, timeout, cmd)
+}
+
+func (m *Manager) executeUpdateCommand(ctx context.Context, timeout time.Duration, cmd *exec.Cmd) ([]byte, error) {
 	cmd.WaitDelay = 5 * time.Second
 	configureUpdateCommand(cmd)
 	output := &commandOutput{}
@@ -33,9 +37,9 @@ func (m *Manager) runUpdateCommandIn(parent context.Context, timeout time.Durati
 		err = errors.Join(err, fmt.Errorf("update command deadline: %w", ctx.Err()))
 	}
 	if err != nil {
-		m.logWarn("Update command failed", "command", name, "duration", time.Since(started).Round(time.Millisecond), "timeout", timeout, "error", err)
+		m.logWarn("Update command failed", "command", cmd.Args[0], "duration", time.Since(started).Round(time.Millisecond), "timeout", timeout, "error", err)
 	} else {
-		m.logDebug("Update command completed", "command", name, "duration", time.Since(started).Round(time.Millisecond))
+		m.logDebug("Update command completed", "command", cmd.Args[0], "duration", time.Since(started).Round(time.Millisecond))
 	}
 	return output.bytes(), err
 }
