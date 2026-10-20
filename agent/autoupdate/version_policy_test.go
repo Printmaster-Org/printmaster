@@ -145,6 +145,7 @@ func TestSignedDevOrderingControlsInstallation(t *testing.T) {
 		{name: "lower lexical hash is newer", current: "1.1.0-dev.fffffff", target: "1.1.0-dev.0000123"},
 		{name: "higher lexical hash is newer", current: "1.1.0-dev.0000123", target: "1.1.0-dev.fffffff"},
 		{name: "higher lexical hash is older", current: "1.1.0-dev.0000123", target: "1.1.0-dev.fffffff", older: true},
+		{name: "live Windows rehearsal versions", current: "0.32.0.2-dev", target: "0.32.0.3-dev"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
