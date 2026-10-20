@@ -22,17 +22,16 @@ func WriteRepositoryPackageRequest(parent context.Context, output, source *os.Fi
 	if output == nil {
 		return fmt.Errorf("native package output pipe is required")
 	}
-	defer func() { result = errors.Join(result, output.Close()) }()
+	defer func(file *os.File) { result = errors.Join(result, file.Close()) }(output)
 	if source == nil || !validPrivilegedPackageTarget(target) {
 		return fmt.Errorf("invalid native package send request")
 	}
-	info, err := output.Stat()
+	pipe, err := pollablePackagePipe(output)
 	if err != nil {
 		return err
 	}
-	if info.Mode()&os.ModeNamedPipe == 0 {
-		return fmt.Errorf("native package output must be a pipe")
-	}
+	defer func() { result = errors.Join(result, pipe.Close()) }()
+	output = pipe
 	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
 	deadline, _ := ctx.Deadline()

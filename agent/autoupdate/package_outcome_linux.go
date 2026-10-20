@@ -30,6 +30,11 @@ type RepositoryPackageOutcome struct {
 // raw command output, file paths and policy are not serialized to the Agent.
 func ServePrivilegedRepositoryPackageResponse(ctx context.Context, root []byte, metadataURL, stateDir, policyPath string,
 	input, output *os.File) (result error) {
+	return serveRepositoryPackageResponse(ctx, root, metadataURL, stateDir, policyPath, input, output, runPrivilegedPackageCommand)
+}
+
+func serveRepositoryPackageResponse(ctx context.Context, root []byte, metadataURL, stateDir, policyPath string,
+	input, output *os.File, run repositoryCommand) (result error) {
 	if output == nil {
 		if input != nil {
 			return errors.Join(fmt.Errorf("native package response pipe is required"), input.Close())
@@ -46,7 +51,7 @@ func ServePrivilegedRepositoryPackageResponse(ctx context.Context, root []byte, 
 		return failure
 	}
 	outcome := RepositoryPackageOutcome{Schema: 1, Status: "rejected"}
-	err := serveRepositoryPackage(ctx, root, metadataURL, stateDir, policyPath, input, &outcome)
+	err := serveRepositoryPackage(ctx, root, metadataURL, stateDir, policyPath, input, &outcome, run)
 	if err != nil && outcome.Status == "awaiting-startup" {
 		// A close/cleanup/lock failure can follow native completion. Do not
 		// conceal it behind a success-shaped transport reply.
@@ -58,6 +63,12 @@ func ServePrivilegedRepositoryPackageResponse(ctx context.Context, root []byte, 
 }
 
 func writeRepositoryPackageOutcome(ctx context.Context, output *os.File, outcome RepositoryPackageOutcome) (result error) {
+	pipe, err := pollablePackagePipe(output)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, pipe.Close()) }()
+	output = pipe
 	finish, err := boundPackageOutcomePipe(ctx, output, true)
 	if err != nil {
 		return err
@@ -89,10 +100,21 @@ func ReadRepositoryPackageOutcome(parent context.Context, input *os.File, expect
 	if input == nil {
 		return outcome, fmt.Errorf("native package outcome pipe is required")
 	}
-	defer func() { result = errors.Join(result, input.Close()) }()
+	defer func(file *os.File) {
+		result = errors.Join(result, file.Close())
+		if result != nil {
+			outcome = RepositoryPackageOutcome{}
+		}
+	}(input)
 	if !validPrivilegedPackageTarget(expected) {
 		return outcome, fmt.Errorf("invalid expected native package outcome target")
 	}
+	pipe, err := pollablePackagePipe(input)
+	if err != nil {
+		return outcome, err
+	}
+	defer func() { result = errors.Join(result, pipe.Close()) }()
+	input = pipe
 	ctx, cancel := context.WithTimeout(parent, 15*time.Minute)
 	defer cancel()
 	finish, err := boundPackageOutcomePipe(ctx, input, false)

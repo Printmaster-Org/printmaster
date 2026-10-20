@@ -29,11 +29,11 @@ type RepositoryPackageRequest struct {
 // frame; suffix bytes are never interpreted as commands or another request.
 // No executable entrypoint or sudo permission is installed by this API.
 func ServePrivilegedRepositoryPackage(ctx context.Context, root []byte, metadataURL, stateDir, policyPath string, input *os.File) (result error) {
-	return serveRepositoryPackage(ctx, root, metadataURL, stateDir, policyPath, input, nil)
+	return serveRepositoryPackage(ctx, root, metadataURL, stateDir, policyPath, input, nil, runPrivilegedPackageCommand)
 }
 
 func serveRepositoryPackage(ctx context.Context, root []byte, metadataURL, stateDir, policyPath string, input *os.File,
-	outcome *RepositoryPackageOutcome) (result error) {
+	outcome *RepositoryPackageOutcome, run repositoryCommand) (result error) {
 	if input == nil {
 		return fmt.Errorf("native package request pipe is required")
 	}
@@ -53,20 +53,19 @@ func serveRepositoryPackage(ctx context.Context, root []byte, metadataURL, state
 			if outcome != nil {
 				outcome.Target = &target
 			}
-			return authenticateRootPackage(ctx, root, metadataURL, stateDir, source, target, nativePackageConsumerOutcome(ctx, stateDir, policy, outcome))
+			return authenticateRootPackage(ctx, root, metadataURL, stateDir, source, target, nativePackageConsumerOutcome(ctx, stateDir, policy, outcome, run))
 		})
 	})
 }
 
 func receiveRepositoryPackage(parent context.Context, input *os.File, stateDir string,
 	consume func(*os.File, updatetrust.Target) error) (result error) {
-	info, err := input.Stat()
+	pipe, err := pollablePackagePipe(input)
 	if err != nil {
 		return err
 	}
-	if info.Mode()&os.ModeNamedPipe == 0 {
-		return fmt.Errorf("native package request must arrive through a pipe")
-	}
+	defer func() { result = errors.Join(result, pipe.Close()) }()
+	input = pipe
 	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
 	// Pipes support read deadlines; reject unsupported handles instead of

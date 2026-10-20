@@ -31,11 +31,11 @@ func InstallPrivilegedRepositoryPackage(ctx context.Context, root []byte, metada
 }
 
 func nativePackageConsumer(ctx context.Context, stateDir string, policy func() (updatepolicy.PolicySpec, error)) func(string, updatetrust.Authorization) error {
-	return nativePackageConsumerOutcome(ctx, stateDir, policy, nil)
+	return nativePackageConsumerOutcome(ctx, stateDir, policy, nil, runPrivilegedPackageCommand)
 }
 
 func nativePackageConsumerOutcome(ctx context.Context, stateDir string, policy func() (updatepolicy.PolicySpec, error),
-	outcome *RepositoryPackageOutcome) func(string, updatetrust.Authorization) error {
+	outcome *RepositoryPackageOutcome, run repositoryCommand) func(string, updatetrust.Authorization) error {
 	return func(snapshot string, authorization updatetrust.Authorization) error {
 		if outcome != nil {
 			// Once a protected consumer is entered, any failure (including a
@@ -49,7 +49,7 @@ func nativePackageConsumerOutcome(ctx context.Context, stateDir string, policy f
 		if outcome != nil {
 			outcome.RunID = journal.RunID
 		}
-		if err := consumeNativePackage(ctx, snapshot, authorization, policy, runPrivilegedPackageCommand, journal.record); err != nil {
+		if err := consumeNativePackage(ctx, snapshot, authorization, policy, run, journal.record); err != nil {
 			return fmt.Errorf("native package run %s (%s): %w", journal.RunID, journal.Phase, err)
 		}
 		if outcome != nil {
