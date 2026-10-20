@@ -172,11 +172,16 @@ func TestExplicitStableAllowedForStableOnlyInstalls(t *testing.T) {
 	}
 }
 
-func TestPackageManagerUpdateRequiresExactVersion(t *testing.T) {
+func TestPackageManagerUpdateRequiresAuthenticatedPackage(t *testing.T) {
 	t.Parallel()
-	manager := &Manager{usePackageManager: true, packageManager: "dnf", packageName: "printmaster-agent"}
-	if err := manager.applyUpdateViaPackageManager("  ", func(int, string) {}); err == nil {
-		t.Fatal("versionless package manager update must be rejected")
+	for _, name := range []string{"apt", "dnf", "yum"} {
+		t.Run(name, func(t *testing.T) {
+			manager := lifecycleManager(t, &mockUpdateClient{}, nil)
+			manager.usePackageManager, manager.packageManager, manager.packageName = true, name, "printmaster-agent"
+			if err := manager.executeUpdateViaPackageManager(context.Background(), &UpdateManifest{Version: "1.1.0"}); !errors.Is(err, ErrPublisherTrust) {
+				t.Fatalf("version-only %s installation was allowed: %v", name, err)
+			}
+		})
 	}
 }
 

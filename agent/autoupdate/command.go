@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-const installerCommandTimeout = 10 * time.Minute
-
 // runUpdateCommand bounds unattended commands and their diagnostic output.
 // Package repair may still be required after interruption; a deadline is not
 // a substitute for an independent installer/recovery transaction.
