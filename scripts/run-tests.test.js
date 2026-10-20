@@ -71,6 +71,25 @@ test('Playwright always builds both binaries and runs the full matrix without re
     expect(browser[2].env).toMatchObject({ PW_ALL_BROWSERS: '1', PW_WORKERS: '1' });
 });
 
+test('Windows PostgreSQL endpoint discovery never changes subsequent Docker CLI context', () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    const endpoint = 'npipe:////./pipe/dockerDesktopLinuxEngine';
+    const execute = jest.fn((command, args) => ({
+        status: 0, stdout: command === 'docker' && args[0] === 'context' ? endpoint : ''
+    }));
+    try {
+        const runner = new Runner(parseArgs(['--suite=integration']), execute);
+        delete runner.env.DOCKER_HOST;
+        expect(runner.run()).toBe(0);
+        const postgres = execute.mock.calls.find(([command]) => command === 'go');
+        expect(postgres[2].env.DOCKER_HOST).toBe(endpoint);
+        expect(runner.env.DOCKER_HOST).toBeUndefined();
+        runner.dockerReady();
+        expect(execute.mock.calls.at(-1)[2].env.DOCKER_HOST).toBeUndefined();
+    } finally { Object.defineProperty(process, 'platform', platform); }
+});
+
 test('command failures and missing prerequisites fail visibly while later suites still run', () => {
     const execute = jest.fn()
         .mockReturnValueOnce({ error: new Error('missing go') })

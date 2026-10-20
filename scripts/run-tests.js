@@ -119,18 +119,19 @@ class Runner {
         return result.stdout?.trim() || '';
     }
 
-    goTest(module, extra = [], packages = ['./...'], coverageFile = 'coverage.out') {
+    goTest(module, extra = [], packages = ['./...'], coverageFile = 'coverage.out', env = {}) {
         const args = ['test', '-count=1', '-timeout=10m', '-v'];
         if (this.options.coverage) args.push(`-coverprofile=${coverageFile}`);
-        this.command('go', [...args, ...extra, ...packages], { cwd: path.join(root, module) });
+        this.command('go', [...args, ...extra, ...packages], { cwd: path.join(root, module), env });
     }
 
     dockerReady(testcontainers = false) {
         this.command('docker', ['info'], { capture: true, timeout: 30000 });
         if (testcontainers && process.platform === 'win32' && !this.env.DOCKER_HOST) {
             // testcontainers does not always discover Docker Desktop's active named pipe.
-            this.env.DOCKER_HOST = this.command('docker', ['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'], { capture: true });
+            return { DOCKER_HOST: this.command('docker', ['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'], { capture: true }) };
         }
+        return {};
     }
 
     runSuite(suite) {
@@ -164,8 +165,8 @@ class Runner {
                 env: { PW_ALL_BROWSERS: '1', PW_WORKERS: o.workers }
             });
         } else if (suite === 'integration') {
-            this.dockerReady(true);
-            this.goTest('server', ['-tags=integration'], ['./storage/...'], 'coverage-integration.out');
+            const env = this.dockerReady(true);
+            this.goTest('server', ['-tags=integration'], ['./storage/...'], 'coverage-integration.out', env);
         } else if (suite === 'docker') {
             this.dockerE2E();
         } else if (suite === 'native') {
