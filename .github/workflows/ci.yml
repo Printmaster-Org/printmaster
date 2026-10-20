@@ -83,7 +83,7 @@ jobs:
         working-directory: ./agent
         run: go test -v -coverprofile=coverage.out ./...
 
-      - name: Root-side package intake and journal isolation
+      - name: Root-side package intake and isolated Debian qualification
         working-directory: ./agent
         run: |
           set -euo pipefail
@@ -92,6 +92,9 @@ jobs:
           go test -c -o "$binary" ./autoupdate
           sudo -n "$binary" -test.v -test.timeout=3m \
             '-test.run=^(TestPrivilegedRepositoryPackage|TestRootPackageTree)'
+          sudo -n env PRINTMASTER_TEST_ISOLATED_DEB=1 \
+            "$binary" -test.v -test.timeout=3m \
+            '-test.run=^TestPrivilegedRepositoryPackageIsolatedDebian$'
 
       - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with:
