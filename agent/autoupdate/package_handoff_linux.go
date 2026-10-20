@@ -31,13 +31,29 @@ func InstallPrivilegedRepositoryPackage(ctx context.Context, root []byte, metada
 }
 
 func nativePackageConsumer(ctx context.Context, stateDir string, policy func() (updatepolicy.PolicySpec, error)) func(string, updatetrust.Authorization) error {
+	return nativePackageConsumerOutcome(ctx, stateDir, policy, nil)
+}
+
+func nativePackageConsumerOutcome(ctx context.Context, stateDir string, policy func() (updatepolicy.PolicySpec, error),
+	outcome *RepositoryPackageOutcome) func(string, updatetrust.Authorization) error {
 	return func(snapshot string, authorization updatetrust.Authorization) error {
+		if outcome != nil {
+			// Once a protected consumer is entered, any failure (including a
+			// possibly visible journal write) requires inspection, not replay.
+			outcome.Status = "inspection-required"
+		}
 		journal, err := newPackageTransaction(stateDir, authorization.Target)
 		if err != nil {
 			return err
 		}
+		if outcome != nil {
+			outcome.RunID = journal.RunID
+		}
 		if err := consumeNativePackage(ctx, snapshot, authorization, policy, runPrivilegedPackageCommand, journal.record); err != nil {
 			return fmt.Errorf("native package run %s (%s): %w", journal.RunID, journal.Phase, err)
+		}
+		if outcome != nil {
+			outcome.Status = "awaiting-startup"
 		}
 		return nil
 	}

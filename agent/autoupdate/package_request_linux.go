@@ -29,6 +29,11 @@ type RepositoryPackageRequest struct {
 // frame; suffix bytes are never interpreted as commands or another request.
 // No executable entrypoint or sudo permission is installed by this API.
 func ServePrivilegedRepositoryPackage(ctx context.Context, root []byte, metadataURL, stateDir, policyPath string, input *os.File) (result error) {
+	return serveRepositoryPackage(ctx, root, metadataURL, stateDir, policyPath, input, nil)
+}
+
+func serveRepositoryPackage(ctx context.Context, root []byte, metadataURL, stateDir, policyPath string, input *os.File,
+	outcome *RepositoryPackageOutcome) (result error) {
 	if input == nil {
 		return fmt.Errorf("native package request pipe is required")
 	}
@@ -45,7 +50,10 @@ func ServePrivilegedRepositoryPackage(ctx context.Context, root []byte, metadata
 			return err
 		}
 		return receiveRepositoryPackage(ctx, input, stateDir, func(source *os.File, target updatetrust.Target) error {
-			return authenticateRootPackage(ctx, root, metadataURL, stateDir, source, target, nativePackageConsumer(ctx, stateDir, policy))
+			if outcome != nil {
+				outcome.Target = &target
+			}
+			return authenticateRootPackage(ctx, root, metadataURL, stateDir, source, target, nativePackageConsumerOutcome(ctx, stateDir, policy, outcome))
 		})
 	})
 }
