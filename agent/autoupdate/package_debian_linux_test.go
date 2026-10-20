@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"printmaster/common/updatetrust"
 )
 
 // Test-only redirection: production arguments and tools remain unchanged.
@@ -122,7 +124,7 @@ func TestPrivilegedRepositoryPackageIsolatedDebian(t *testing.T) {
 			}
 			manifest := &UpdateManifest{Component: target.Component, Channel: target.Channel, Version: target.Version,
 				Platform: target.Platform, Arch: target.Arch, Format: target.Format, SHA256: target.SHA256, SizeBytes: target.SizeBytes}
-			_, metadataDir := runtimeTrustRepository(t, manifest, body, time.Now())
+			verifier, metadataDir := runtimeTrustRepository(t, manifest, body, time.Now())
 			server := httptest.NewServer(http.FileServer(http.Dir(metadataDir)))
 			defer server.Close()
 			state, policy := filepath.Join(dir, "state"), filepath.Join(dir, "policy.json")
@@ -147,7 +149,36 @@ func TestPrivilegedRepositoryPackageIsolatedDebian(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			got, installErr := launchRepositoryPackage(ctx, source, target, 25*time.Second, command)
+			m := lifecycleManager(t, &mockUpdateClient{}, nil)
+			m.platform, m.arch, m.packageManager, m.packageName = "linux", target.Arch, "apt", "printmaster-agent"
+			m.publisherVerifier = verifier
+			var workspace string
+			acquire := func(ctx context.Context, timeout time.Duration, dir string, _ []string, tool string, args ...string) ([]byte, error) {
+				workspace = dir
+				switch tool {
+				case "apt-get":
+					if len(args) != 2 || args[0] != "download" {
+						return nil, errors.New("fixture acquisition attempted installation")
+					}
+					return nil, os.WriteFile(filepath.Join(dir, "candidate.deb"), body, 0o600)
+				case "dpkg-deb":
+					return runPrivilegedPackageCommand(ctx, timeout, dir, nil, "/usr/bin/dpkg-deb", args...)
+				default:
+					return nil, fmt.Errorf("unexpected acquisition fixture command: %s", tool)
+				}
+			}
+			var got RepositoryPackageOutcome
+			_, installErr := m.withRepositoryPackage(ctx, manifest, acquire, func(input *os.File, authorization updatetrust.Authorization) error {
+				if authorization.Target != target {
+					return errors.New("acquisition authorization differs from native target")
+				}
+				var err error
+				got, err = launchRepositoryPackage(ctx, input, target, 25*time.Second, command)
+				return err
+			})
+			if _, err := os.Stat(workspace); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("acquisition workspace survived native transaction: %v", err)
+			}
 			wantPhase := "awaiting-startup"
 			if mode == "missing dependency" {
 				wantPhase = "recovery-required"

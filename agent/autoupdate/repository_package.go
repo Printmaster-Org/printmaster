@@ -24,6 +24,17 @@ var packageRPMRelease = regexp.MustCompile(`^1(\.[A-Za-z0-9_]+)*$`)
 // acquireRepositoryPackage only downloads and inspects. Neither repository
 // resolution nor a successful authorization grants privileged install authority.
 func (m *Manager) acquireRepositoryPackage(ctx context.Context, manifest *UpdateManifest, run repositoryCommand) (authorization updatetrust.Authorization, result error) {
+	return m.withRepositoryPackage(ctx, manifest, run, func(*os.File, updatetrust.Authorization) error { return nil })
+}
+
+// withRepositoryPackage keeps the authenticated snapshot alive through a
+// synchronous handoff. The consumer must not retain the file after returning;
+// the privileged receiver still needs its own independent authorization.
+func (m *Manager) withRepositoryPackage(ctx context.Context, manifest *UpdateManifest, run repositoryCommand,
+	consume func(*os.File, updatetrust.Authorization) error) (authorization updatetrust.Authorization, result error) {
+	if consume == nil {
+		return authorization, fmt.Errorf("repository package handoff requires a consumer")
+	}
 	verifier, ok := m.publisherVerifier.(packageFileVerifier)
 	if !ok {
 		return authorization, fmt.Errorf("%w: exact package-file verification is unavailable", ErrPublisherTrust)
@@ -117,7 +128,20 @@ func (m *Manager) acquireRepositoryPackage(ctx context.Context, manifest *Update
 	if err != nil {
 		return authorization, err
 	}
-	err = withAuthenticatedPackage(ctx, dir, file, target, verifier, func(_ string, verified updatetrust.Authorization) error {
+	err = withAuthenticatedPackage(ctx, dir, file, target, verifier, func(snapshot string, verified updatetrust.Authorization) (result error) {
+		input, err := os.Open(snapshot)
+		if err != nil {
+			return fmt.Errorf("open authenticated repository package for handoff: %w", err)
+		}
+		defer func() {
+			result = errors.Join(result, input.Close())
+		}()
+		if err := consume(input, verified); err != nil {
+			return fmt.Errorf("handoff authenticated repository package: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		authorization = verified
 		return nil
 	})
