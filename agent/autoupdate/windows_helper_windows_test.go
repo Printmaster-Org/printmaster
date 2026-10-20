@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +22,7 @@ func TestWindowsPowerShellCommandUsesBuiltinModules(t *testing.T) {
 	if err := os.MkdirAll(moduleDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+
 	if err := os.WriteFile(filepath.Join(moduleDir, "Microsoft.PowerShell.Security.psm1"),
 		[]byte("throw 'incompatible inherited module was loaded'"), 0o600); err != nil {
 		t.Fatal(err)
@@ -100,4 +103,51 @@ ConvertTo-Json -Compress @{
 			effectivePolicy = result.Policy
 		})
 	}
+}
+
+func TestDetachedWindowsHelperStartsScript(t *testing.T) {
+	const markerEnv = "PRINTMASTER_TEST_DETACHED_MARKER"
+	if marker := os.Getenv(markerEnv); marker != "" {
+		path := filepath.Join(filepath.Dir(marker), "helper.ps1")
+		script := "$ErrorActionPreference = 'Stop'\n" +
+			"$deadline = [DateTime]::UtcNow.AddSeconds(10)\n" +
+			"while (Get-Process -Id " + strconv.Itoa(os.Getpid()) + " -ErrorAction SilentlyContinue) {\n" +
+			"if ([DateTime]::UtcNow -ge $deadline) { exit 1 }; Start-Sleep -Milliseconds 100\n}\n" +
+			"[IO.File]::WriteAllText(" + psLiteral(marker) + ", 'started')"
+		if err := os.WriteFile(path, []byte(script), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := launchDetachedWindowsHelper(path); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "started")
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	child := exec.CommandContext(ctx, executable, "-test.run=^TestDetachedWindowsHelperStartsScript$", "-test.v")
+	child.Env = append(os.Environ(), markerEnv+"="+marker)
+	if output, err := child.CombinedOutput(); err != nil {
+		t.Fatalf("helper parent failed: %v\n%s", err, output)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(marker)
+		if err == nil {
+			if string(data) != "started" {
+				t.Fatalf("unexpected marker: %q", data)
+			}
+			return
+		}
+		if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("detached Windows PowerShell exited without executing the harmless helper script")
 }

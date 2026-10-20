@@ -56,8 +56,10 @@ func launchDetachedWindowsHelper(path string) error {
 		return fmt.Errorf("%w: %w", errInstallationNotStarted, err)
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP,
+		HideWindow: true,
+		// Windows PowerShell exits before running -File with DETACHED_PROCESS.
+		// CREATE_NO_WINDOW runs the independent helper without a console.
+		CreationFlags: windows.CREATE_NO_WINDOW | windows.CREATE_NEW_PROCESS_GROUP,
 	}
 	if err := cmd.Start(); err != nil {
 		return err
