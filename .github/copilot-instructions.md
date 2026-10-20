@@ -48,9 +48,12 @@ Agent (site) ──WebSocket/HTTP──▶ Server (central) ◀── Agent (sit
 # VS Code tasks (Ctrl+Shift+B): "Build: Agent (Dev)", "Test: Agent (all)", etc.
 
 # Run tests
-cd agent && go test ./... -v
-cd server && go test ./... -v
-
+.\tests.ps1                         # Go/lint/Jest/all Playwright projects
+.\tests.ps1 --skip-playwright       # Explicitly omit browsers for a focused run
+.\tests.ps1 --all --privileged      # Add Docker/docs/native/root fixtures (Unix only)
+# Unix/macOS: ./tests.sh with the same flags; --help lists prerequisites/options.
+# CI uses the same runner. Report omissions and test-level skips; a partial
+# selection is not a complete release baseline. Live installers are never enabled.
 # Release (NEVER edit VERSION files manually)
 .\release.ps1 agent patch  # Bumps version, creates tag
 ```

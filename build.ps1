@@ -366,7 +366,9 @@ function Invoke-Tests {
     Push-Location $componentDir
     
     try {
-        $testExitCode = Invoke-StreamedCommand "go test ./... -v ($Component)" { go test ./... -v }
+        $testExitCode = Invoke-StreamedCommand "shared Go tests ($Component)" {
+            node (Join-Path $ProjectRoot 'scripts\run-tests.js') --suite go --module $Component
+        }
         
         if ($testExitCode -ne 0) {
             # Colorize FAIL
@@ -411,7 +413,9 @@ function Invoke-E2ETests {
 
     try {
         # Run E2E tests (mock-based, no Docker required)
-        $testExitCode = Invoke-StreamedCommand "go test -v -count=1 ./... (e2e)" { go test -v -count=1 ./... }
+        $testExitCode = Invoke-StreamedCommand "shared mock E2E tests" {
+            node (Join-Path $ProjectRoot 'scripts\run-tests.js') --suite go --module tests
+        }
 
         if ($testExitCode -ne 0) {
             $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"
@@ -640,14 +644,11 @@ function Test-Storage {
     Push-Location (Join-Path $ProjectRoot "agent")
     
     try {
-        $testArgs = @("test", "./storage", "-v")
-        if ($VerbosePreference -eq 'Continue') {
-            $testArgs += "-count=1"  # Disable cache for verbose
-        }
+        $testArgs = @((Join-Path $ProjectRoot 'scripts\run-tests.js'), '--suite', 'go', '--module', 'agent', '--package', './storage')
         
         Write-BuildLog "Command: go $($testArgs -join ' ')"
         
-        $testOutput = & go @testArgs 2>&1
+        $testOutput = & node @testArgs 2>&1
         $testExitCode = $LASTEXITCODE
         
         # Log all output
@@ -676,20 +677,17 @@ function Test-Storage {
 }
 
 function Test-All {
-    Write-BuildLog "Running all agent tests..."
+    Write-BuildLog "Running all discovered Go module tests..."
     Write-BuildLog "Working directory: $(Get-Location)"
     
     Push-Location (Join-Path $ProjectRoot "agent")
     
     try {
-        $testArgs = @("test", "./...", "-v")
-        if ($VerbosePreference -eq 'Continue') {
-            $testArgs += "-count=1"
-        }
+        $testArgs = @((Join-Path $ProjectRoot 'scripts\run-tests.js'), '--suite', 'go')
         
         Write-BuildLog "Command: go $($testArgs -join ' ')"
         
-        $testOutput = & go @testArgs 2>&1
+        $testOutput = & node @testArgs 2>&1
         $testExitCode = $LASTEXITCODE
         
         # Log all output

@@ -23,7 +23,6 @@ services:
         VERSION: e2e-test
         BUILD_TIME: ${BUILD_TIME:-2026-01-01T00:00:00Z}
         GIT_COMMIT: ${GIT_COMMIT:-e2e-test}
-    container_name: pm-e2e-server
     hostname: server
     environment:
       # Run in HTTP-only mode (behind_proxy mode without actual proxy)
@@ -40,10 +39,10 @@ services:
       # Container detection (used by config.GetDataDirectory)
       DOCKER: "true"
     ports:
-      - "9090:9090"
+      - "127.0.0.1:${PM_E2E_SERVER_PORT:-9090}:9090"
     volumes:
       # Mount test data directory (contains seed DB)
-      - ./testdata/server:/data
+      - ${PM_E2E_DATA_ROOT:-./testdata}/server:/data
     networks:
       - e2e-net
     healthcheck:
@@ -64,7 +63,6 @@ services:
         VERSION: e2e-test
         BUILD_TIME: ${BUILD_TIME:-2026-01-01T00:00:00Z}
         GIT_COMMIT: ${GIT_COMMIT:-e2e-test}
-    container_name: pm-e2e-agent
     hostname: agent
     depends_on:
       server:
@@ -86,10 +84,10 @@ services:
       # Container detection (used by config.GetDataDirectory)
       DOCKER: "true"
     ports:
-      - "8080:8080"
+      - "127.0.0.1:${PM_E2E_AGENT_PORT:-8080}:8080"
     volumes:
       # Mount test data directory (contains seed DB)
-      - ./testdata/agent:/data
+      - ${PM_E2E_DATA_ROOT:-./testdata}/agent:/data
     networks:
       - e2e-net
     healthcheck:
@@ -113,7 +111,7 @@ services:
     working_dir: /app/tests
     environment:
       # Test configuration
-      E2E_SERVER_URL: "http://server:8443"
+      E2E_SERVER_URL: "http://server:9090"
       E2E_AGENT_URL: "http://agent:8080"
       E2E_ADMIN_PASSWORD: "e2e-test-password"
       # Run all tests, not short mode
@@ -127,13 +125,13 @@ services:
     command: >
       sh -c "
         cd /app/tests &&
-        go test ${GO_TEST_FLAGS:-'-v'} -tags=e2e ./... 2>&1 | tee results/e2e-output.log;
-        exit_code=\$?;
-        echo 'Test exit code:' \$exit_code > results/exit-code.txt;
-        exit \$exit_code
+        go test ${GO_TEST_FLAGS:-'-v'} -tags=e2e ./... > results/e2e-output.log 2>&1;
+        exit_code=$$?;
+        cat results/e2e-output.log;
+        echo 'Test exit code:' $$exit_code > results/exit-code.txt;
+        exit $$exit_code
       "
 
 networks:
   e2e-net:
     driver: bridge
-    name: pm-e2e-network

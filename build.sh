@@ -201,7 +201,7 @@ build_component() {
     if command -v staticcheck >/dev/null 2>&1; then
       staticcheck ./... 2>&1 | tee -a "$LOG_FILE"
     fi
-    go test ./... -v 2>&1 | tee -a "$LOG_FILE"
+    node "$PROJECT_ROOT/scripts/run-tests.js" --suite go --module common 2>&1 | tee -a "$LOG_FILE"
     popd >/dev/null
     return 0
   fi
@@ -304,14 +304,14 @@ build_component() {
 test_storage() {
   log "Running storage tests..."
   pushd "$PROJECT_ROOT/agent" >/dev/null
-  go test ./storage -v 2>&1 | tee -a "$LOG_FILE"
+  node "$PROJECT_ROOT/scripts/run-tests.js" --suite go --module agent --package ./storage 2>&1 | tee -a "$LOG_FILE"
   popd >/dev/null
 }
 
 test_all() {
-  log "Running all agent tests..."
+  log "Running all discovered Go module tests..."
   pushd "$PROJECT_ROOT/agent" >/dev/null
-  go test ./... -v 2>&1 | tee -a "$LOG_FILE"
+  node "$PROJECT_ROOT/scripts/run-tests.js" --suite go 2>&1 | tee -a "$LOG_FILE"
   popd >/dev/null
 }
 
