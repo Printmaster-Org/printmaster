@@ -83,7 +83,7 @@ jobs:
         working-directory: ./agent
         run: go test -v -coverprofile=coverage.out ./...
 
-      - name: Root-side package intake and isolated Debian qualification
+      - name: Root-side permissions, package intake and isolated Debian qualification
         working-directory: ./agent
         run: |
           set -euo pipefail
@@ -91,7 +91,7 @@ jobs:
           trap 'rm -f "$binary"' EXIT
           go test -c -o "$binary" ./autoupdate
           sudo -n "$binary" -test.v -test.timeout=3m \
-            '-test.run=^(TestPrivilegedRepositoryPackage|TestRootPackageTree)'
+            '-test.run=^(TestPrivilegedRepositoryPackage|TestRootPackageTree|TestInstallationProtection|TestValidateInstallPath)'
           sudo -n env PRINTMASTER_TEST_ISOLATED_DEB=1 \
             "$binary" -test.v -test.timeout=3m \
             '-test.run=^TestPrivilegedRepositoryPackageIsolatedDebian$'
@@ -101,6 +101,9 @@ jobs:
           files: ./agent/coverage.out
           flags: agent
           fail_ci_if_error: false
+
+  installer-permissions:
+    uses: ./.github/workflows/installer-permissions.yml
 
   server:
     name: Server
@@ -338,12 +341,12 @@ jobs:
   ci-passed:
     name: CI Passed
     runs-on: ubuntu-26.04
-    needs: [agent, server, javascript, e2e, e2e-docker]
+    needs: [agent, installer-permissions, server, javascript, e2e, e2e-docker]
     if: always()
     steps:
       - name: Check results
         run: |
-          if [[ "${{ needs.agent.result }}" != "success" || "${{ needs.server.result }}" != "success" || "${{ needs.javascript.result }}" != "success" || "${{ needs.e2e.result }}" != "success" || "${{ needs.e2e-docker.result }}" != "success" ]]; then
+          if [[ "${{ needs.agent.result }}" != "success" || "${{ needs.installer-permissions.result }}" != "success" || "${{ needs.server.result }}" != "success" || "${{ needs.javascript.result }}" != "success" || "${{ needs.e2e.result }}" != "success" || "${{ needs.e2e-docker.result }}" != "success" ]]; then
             echo "One or more jobs failed"
             exit 1
           fi

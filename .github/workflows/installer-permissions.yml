@@ -1,0 +1,44 @@
+name: Installer permissions
+
+on:
+  workflow_dispatch: {}
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.27.0'
+
+jobs:
+  native:
+    name: Installer permissions (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            common/go.sum
+            agent/go.sum
+      - name: Native permission and substitution checks
+        working-directory: ./agent
+        env:
+          TMPDIR: ${{ runner.os == 'macOS' && '/private/tmp' || runner.temp }}
+        run: go test -count=1 -v -timeout=5m . ./autoupdate -run '^Test(InstallationProtection|SecureUpdaterDirectories|ValidateInstallPath|WindowsUpdater|WindowsService|InstallationDescriptor|FailedInstallRecovery|PrepareWindowsServiceExecutable|ProtectWindowsServiceFile)'
+      - name: Separate macOS service and outsider identities
+        if: runner.os == 'macOS'
+        working-directory: ./agent
+        run: |
+          set -euo pipefail
+          binary="$RUNNER_TEMP/printmaster-permissions.test"
+          trap 'rm -f "$binary"' EXIT
+          go test -c -o "$binary" ./autoupdate
+          sudo -n env TMPDIR=/private/tmp "$binary" -test.v -test.timeout=3m \
+            '-test.run=^(TestInstallationProtection|TestValidateInstallPath)'

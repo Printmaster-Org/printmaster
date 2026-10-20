@@ -81,9 +81,12 @@ func checkUnixAncestors(path string) error {
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return fmt.Errorf("path ancestor is not an ordinary directory: %s", current)
 		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || (stat.Uid != 0 && stat.Uid != uint32(os.Geteuid())) {
+			return fmt.Errorf("path ancestor is not owned by a trusted identity: %s", current)
+		}
 		if info.Mode().Perm()&0o022 != 0 {
-			stat, ok := info.Sys().(*syscall.Stat_t)
-			if !ok || info.Mode()&os.ModeSticky == 0 || (stat.Uid != 0 && stat.Uid != uint32(os.Geteuid())) {
+			if info.Mode()&os.ModeSticky == 0 {
 				return fmt.Errorf("path ancestor is writable by an untrusted group or user: %s", current)
 			}
 		}

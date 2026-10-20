@@ -87,6 +87,9 @@ func secureWindowsTree(root string) error {
 			if !info.Mode().IsRegular() {
 				return fmt.Errorf("updater state contains a non-regular entry: %s", path)
 			}
+			if err := validateWindowsFileIdentity(path); err != nil {
+				return err
+			}
 		}
 		return setPrivateWindowsACL(path)
 	})
@@ -176,7 +179,29 @@ func validateInstallPath(path string) error {
 	if attributes&(windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DIRECTORY) != 0 {
 		return fmt.Errorf("installation target is not an ordinary file")
 	}
+	if err := validateWindowsFileIdentity(absPath); err != nil {
+		return err
+	}
 	return validateWindowsPathPermissions(absPath)
+}
+
+func validateWindowsFileIdentity(path string) error {
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.FILE_READ_ATTRIBUTES,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil,
+		windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(handle)
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
+		return err
+	}
+	if info.FileAttributes&(windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DIRECTORY) != 0 ||
+		info.NumberOfLinks != 1 {
+		return fmt.Errorf("updater file must be ordinary and have exactly one hard link: %s", path)
+	}
+	return nil
 }
 
 func validateWindowsPathPermissions(filePath string) error {
@@ -307,6 +332,9 @@ func secureWindowsServiceExecutable(path string) error {
 	}
 	if attributes&(windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DIRECTORY) != 0 {
 		return fmt.Errorf("windows service executable is not an ordinary file")
+	}
+	if err := validateWindowsFileIdentity(absPath); err != nil {
+		return err
 	}
 	return setPrivateWindowsACL(absPath)
 }

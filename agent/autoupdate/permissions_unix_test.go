@@ -131,3 +131,23 @@ func TestValidateInstallPathRejectsWritableParentAndTarget(t *testing.T) {
 		t.Fatal("accepted a group-writable installation target")
 	}
 }
+
+func TestValidateInstallPathRejectsForeignAncestor(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("changing directory ownership requires root")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent")
+	if err := os.WriteFile(path, []byte("root-owned binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(dir, 65534, -1); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateInstallPath(path); err == nil {
+		t.Fatal("accepted a non-writable ancestor whose foreign owner can grant itself replacement rights")
+	}
+}

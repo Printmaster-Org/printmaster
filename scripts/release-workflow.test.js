@@ -8,6 +8,32 @@ const picomatch = require('picomatch');
 const root = path.resolve(__dirname, '..');
 const workflow = fs.readFileSync(path.join(root, '.github/workflows/cd-agent.yml'), 'utf8');
 
+test('native installer permission qualification is required by the CI release gate', () => {
+    const ci = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8'));
+    const qualification = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/installer-permissions.yml'), 'utf8'));
+    const native = qualification.jobs.native;
+    expect(qualification.on).toEqual({ workflow_dispatch: {}, workflow_call: {} });
+    expect(qualification.permissions).toEqual({ contents: 'read' });
+    expect(ci.jobs['installer-permissions'].uses).toBe('./.github/workflows/installer-permissions.yml');
+    expect(native.strategy.matrix.os).toEqual(['windows-latest', 'macos-latest']);
+    expect(native.strategy['fail-fast']).toBe(false);
+    const checks = native.steps.find(step => step.name === 'Native permission and substitution checks');
+    expect(checks.run).toContain('go test -count=1');
+    expect(checks.run).toContain('InstallationProtection');
+    expect(checks.run).toContain('InstallationDescriptor');
+    expect(checks.env.TMPDIR).toContain('/private/tmp');
+    const macRoot = native.steps.find(step => step.if === "runner.os == 'macOS'");
+    expect(macRoot.run).toContain('sudo -n env TMPDIR=/private/tmp');
+    expect(macRoot.run).toContain('TestInstallationProtection');
+    const linuxRoot = ci.jobs.agent.steps.find(step => step.name?.startsWith('Root-side permissions'));
+    expect(linuxRoot.run).toContain('sudo -n "$binary"');
+    expect(linuxRoot.run).toContain('TestInstallationProtection|TestValidateInstallPath');
+    expect(ci.jobs['ci-passed'].needs).toContain('installer-permissions');
+    expect(ci.jobs['ci-passed'].steps[0].run).toContain('needs.installer-permissions.result');
+    expect(native['continue-on-error']).toBeUndefined();
+    for (const step of native.steps) expect(step['continue-on-error']).toBeUndefined();
+});
+
 test('publisher workflow is serialized, opt-in, scoped and preserves failure evidence', () => {
     const publisher = yaml.load(fs.readFileSync(path.join(root, '.github', 'workflows', 'update-publisher.yml'), 'utf8'));
     expect(publisher.on.workflow_dispatch.inputs.lane.options).toEqual(['rehearsal', 'production']);

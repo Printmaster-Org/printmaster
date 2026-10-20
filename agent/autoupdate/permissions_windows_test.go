@@ -4,6 +4,7 @@ package autoupdate
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -52,8 +53,8 @@ func TestSecureUpdaterDirectoriesRejectsReparseState(t *testing.T) {
 	if err := os.Mkdir(stateDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, filepath.Join(stateDir, stagingDirName)); err != nil {
-		t.Skipf("symlink creation unavailable: %v", err)
+	if output, err := exec.Command("cmd.exe", "/c", "mklink", "/J", filepath.Join(stateDir, stagingDirName), outside).CombinedOutput(); err != nil {
+		t.Fatalf("create disposable staging junction: %v: %s", err, output)
 	}
 	if err := SecureUpdaterDirectories(dataDir); err == nil {
 		t.Fatal("accepted updater staging reparse point")
@@ -93,5 +94,37 @@ func TestValidateInstallPathRejectsWritableAncestor(t *testing.T) {
 	}
 	if err := validateInstallPath(path); err == nil {
 		t.Fatal("accepted an installation path writable by BUILTIN\\Users")
+	}
+}
+
+func TestWindowsUpdaterRejectsHardLinks(t *testing.T) {
+	for _, mode := range []string{"install", "state", "trust"} {
+		t.Run(mode, func(t *testing.T) {
+			dataDir := t.TempDir()
+			if err := SecureUpdaterDirectories(dataDir); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dataDir, "agent.exe")
+			if mode == "state" {
+				path = filepath.Join(dataDir, updateDirName, stagingDirName, "candidate")
+			} else if mode == "trust" {
+				path = filepath.Join(dataDir, "update-trust", "metadata", "current.json")
+			}
+			if err := os.WriteFile(path, []byte("protected bytes"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Link(path, filepath.Join(t.TempDir(), "alias")); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			if mode == "install" {
+				err = validateInstallPath(path)
+			} else {
+				err = SecureUpdaterDirectories(dataDir)
+			}
+			if err == nil {
+				t.Fatal("accepted a multiply linked updater file")
+			}
+		})
 	}
 }
