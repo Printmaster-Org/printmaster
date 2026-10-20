@@ -764,17 +764,6 @@ func parseAssetName(component, version, assetName string) (artifactDescriptor, b
 	return artifactDescriptor{}, false
 }
 
-func fileExists(path string) bool {
-	if path == "" {
-		return false
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return false
-	}
-	return !info.IsDir()
-}
-
 // pruneOldArtifacts removes artifacts for versions beyond retention threshold
 func (w *IntakeWorker) pruneOldArtifacts(ctx context.Context, component string) error {
 	artifacts, err := w.store.ListArtifactsForPruning(ctx, component, w.retentionVersions)
