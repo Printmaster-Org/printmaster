@@ -51,6 +51,30 @@ func nativePackageFields(output []byte, target updatetrust.Target, installed boo
 	return fields[1], nil
 }
 
+// An empty snapshot queries only the installed package database. Recovery uses
+// this same parser and command shape instead of relying on service-user claims.
+func queryNativePackageIdentity(ctx context.Context, target updatetrust.Target, dir, snapshot string, run repositoryCommand) (string, error) {
+	installed := snapshot == ""
+	tool := "/usr/bin/dpkg-deb"
+	args := []string{"--show", "--showformat=${Package}\n${Version}\n${Architecture}\n", snapshot}
+	if installed {
+		tool = "/usr/bin/dpkg-query"
+		args = []string{"--show", "--showformat=${Package}\n${Version}\n${Architecture}\n${Status}\n", "printmaster-agent"}
+	}
+	if target.Format == "rpm" {
+		tool = "/usr/bin/rpm"
+		args = []string{"-qp", "--queryformat", "%{NAME}\n%{VERSION}\n%{ARCH}\n%{EPOCHNUM}\n%{RELEASE}\n", snapshot}
+		if installed {
+			args = []string{"-q", "--queryformat", "%{NAME}\n%{VERSION}\n%{ARCH}\n%{EPOCHNUM}\n%{RELEASE}\n", "printmaster-agent"}
+		}
+	}
+	output, err := run(ctx, 30*time.Second, dir, nil, tool, args...)
+	if err != nil {
+		return "", fmt.Errorf("inspect native package (installed=%t): %w: %s", installed, err, output)
+	}
+	return nativePackageFields(output, target, installed)
+}
+
 // consumeNativePackage is called only inside the root-owned snapshot lifetime.
 // Policy comes from trusted helper configuration, never a service-user receipt.
 // No dependency resolver, network refresh, downgrade or alternate package is used.
@@ -66,34 +90,14 @@ func consumeNativePackage(ctx context.Context, snapshot string, authorization up
 		return err
 	}
 	dir := filepath.Dir(snapshot)
-	query := func(installed bool) (string, error) {
-		tool := "/usr/bin/dpkg-deb"
-		args := []string{"--show", "--showformat=${Package}\n${Version}\n${Architecture}\n", snapshot}
-		if installed {
-			tool = "/usr/bin/dpkg-query"
-			args = []string{"--show", "--showformat=${Package}\n${Version}\n${Architecture}\n${Status}\n", "printmaster-agent"}
-		}
-		if target.Format == "rpm" {
-			tool = "/usr/bin/rpm"
-			args = []string{"-qp", "--queryformat", "%{NAME}\n%{VERSION}\n%{ARCH}\n%{EPOCHNUM}\n%{RELEASE}\n", snapshot}
-			if installed {
-				args = []string{"-q", "--queryformat", "%{NAME}\n%{VERSION}\n%{ARCH}\n%{EPOCHNUM}\n%{RELEASE}\n", "printmaster-agent"}
-			}
-		}
-		output, err := run(ctx, 30*time.Second, dir, nil, tool, args...)
-		if err != nil {
-			return "", fmt.Errorf("inspect native package (installed=%t): %w: %s", installed, err, output)
-		}
-		return nativePackageFields(output, target, installed)
-	}
-	candidate, err := query(false)
+	candidate, err := queryNativePackageIdentity(ctx, target, dir, snapshot, run)
 	if err != nil {
 		return err
 	}
 	if candidate != target.Version {
 		return fmt.Errorf("%w: authenticated package version differs from native metadata", ErrPublisherTrust)
 	}
-	current, err := query(true)
+	current, err := queryNativePackageIdentity(ctx, target, dir, "", run)
 	if err != nil {
 		return err
 	}
@@ -149,7 +153,7 @@ func consumeNativePackage(ctx context.Context, snapshot string, authorization up
 	if err != nil {
 		return fmt.Errorf("native package installation failed; inspect package database before recovery: %w: %s", err, output)
 	}
-	installed, err := query(true)
+	installed, err := queryNativePackageIdentity(ctx, target, dir, "", run)
 	if err != nil {
 		return err
 	}

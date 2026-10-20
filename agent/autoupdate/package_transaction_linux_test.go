@@ -39,6 +39,9 @@ func TestPrivilegedRepositoryPackageInspection(t *testing.T) {
 		if err == nil {
 			t.Fatal("non-root inspection accepted")
 		}
+		if _, err := AssessPrivilegedRepositoryPackage(context.Background(), dir); err == nil {
+			t.Fatal("non-root recovery assessment accepted")
+		}
 		return
 	}
 	if err != nil || !reflect.DeepEqual(got, *journal) {
@@ -48,6 +51,9 @@ func TestPrivilegedRepositoryPackageInspection(t *testing.T) {
 		if _, err := InspectPrivilegedRepositoryPackage(context.Background(), dir); err == nil {
 			t.Fatal("inspection ignored intake lock")
 		}
+		if _, err := AssessPrivilegedRepositoryPackage(context.Background(), dir); err == nil {
+			t.Fatal("recovery assessment ignored intake lock")
+		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -56,6 +62,9 @@ func TestPrivilegedRepositoryPackageInspection(t *testing.T) {
 	cancel()
 	if _, err := InspectPrivilegedRepositoryPackage(ctx, dir); err == nil {
 		t.Fatal("cancelled inspection accepted")
+	}
+	if _, err := AssessPrivilegedRepositoryPackage(ctx, dir); err == nil {
+		t.Fatal("cancelled recovery assessment accepted")
 	}
 	missing := filepath.Join(dir, "missing")
 	if _, err := InspectPrivilegedRepositoryPackage(context.Background(), missing); err == nil {
