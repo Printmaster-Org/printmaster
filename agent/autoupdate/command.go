@@ -14,9 +14,14 @@ import (
 // Package repair may still be required after interruption; a deadline is not
 // a substitute for an independent installer/recovery transaction.
 func (m *Manager) runUpdateCommand(timeout time.Duration, env []string, name string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return m.runUpdateCommandIn(context.Background(), timeout, "", env, name, args...)
+}
+
+func (m *Manager) runUpdateCommandIn(parent context.Context, timeout time.Duration, dir string, env []string, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), env...)
 	cmd.WaitDelay = 5 * time.Second
 	configureUpdateCommand(cmd)

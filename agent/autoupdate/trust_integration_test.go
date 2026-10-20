@@ -44,6 +44,9 @@ func runtimeTrustRepository(t *testing.T, manifest *UpdateManifest, artifact []b
 	target := updatetrust.Target{Component: manifest.Component, Channel: manifest.Channel,
 		Version: manifest.Version, Platform: manifest.Platform, Arch: manifest.Arch,
 		Format: "binary", SHA256: manifest.SHA256, SizeBytes: manifest.SizeBytes}
+	if manifest.Format != "" {
+		target.Format = manifest.Format
+	}
 	if err := updatetrust.Publish(updatetrust.PublishOptions{
 		Directory: directory, Root: root, Keys: keys, Now: publishedAt,
 		Targets: append(earlier, updatetrust.PublishTarget{Target: target, File: file}),

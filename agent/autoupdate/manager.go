@@ -897,11 +897,15 @@ func validateManifestFormat(manifest *UpdateManifest, requested updatepolicy.Art
 }
 
 // A verified discovery binary does not authenticate repository packages.
-// Keep every package handoff blocked until authenticated package delivery exists.
+// Acquire/authenticate the package, but keep installation blocked until a
+// privileged consumer can independently verify and protect those exact bytes.
 func (m *Manager) executeUpdateViaPackageManager(ctx context.Context, manifest *UpdateManifest) error {
-	err := fmt.Errorf("%w: %s package delivery is not yet publisher-authenticated; unattended update blocked",
-		ErrPublisherTrust, m.packageManager)
-	m.logWarn("Blocked unauthenticated package update", "package_manager", m.packageManager, "error", err)
+	_, err := m.acquireRepositoryPackage(ctx, manifest, m.runUpdateCommandIn)
+	if err == nil {
+		err = fmt.Errorf("%w: exact repository package authenticated, but protected privileged installation is not yet available; unattended update blocked", ErrPublisherTrust)
+	}
+	m.logWarn("Blocked repository package installation", "package_manager", m.packageManager, "error", err)
+	m.setStatusWithError(StatusFailed, ErrCodeManifestError, err.Error())
 	m.reportTelemetry(ctx, StatusFailed, ErrCodeManifestError, err.Error())
 	return err
 }
