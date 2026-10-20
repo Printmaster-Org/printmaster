@@ -1,7 +1,7 @@
 const { test, expect } = require('@playwright/test');
 const path = require('path');
 
-test('table values truncate without covering copy controls and copy the full value', async ({ page }) => {
+test.beforeEach(async ({ page }) => {
     await page.setContent('<table class="simple-table"><tbody><tr></tr></tbody></table>');
     await page.addStyleTag({ path: path.resolve(__dirname, '../../shared.css') });
     await page.addStyleTag({ path: path.resolve(__dirname, '../../../../server/web/style.css') });
@@ -22,10 +22,14 @@ test('table values truncate without covering copy controls and copy the full val
         ].map(value => `<td>${value}</td>`).join('');
     });
 
-    // Font metrics differ between OSes (CI runs Linux); the wide font pass approximates DejaVu Sans.
-    const fonts = ['', '"DejaVu Sans", Verdana, sans-serif'];
-    const widths = [140, 180, 240];
-    for (const [font, width] of fonts.flatMap(font => widths.map(width => [font, width]))) {
+});
+
+// Keep each geometry case within its own action budget on slower browser engines.
+// The wide font approximates Linux CI metrics.
+const fonts = ['', '"DejaVu Sans", Verdana, sans-serif'];
+const widths = [140, 180, 240];
+for (const [font, width] of fonts.flatMap(font => widths.map(width => [font, width]))) {
+    test(`table values truncate and copy the full value at ${width}px with ${font || 'default font'}`, async ({ page }) => {
         await page.locator('table').evaluate((table, { width, font }) => {
             table.style.minWidth = '0';
             table.style.width = `${width * 4}px`;
@@ -63,5 +67,5 @@ test('table values truncate without covering copy controls and copy the full val
             await button.click();
             await expect.poll(() => page.evaluate(() => window.copiedValues.at(-1))).toBe(fullValue);
         }
-    }
-});
+    });
+}
