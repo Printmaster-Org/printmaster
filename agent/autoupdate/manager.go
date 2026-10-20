@@ -1128,11 +1128,11 @@ func (m *Manager) launchWindowsUpdateHelper(descriptor InstallationDescriptor, u
 		return fmt.Errorf("inspect update helper: %w", err)
 	}
 
-	if m.launchHelperFn != nil {
-		if err := m.launchHelperFn(helperPath); err != nil {
-			return fmt.Errorf("launch update helper: %w", err)
-		}
-	} else if err := launchDetachedWindowsHelper(helperPath); err != nil {
+	launch := m.launchHelperFn
+	if launch == nil {
+		launch = launchDetachedWindowsHelper
+	}
+	if err := launch(helperPath); err != nil {
 		return fmt.Errorf("launch update helper: %w", err)
 	}
 	m.logInfo("Update helper launched", "helper_path", helperPath, "outcome_path", resultPath,

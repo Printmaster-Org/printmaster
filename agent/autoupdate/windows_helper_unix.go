@@ -5,5 +5,5 @@ package autoupdate
 import "fmt"
 
 func launchDetachedWindowsHelper(string) error {
-	return fmt.Errorf("Windows update helpers are unavailable on this platform")
+	return fmt.Errorf("windows update helpers are unavailable on this platform")
 }
