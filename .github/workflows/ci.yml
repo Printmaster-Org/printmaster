@@ -83,7 +83,7 @@ jobs:
         working-directory: ./agent
         run: go test -v -coverprofile=coverage.out ./...
 
-      - name: Root-side package intake isolation
+      - name: Root-side package intake and journal isolation
         working-directory: ./agent
         run: |
           set -euo pipefail

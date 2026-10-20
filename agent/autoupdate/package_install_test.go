@@ -21,7 +21,7 @@ func TestNativePackageConsumerEnforcesPolicyAndExactFile(t *testing.T) {
 	for _, format := range []string{"deb", "rpm"} {
 		t.Run(format, func(t *testing.T) {
 			t.Parallel()
-			for _, mode := range []string{"valid", "valid exact pin", "valid major override", "valid minor override", "downgrade", "equal", "invalid pin", "invalid strategy", "major pin", "minor pin", "patch pin", "exact pin", "policy failure", "abort", "tampered", "cancelled", "query failure", "wrong name", "wrong version", "wrong arch", "wrong epoch", "wrong release", "broken installed", "install failure", "wrong post version", "post query failure", "missing policy"} {
+			for _, mode := range []string{"valid", "valid exact pin", "valid major override", "valid minor override", "downgrade", "equal", "invalid pin", "invalid strategy", "major pin", "minor pin", "patch pin", "exact pin", "policy failure", "abort", "tampered", "cancelled", "query failure", "wrong name", "wrong version", "wrong arch", "wrong epoch", "wrong release", "broken installed", "install failure", "wrong post version", "post query failure", "missing policy", "intent failure", "outcome failure", "missing journal", "cancel during install", "install and journal failure"} {
 				t.Run(mode, func(t *testing.T) {
 					dir := t.TempDir()
 					path := filepath.Join(dir, "printmaster-agent."+format)
@@ -87,12 +87,17 @@ func TestNativePackageConsumerEnforcesPolicyAndExactFile(t *testing.T) {
 						policy = nil
 					}
 					calls, installs := 0, 0
+					var phases []string
+					installError := errors.New("native installer failed")
 					run := func(ctx context.Context, timeout time.Duration, gotDir string, env []string, name string, args ...string) ([]byte, error) {
 						calls++
 						if gotDir != dir || len(env) != 0 || !strings.HasPrefix(name, "/usr/bin/") {
 							t.Fatalf("unsafe command context: %s %s %v", gotDir, name, env)
 						}
 						if calls == 3 {
+							if !reflect.DeepEqual(phases, []string{"installing"}) {
+								t.Fatalf("installer ran without durable intent: %v", phases)
+							}
 							installs++
 							wantTool, wantArgs := "/usr/bin/dpkg", []string{"--refuse-downgrade", "--install", "--", path}
 							if format == "rpm" {
@@ -101,8 +106,12 @@ func TestNativePackageConsumerEnforcesPolicyAndExactFile(t *testing.T) {
 							if name != wantTool || !reflect.DeepEqual(args, wantArgs) || timeout != 10*time.Minute {
 								t.Fatalf("not an exact local-file install: %s %v", name, args)
 							}
-							if mode == "install failure" {
-								return []byte("dependency missing"), errors.New("native installer failed")
+							if mode == "install failure" || mode == "install and journal failure" {
+								return []byte("dependency missing"), installError
+							}
+							if mode == "cancel during install" {
+								cancel()
+								return nil, ctx.Err()
 							}
 							return nil, nil
 						}
@@ -178,17 +187,51 @@ func TestNativePackageConsumerEnforcesPolicyAndExactFile(t *testing.T) {
 						}
 						return []byte(strings.Join(fields, "\n") + "\n"), nil
 					}
-					err := consumeNativePackage(ctx, path, updatetrust.Authorization{Target: target}, policy, run)
+					journalError := errors.New("journal unavailable")
+					record := func(previous, phase string) error {
+						if previous != current {
+							t.Fatalf("wrong previous version recorded: %s", previous)
+						}
+						phases = append(phases, phase)
+						if mode == "intent failure" || mode == "outcome failure" && phase == "awaiting-startup" ||
+							mode == "install and journal failure" && phase == "recovery-required" {
+							return journalError
+						}
+						return nil
+					}
+					if mode == "missing journal" {
+						record = nil
+					}
+					err := consumeNativePackage(ctx, path, updatetrust.Authorization{Target: target}, policy, run, record)
 					valid := strings.HasPrefix(mode, "valid")
 					if (err == nil) != valid {
 						t.Fatalf("unexpected native result: %v", err)
 					}
 					wantInstalls := 0
-					if valid || mode == "install failure" || mode == "wrong post version" || mode == "post query failure" {
+					if valid || mode == "install failure" || mode == "wrong post version" || mode == "post query failure" || mode == "outcome failure" || mode == "cancel during install" || mode == "install and journal failure" {
 						wantInstalls = 1
 					}
 					if installs != wantInstalls {
 						t.Fatalf("install count=%d want=%d error=%v", installs, wantInstalls, err)
+					}
+					var wantPhases []string
+					if wantInstalls == 1 {
+						outcome := "awaiting-startup"
+						if mode == "install failure" || mode == "wrong post version" || mode == "post query failure" || mode == "cancel during install" || mode == "install and journal failure" {
+							outcome = "recovery-required"
+						}
+						wantPhases = []string{"installing", outcome}
+					} else if mode == "intent failure" {
+						wantPhases = []string{"installing"}
+					}
+					if !reflect.DeepEqual(phases, wantPhases) {
+						t.Fatalf("wrong journal sequence: %v want %v", phases, wantPhases)
+					}
+					if (mode == "intent failure" || mode == "outcome failure" || mode == "install and journal failure") && !errors.Is(err, journalError) {
+						t.Fatalf("journal error lost: %v", err)
+					}
+					if (mode == "install failure" || mode == "install and journal failure") && !errors.Is(err, installError) {
+						t.Fatalf("native installer error lost: %v", err)
 					}
 				})
 			}

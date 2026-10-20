@@ -2,6 +2,7 @@ package autoupdate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -54,9 +55,9 @@ func nativePackageFields(output []byte, target updatetrust.Target, installed boo
 // Policy comes from trusted helper configuration, never a service-user receipt.
 // No dependency resolver, network refresh, downgrade or alternate package is used.
 func consumeNativePackage(ctx context.Context, snapshot string, authorization updatetrust.Authorization,
-	policy func() (updatepolicy.PolicySpec, error), run repositoryCommand) error {
+	policy func() (updatepolicy.PolicySpec, error), run repositoryCommand, record func(string, string) error) (result error) {
 	target := authorization.Target
-	if policy == nil || target.Component != "agent" || target.Platform != "linux" || target.Channel != "stable" ||
+	if policy == nil || record == nil || target.Component != "agent" || target.Platform != "linux" || target.Channel != "stable" ||
 		!stablePackageVersion.MatchString(target.Version) || !filepath.IsAbs(snapshot) ||
 		filepath.Ext(snapshot) != "."+target.Format {
 		return fmt.Errorf("%w: invalid native package installation request", ErrPublisherTrust)
@@ -127,6 +128,19 @@ func consumeNativePackage(ctx context.Context, snapshot string, authorization up
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := record(current, "installing"); err != nil {
+		return fmt.Errorf("persist native installation intent before modification: %w", err)
+	}
+	verified := false
+	defer func() {
+		phase := "recovery-required"
+		if verified {
+			phase = "awaiting-startup"
+		}
+		if err := record(current, phase); err != nil {
+			result = errors.Join(result, fmt.Errorf("persist native installation outcome; recovery inspection required: %w", err))
+		}
+	}()
 	tool, args := "/usr/bin/dpkg", []string{"--refuse-downgrade", "--install", "--", snapshot}
 	if target.Format == "rpm" {
 		tool, args = "/usr/bin/rpm", []string{"--upgrade", "--", snapshot}
@@ -142,6 +156,7 @@ func consumeNativePackage(ctx context.Context, snapshot string, authorization up
 	if installed != candidate {
 		return fmt.Errorf("native installer returned success but installed version is %q, expected %q", installed, candidate)
 	}
+	verified = true
 	return nil
 }
 

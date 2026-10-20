@@ -22,11 +22,19 @@ import (
 // trusted helper, not an externally callable CLI. All configuration and policy
 // sources must be root-controlled. It does not resolve missing dependencies or
 // restart/reconcile the Agent; the automatic update entrypoint stays disabled.
+// A nil error means only native database validation, not Agent startup success.
 func InstallPrivilegedRepositoryPackage(ctx context.Context, root []byte, metadataURL, stateDir string,
 	source *os.File, target updatetrust.Target, policy func() (updatepolicy.PolicySpec, error)) error {
 	return WithPrivilegedRepositoryPackage(ctx, root, metadataURL, stateDir, source, target,
 		func(snapshot string, authorization updatetrust.Authorization) error {
-			return consumeNativePackage(ctx, snapshot, authorization, policy, runPrivilegedPackageCommand)
+			journal, err := newPackageTransaction(stateDir, authorization.Target)
+			if err != nil {
+				return err
+			}
+			if err := consumeNativePackage(ctx, snapshot, authorization, policy, runPrivilegedPackageCommand, journal.record); err != nil {
+				return fmt.Errorf("native package run %s (%s): %w", journal.RunID, journal.Phase, err)
+			}
+			return nil
 		})
 }
 
