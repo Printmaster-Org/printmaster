@@ -2,6 +2,7 @@ package autoupdate
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -26,16 +27,20 @@ import (
 func InstallPrivilegedRepositoryPackage(ctx context.Context, root []byte, metadataURL, stateDir string,
 	source *os.File, target updatetrust.Target, policy func() (updatepolicy.PolicySpec, error)) error {
 	return WithPrivilegedRepositoryPackage(ctx, root, metadataURL, stateDir, source, target,
-		func(snapshot string, authorization updatetrust.Authorization) error {
-			journal, err := newPackageTransaction(stateDir, authorization.Target)
-			if err != nil {
-				return err
-			}
-			if err := consumeNativePackage(ctx, snapshot, authorization, policy, runPrivilegedPackageCommand, journal.record); err != nil {
-				return fmt.Errorf("native package run %s (%s): %w", journal.RunID, journal.Phase, err)
-			}
-			return nil
-		})
+		nativePackageConsumer(ctx, stateDir, policy))
+}
+
+func nativePackageConsumer(ctx context.Context, stateDir string, policy func() (updatepolicy.PolicySpec, error)) func(string, updatetrust.Authorization) error {
+	return func(snapshot string, authorization updatetrust.Authorization) error {
+		journal, err := newPackageTransaction(stateDir, authorization.Target)
+		if err != nil {
+			return err
+		}
+		if err := consumeNativePackage(ctx, snapshot, authorization, policy, runPrivilegedPackageCommand, journal.record); err != nil {
+			return fmt.Errorf("native package run %s (%s): %w", journal.RunID, journal.Phase, err)
+		}
+		return nil
+	}
 }
 
 func runPrivilegedPackageCommand(parent context.Context, timeout time.Duration, dir string, _ []string, name string, args ...string) ([]byte, error) {
@@ -76,21 +81,32 @@ func WithPrivilegedRepositoryPackage(ctx context.Context, root []byte, metadataU
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("repository package handoff requires root")
 	}
-	if target.Component != "agent" || target.Platform != "linux" || target.Channel != "stable" ||
-		target.Arch != runtime.GOARCH || !stablePackageVersion.MatchString(target.Version) ||
-		(target.Format != "deb" && target.Format != "rpm") || target.SizeBytes <= 0 ||
-		target.SizeBytes > maxRepositoryPackageSize || source == nil || consume == nil {
+	if !validPrivilegedPackageTarget(target) || source == nil || consume == nil {
 		return fmt.Errorf("%w: invalid privileged package identity", ErrPublisherTrust)
 	}
 	return withRootPackageState(stateDir, true, func() error {
-		verifier, err := updatetrust.NewClient(updatetrust.Options{
-			TrustedRoot: root, MetadataURL: metadataURL, CacheDir: filepath.Join(stateDir, "metadata"),
-		})
-		if err != nil {
-			return fmt.Errorf("initialize independent privileged publisher trust: %w", err)
-		}
-		return withAuthenticatedPackage(ctx, stateDir, source, target, verifier, consume)
+		return authenticateRootPackage(ctx, root, metadataURL, stateDir, source, target, consume)
 	})
+}
+
+func validPrivilegedPackageTarget(target updatetrust.Target) bool {
+	digest, err := hex.DecodeString(target.SHA256)
+	return err == nil && len(digest) == 32 && target.SHA256 == hex.EncodeToString(digest) &&
+		target.Component == "agent" && target.Platform == "linux" && target.Channel == "stable" &&
+		target.Arch == runtime.GOARCH && stablePackageVersion.MatchString(target.Version) &&
+		(target.Format == "deb" || target.Format == "rpm") && target.SizeBytes > 0 &&
+		target.SizeBytes <= maxRepositoryPackageSize
+}
+
+func authenticateRootPackage(ctx context.Context, root []byte, metadataURL, stateDir string, source *os.File,
+	target updatetrust.Target, consume func(string, updatetrust.Authorization) error) error {
+	verifier, err := updatetrust.NewClient(updatetrust.Options{
+		TrustedRoot: root, MetadataURL: metadataURL, CacheDir: filepath.Join(stateDir, "metadata"),
+	})
+	if err != nil {
+		return fmt.Errorf("initialize independent privileged publisher trust: %w", err)
+	}
+	return withAuthenticatedPackage(ctx, stateDir, source, target, verifier, consume)
 }
 
 // Inspection and installation share one lock, but inspection never creates a
