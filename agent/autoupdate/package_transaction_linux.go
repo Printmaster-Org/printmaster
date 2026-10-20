@@ -1,13 +1,17 @@
 package autoupdate
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"printmaster/common/updatetrust"
@@ -15,7 +19,9 @@ import (
 
 const packageTransactionFile = "native-transaction.json"
 
-type packageTransaction struct {
+// RepositoryPackageTransaction is root-owned native installation evidence.
+// Inspection is not authorization to retry, clear or roll back this run.
+type RepositoryPackageTransaction struct {
 	Schema          int                `json:"schema"`
 	RunID           string             `json:"run_id"`
 	Target          updatetrust.Target `json:"target"`
@@ -26,9 +32,75 @@ type packageTransaction struct {
 	path            string
 }
 
+// InspectPrivilegedRepositoryPackage reads existing evidence offline under the
+// intake lock. The state directory comes from trusted helper configuration.
+func InspectPrivilegedRepositoryPackage(ctx context.Context, stateDir string) (RepositoryPackageTransaction, error) {
+	var transaction RepositoryPackageTransaction
+	err := withRootPackageState(stateDir, false, func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var err error
+		transaction, err = readPackageTransaction(stateDir)
+		return err
+	})
+	if err != nil {
+		return RepositoryPackageTransaction{}, err
+	}
+	return transaction, nil
+}
+
+func readPackageTransaction(stateDir string) (transaction RepositoryPackageTransaction, result error) {
+	path := filepath.Join(stateDir, packageTransactionFile)
+	file, err := os.Open(path)
+	if err != nil {
+		return transaction, fmt.Errorf("open native package transaction: %w", err)
+	}
+	defer func() { result = errors.Join(result, file.Close()) }()
+	const limit = 16 * 1024
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return transaction, fmt.Errorf("read native package transaction: %w", err)
+	}
+	if len(data) > limit {
+		return transaction, fmt.Errorf("native package transaction exceeds %d bytes", limit)
+	}
+	if err := json.Unmarshal(data, &transaction); err != nil {
+		return transaction, fmt.Errorf("decode native package transaction: %w", err)
+	}
+	// Records are machine-written canonical JSON. Reject unknown/duplicate
+	// fields and hand-edited ambiguous evidence rather than guessing intent.
+	canonical, err := json.Marshal(transaction)
+	if err != nil || !bytes.Equal(data, canonical) {
+		return transaction, fmt.Errorf("native package transaction is not canonical")
+	}
+	id, idErr := hex.DecodeString(transaction.RunID)
+	digest, digestErr := hex.DecodeString(transaction.Target.SHA256)
+	target := transaction.Target
+	current, currentErr := parseSemverVersion(transaction.PreviousVersion)
+	candidate, candidateErr := parseSemverVersion(target.Version)
+	if transaction.Schema != 1 || idErr != nil || len(id) != 16 || hex.EncodeToString(id) != transaction.RunID ||
+		digestErr != nil || len(digest) != 32 || hex.EncodeToString(digest) != target.SHA256 ||
+		target.Component != "agent" || target.Channel != "stable" || target.Platform != "linux" ||
+		target.Arch != runtime.GOARCH || (target.Format != "deb" && target.Format != "rpm") ||
+		target.SizeBytes <= 0 || target.SizeBytes > maxRepositoryPackageSize ||
+		!stablePackageVersion.MatchString(target.Version) || !stablePackageVersion.MatchString(transaction.PreviousVersion) ||
+		currentErr != nil || candidateErr != nil || !candidate.GreaterThan(current) ||
+		transaction.StartedAt.IsZero() || transaction.UpdatedAt.Before(transaction.StartedAt) {
+		return transaction, fmt.Errorf("native package transaction identity or ordering is invalid")
+	}
+	switch transaction.Phase {
+	case "installing", "awaiting-startup", "recovery-required":
+	default:
+		return transaction, fmt.Errorf("unknown native package transaction phase %q", transaction.Phase)
+	}
+	transaction.path = path
+	return transaction, nil
+}
+
 // The caller holds the root intake lock for this entire transaction. Existing
 // records, even malformed ones, require explicit reconciliation, never replay.
-func newPackageTransaction(stateDir string, target updatetrust.Target) (*packageTransaction, error) {
+func newPackageTransaction(stateDir string, target updatetrust.Target) (*RepositoryPackageTransaction, error) {
 	path := filepath.Join(stateDir, packageTransactionFile)
 	if _, err := os.Lstat(path); err == nil {
 		return nil, fmt.Errorf("native package transaction requires reconciliation before another install: %s", path)
@@ -39,10 +111,10 @@ func newPackageTransaction(stateDir string, target updatetrust.Target) (*package
 	if _, err := rand.Read(id[:]); err != nil {
 		return nil, fmt.Errorf("create native transaction identifier: %w", err)
 	}
-	return &packageTransaction{Schema: 1, RunID: hex.EncodeToString(id[:]), Target: target, path: path}, nil
+	return &RepositoryPackageTransaction{Schema: 1, RunID: hex.EncodeToString(id[:]), Target: target, path: path}, nil
 }
 
-func (j *packageTransaction) record(previous, phase string) error {
+func (j *RepositoryPackageTransaction) record(previous, phase string) error {
 	switch phase {
 	case "installing":
 		if j.Phase != "" || !stablePackageVersion.MatchString(previous) {

@@ -82,6 +82,23 @@ func WithPrivilegedRepositoryPackage(ctx context.Context, root []byte, metadataU
 		target.SizeBytes > maxRepositoryPackageSize || source == nil || consume == nil {
 		return fmt.Errorf("%w: invalid privileged package identity", ErrPublisherTrust)
 	}
+	return withRootPackageState(stateDir, true, func() error {
+		verifier, err := updatetrust.NewClient(updatetrust.Options{
+			TrustedRoot: root, MetadataURL: metadataURL, CacheDir: filepath.Join(stateDir, "metadata"),
+		})
+		if err != nil {
+			return fmt.Errorf("initialize independent privileged publisher trust: %w", err)
+		}
+		return withAuthenticatedPackage(ctx, stateDir, source, target, verifier, consume)
+	})
+}
+
+// Inspection and installation share one lock, but inspection never creates a
+// state tree or initializes publisher trust over missing/corrupt state.
+func withRootPackageState(stateDir string, create bool, consume func() error) (result error) {
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("repository package state access requires root")
+	}
 	if !filepath.IsAbs(stateDir) || filepath.Clean(stateDir) != stateDir || filepath.Dir(stateDir) == stateDir {
 		return fmt.Errorf("privileged package state must be a dedicated absolute directory")
 	}
@@ -90,8 +107,10 @@ func WithPrivilegedRepositoryPackage(ctx context.Context, root []byte, metadataU
 	if err := checkRootPackageAncestors(filepath.Dir(stateDir)); err != nil {
 		return err
 	}
-	if err := os.Mkdir(stateDir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
-		return fmt.Errorf("create privileged package state: %w", err)
+	if create {
+		if err := os.Mkdir(stateDir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("create privileged package state: %w", err)
+		}
 	}
 	if err := checkRootPackageTree(stateDir); err != nil {
 		return err
@@ -104,15 +123,7 @@ func WithPrivilegedRepositoryPackage(ctx context.Context, root []byte, metadataU
 	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		return fmt.Errorf("another privileged package handoff holds the lock: %w", err)
 	}
-	// Closing the descriptor releases the OS lock, including after process exit.
-	// Keep metadata and its sibling integrity record exclusively root-owned.
-	verifier, err := updatetrust.NewClient(updatetrust.Options{
-		TrustedRoot: root, MetadataURL: metadataURL, CacheDir: filepath.Join(stateDir, "metadata"),
-	})
-	if err != nil {
-		return fmt.Errorf("initialize independent privileged publisher trust: %w", err)
-	}
-	return withAuthenticatedPackage(ctx, stateDir, source, target, verifier, consume)
+	return consume()
 }
 
 func checkRootPackageAncestors(path string) error {
