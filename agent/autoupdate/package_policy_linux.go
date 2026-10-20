@@ -40,40 +40,47 @@ func InstallPrivilegedRepositoryPackageFromPolicyFile(ctx context.Context, root 
 }
 
 func readRootPackagePolicy(path string) (spec updatepolicy.PolicySpec, result error) {
+	data, err := readRootPackageConfiguration(path, 4096)
+	if err != nil {
+		return spec, err
+	}
+	return decodeRootPackagePolicy(data)
+}
+
+func readRootPackageConfiguration(path string, limit int64) (data []byte, result error) {
 	if os.Geteuid() != 0 {
-		return spec, fmt.Errorf("native package policy access requires root")
+		return nil, fmt.Errorf("native package configuration access requires root")
 	}
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
-		return spec, fmt.Errorf("native package policy requires a clean absolute path")
+		return nil, fmt.Errorf("native package configuration requires a clean absolute path")
 	}
 	if err := checkRootPackageAncestors(filepath.Dir(path)); err != nil {
-		return spec, err
+		return nil, err
 	}
 	// NONBLOCK prevents a substituted FIFO from blocking inspection; NOFOLLOW
 	// rejects final symlinks, and descriptor checks bind ownership to the read.
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
-		return spec, fmt.Errorf("open root package policy: %w", err)
+		return nil, fmt.Errorf("open root package configuration: %w", err)
 	}
 	file := os.NewFile(uintptr(fd), path)
 	defer func() { result = errors.Join(result, file.Close()) }()
 	info, err := file.Stat()
 	if err != nil {
-		return spec, err
+		return nil, err
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || stat.Uid != 0 || stat.Nlink != 1 || !info.Mode().IsRegular() || info.Mode().Perm()&0o133 != 0 {
-		return spec, fmt.Errorf("native package policy must be an ordinary root-owned non-executable file without group/other write access")
+		return nil, fmt.Errorf("native package configuration must be an ordinary root-owned non-executable file without group/other write access")
 	}
-	const limit = 4096
-	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	data, err = io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
-		return spec, fmt.Errorf("read root package policy: %w", err)
+		return nil, fmt.Errorf("read root package configuration: %w", err)
 	}
-	if len(data) > limit {
-		return spec, fmt.Errorf("native package policy exceeds %d bytes", limit)
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("native package configuration exceeds %d bytes", limit)
 	}
-	return decodeRootPackagePolicy(data)
+	return data, nil
 }
 
 func decodeRootPackagePolicy(data []byte) (updatepolicy.PolicySpec, error) {
