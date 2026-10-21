@@ -8,6 +8,18 @@ const picomatch = require('picomatch');
 const root = path.resolve(__dirname, '..');
 const workflow = fs.readFileSync(path.join(root, '.github/workflows/cd-agent.yml'), 'utf8');
 
+test('Agent MSI includes old-product removal in rollback and native service control for repair', () => {
+    const source = fs.readFileSync(path.join(root, 'build/windows/msi/printmaster-agent.wxs'), 'utf8');
+    expect(source).toMatch(/<MajorUpgrade\b[^>]*Schedule="afterInstallInitialize"/);
+    expect(source).toMatch(/<ServiceControl\b[^>]*Name="PrintMasterAgent"[^>]*Stop="both"[^>]*Start="install"[^>]*Wait="yes"/);
+    expect(source).not.toMatch(/CustomAction Id="(?:StartServiceFreshInstall|StartServiceAfterUpgrade|StopService)"/);
+    expect(source).toContain('NOT Installed AND NOT WIX_UPGRADE_DETECTED');
+    expect(source).toContain('REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE');
+    const detection = fs.readFileSync(path.join(root, 'agent/autoupdate/msi_windows.go'), 'utf8');
+    expect(detection).toContain(source.match(/UpgradeCode="([^"]+)"/)[1]);
+    expect(detection).toContain(source.match(/Id="AgentBinaryComponent" Guid="([^"]+)"/)[1]);
+});
+
 test('native installer permission qualification is required by the CI release gate', () => {
     const ci = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8'));
     const qualification = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/installer-permissions.yml'), 'utf8'));

@@ -15,6 +15,7 @@
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
     <MajorUpgrade AllowDowngrades="no"
                   AllowSameVersionUpgrades="yes"
+                  Schedule="afterInstallInitialize"
                   DowngradeErrorMessage="A newer version of PrintMaster Agent is already installed." />
 
     <Property Id="ARPNOMODIFY" Value="1" />
@@ -28,24 +29,6 @@
                   Execute="deferred"
                   Impersonate="no"
                   Return="check" />
-    <CustomAction Id="StartServiceFreshInstall"
-                  FileKey="AgentBinaryFile"
-                  ExeCommand="--service start --quiet"
-                  Execute="deferred"
-                  Impersonate="no"
-                  Return="ignore" />
-    <CustomAction Id="StartServiceAfterUpgrade"
-                  FileKey="AgentBinaryFile"
-                  ExeCommand="--service start --quiet"
-                  Execute="deferred"
-                  Impersonate="no"
-                  Return="ignore" />
-    <CustomAction Id="StopService"
-                  FileKey="AgentBinaryFile"
-                  ExeCommand="--service stop --quiet"
-                  Execute="deferred"
-                  Impersonate="no"
-                  Return="ignore" />
     <CustomAction Id="UninstallService"
                   FileKey="AgentBinaryFile"
                   ExeCommand="--service uninstall --quiet"
@@ -55,13 +38,8 @@
 
     <!-- WIX_UPGRADE_DETECTED is set when upgrading from an older version -->
     <InstallExecuteSequence>
-      <!-- Stop service early in deferred execution (after InstallInitialize, before file changes) -->
-      <Custom Action="StopService" After="InstallInitialize">Installed OR WIX_UPGRADE_DETECTED</Custom>
-      <!-- Fresh install: install and start service -->
+      <!-- Native ServiceControl owns stop/start, including repair and rollback. -->
       <Custom Action="InstallService" After="InstallFiles">NOT Installed AND NOT WIX_UPGRADE_DETECTED</Custom>
-      <Custom Action="StartServiceFreshInstall" After="InstallService">NOT Installed AND NOT WIX_UPGRADE_DETECTED</Custom>
-      <!-- Upgrade: just start service (it's already installed) -->
-      <Custom Action="StartServiceAfterUpgrade" After="InstallFiles">WIX_UPGRADE_DETECTED</Custom>
       <!-- Uninstall: remove service before removing files -->
       <Custom Action="UninstallService" Before="RemoveFiles">REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
     </InstallExecuteSequence>
@@ -72,6 +50,8 @@
           <Directory Id="INSTALLDIR" Name="Agent">
             <Component Id="AgentBinaryComponent" Guid="{6D585077-C1D7-40DC-87AA-02A7821C4DF1}" Win64="yes">
               <File Id="AgentBinaryFile" Name="printmaster-agent.exe" Source="$(var.AgentBinaryPath)" KeyPath="yes" Checksum="yes" />
+              <ServiceControl Id="AgentServiceControl" Name="PrintMasterAgent"
+                              Stop="both" Start="install" Wait="yes" />
             </Component>
             <Directory Id="AgentConfigDir" Name="config">
               <Component Id="BootstrapFiles" Guid="{922F880F-C6B6-4A07-82E1-50D5E9971AC2}" Win64="yes">
