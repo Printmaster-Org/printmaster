@@ -28,7 +28,8 @@ test.each([
     ['--typo'], ['--suite'], ['--workers=0'], ['--workers=1x'],
     ['--suite=unknown'], ['--module=missing'], ['--all', '--suite=go'],
     ['--suite=privileged'], ['--coverage=true'], ['--suite=go', '--skip-go'],
-    ['--package=../agent'], ['--package=./../agent'], ['--keep-going=true']
+    ['--package=../agent'], ['--package=./../agent'], ['--keep-going=true'],
+    ['--shard=0/3'], ['--shard=4/3'], ['--shard=1'], ['--shard=1/0']
 ])('rejects invalid input without running anything: %j', (...args) => {
     expect(() => parseArgs(args)).toThrow();
 });
@@ -64,10 +65,11 @@ test('Go is uncached with an explicit timeout, module selection and separate cov
 
 test('Playwright always builds both binaries and runs the full matrix without retries', () => {
     const execute = jest.fn(() => ({ status: 0 }));
-    expect(new Runner(parseArgs(['--suite=playwright', '--workers=1']), execute).run()).toBe(0);
+    expect(new Runner(parseArgs(['--suite=playwright', '--workers=1', '--shard=2/3']), execute).run()).toBe(0);
     expect(execute.mock.calls.slice(0, 2).map(call => call[1][0])).toEqual(['build', 'build']);
     const browser = execute.mock.calls[2];
     expect(browser[1]).toContain('--retries=0');
+    expect(browser[1]).toContain('--shard=2/3');
     expect(browser[2].env).toMatchObject({ PW_ALL_BROWSERS: '1', PW_WORKERS: '1' });
 });
 
@@ -97,7 +99,8 @@ test('keep-going collects failures while later modules and suites still run', ()
     const runner = new Runner(parseArgs(['--suite=go,js', '--module=agent,common', '--keep-going']), execute);
     expect(runner.run()).toBe(1);
     expect(runner.results).toEqual([{ suite: 'go', status: 'FAIL' }, { suite: 'js', status: 'PASS' }]);
-    expect(execute).toHaveBeenCalledTimes(3);
+    expect(execute.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(execute.mock.calls.at(-1)[1]).toContain('--runInBand');
     expect(error).toHaveBeenCalledWith(expect.stringContaining('missing go'));
     expect(new Runner(parseArgs(['--suite=go']), () => ({ status: null, signal: 'SIGTERM' })).run()).toBe(1);
 });
@@ -184,10 +187,18 @@ test('CI uses the same runner for every test suite and preserves the complete ga
     const native = yaml.load(fs.readFileSync(path.join(root, '.github', 'workflows', 'installer-permissions.yml'), 'utf8'));
     const commands = Object.values(ci.jobs).flatMap(job => (job.steps || []).map(step => step.run || ''));
     expect(commands.join('\n')).not.toMatch(/\bgo test\b|npm run test:|go build\b/);
-    for (const selection of ['lint,go', 'js,playwright', 'integration', 'docker']) {
+    for (const selection of ['lint,go', 'js', 'playwright', 'integration', 'docker']) {
         expect(commands.some(command => command.includes(`bash tests.sh --suite ${selection}`))).toBe(true);
     }
-    expect(ci.jobs['ci-passed'].needs).toEqual(['go', 'installer-permissions', 'javascript', 'integration', 'e2e']);
+    expect(ci.jobs['ci-passed'].needs).toEqual(['modules', 'go', 'installer-permissions', 'javascript', 'playwright', 'integration', 'e2e']);
+    expect(ci.jobs.playwright.needs).toBeUndefined();
+    expect(ci.jobs.javascript.needs).toBeUndefined();
+    expect(ci.jobs.playwright.strategy.matrix.shard).toEqual([1, 2, 3]);
+    expect(ci.jobs.playwright.strategy['fail-fast']).toBe(false);
+    expect(ci.jobs.go.strategy.matrix.module).toBe('${{ fromJSON(needs.modules.outputs.modules) }}');
+    expect(commands.join('\n')).toContain('modulesAt(process.cwd())');
+    expect(commands.join('\n')).toContain('--module "$TEST_MODULE"');
+    expect(commands.join('\n')).toContain('--shard "$TEST_SHARD/3"');
     expect(native.jobs.native.steps.map(step => step.run || '').join('\n')).toContain('--suite privileged --privileged');
 });
 

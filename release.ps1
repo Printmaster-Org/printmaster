@@ -18,6 +18,7 @@ param(
     
     [Parameter()]
     [switch]$SkipTests,
+    [string[]]$TestArgs = @(),
     
     [Parameter()]
     [switch]$SkipPush,
@@ -40,14 +41,6 @@ $ProjectRoot = $PSScriptRoot
 Set-Location $ProjectRoot
 $ReleaseCommitted = $false
 $VersionsChanged = $false
-
-# Reset test-pass environment variables at the start of a release
-# These are used by build.ps1 to skip redundant tests when building multiple components
-# We clear them here so tests run fresh at the start of each release, then persist
-# across the agent+server builds to avoid running the same tests twice
-$env:PRINTMASTER_JS_TESTS_PASSED = $null
-$env:PRINTMASTER_PLAYWRIGHT_PASSED = $null
-$env:PRINTMASTER_JS_SYNTAX_PASSED = $null
 
 # ANSI color codes for consistent formatting
 $ColorReset = "`e[0m"
@@ -162,9 +155,9 @@ function Build-Component {
     
     # Build with -Release flag for optimized, stripped binaries
     if ($VerbosePreference -eq 'Continue') {
-        $null = & "$ProjectRoot\build.ps1" $Component -Release -VerboseBuild
+        & "$ProjectRoot\build.ps1" $Component -Release -VerboseBuild -SkipTests
     } else {
-        $null = & "$ProjectRoot\build.ps1" $Component -Release
+        & "$ProjectRoot\build.ps1" $Component -Release -SkipTests
     }
     
     if ($LASTEXITCODE -ne 0) {
@@ -186,9 +179,8 @@ function Build-Component {
 }
 
 function Invoke-Tests {
-    param([string]$Component)
     if ($DryRun) {
-        Write-Status "[DRY RUN] Would test $Component" "WARN"
+        Write-Status "[DRY RUN] Would run build validation gate with all nonprivileged suites (or explicit -TestArgs/-SkipTests)" "WARN"
         return
     }
     
@@ -197,35 +189,9 @@ function Invoke-Tests {
         return
     }
     
-    Write-Status "Running tests for $Component..." "STEP"
-    
-    Push-Location (Join-Path $ProjectRoot $Component)
-    try {
-        # Stream test output live; ErrorActionPreference=Stop would otherwise
-        # turn Go's stderr lines into terminating errors.
-        $prevOutputEncoding = [Console]::OutputEncoding
-        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-        $prevErrorAction = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        try {
-            go test ./... -v 2>&1 | ForEach-Object { Write-Host "$_" }
-            $testExitCode = $LASTEXITCODE
-        }
-        finally {
-            $ErrorActionPreference = $prevErrorAction
-            [Console]::OutputEncoding = $prevOutputEncoding
-        }
-        
-        if ($testExitCode -ne 0) {
-            throw "Tests failed for $Component"
-        }
-        
-        $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"
-        Write-Host "${ColorDim}${timestamp}${ColorReset} ${ColorBlue}[INFO]${ColorReset} ${ColorGreen}PASS:${ColorReset} $Component passed all tests"
-    }
-    finally {
-        Pop-Location
-    }
+    Write-Status "Running full nonprivileged validation through build -> tests..." "STEP"
+    & "$ProjectRoot\build.ps1" $Component -TestOnly -AllTests -TestArgs $TestArgs
+    if ($LASTEXITCODE -ne 0) { throw "Release validation gate failed" }
 }
 
 function Save-CommitAndTag {
@@ -804,6 +770,8 @@ try {
         }
     }
     
+    Invoke-Tests
+
     # Bump version(s)
     Write-Status "Bumping version ($BumpType)..." "STEP"
     
@@ -825,14 +793,6 @@ try {
         $versionInfo = Update-Version -VersionFile (Join-Path $ProjectRoot "agent\VERSION") -BumpType $BumpType
         Write-Status "Agent: $($versionInfo.Old) → $($versionInfo.New)" "INFO"
         $finalVersion = $versionInfo.New
-    }
-    
-    # Run tests
-    if ($Component -eq 'both') {
-        Invoke-Tests -Component 'agent'
-        Invoke-Tests -Component 'server'
-    } else {
-        Invoke-Tests -Component $Component
     }
     
     # Build release binaries

@@ -25,9 +25,24 @@ env:
   GO_VERSION: '1.27.0'
 
 jobs:
-  go:
-    name: Go modules (lint, unit and mock E2E)
+  modules:
+    name: Discover Go modules
     runs-on: ubuntu-26.04
+    outputs:
+      modules: ${{ steps.discover.outputs.modules }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: discover
+        run: node -e 'const {modulesAt}=require("./scripts/run-tests"); console.log("modules="+JSON.stringify(modulesAt(process.cwd())))' >> "$GITHUB_OUTPUT"
+
+  go:
+    name: Go (${{ matrix.module }})
+    needs: modules
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        module: ${{ fromJSON(needs.modules.outputs.modules) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -40,19 +55,39 @@ jobs:
       - name: Install lint prerequisite
         run: go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
       - name: Test all discovered Go modules
-        run: bash tests.sh --suite lint,go --coverage
+        env:
+          TEST_MODULE: ${{ matrix.module }}
+        run: bash tests.sh --suite lint,go --module "$TEST_MODULE" --coverage
       - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with:
-          files: '**/coverage.out'
-          flags: go
+          files: '${{ matrix.module }}/coverage.out'
+          flags: ${{ matrix.module }}
           fail_ci_if_error: false
 
   installer-permissions:
     uses: ./.github/workflows/installer-permissions.yml
 
   javascript:
-    name: JavaScript and all browser projects
+    name: Jest
     runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Jest
+        run: bash tests.sh --suite js
+
+  playwright:
+    name: Playwright (${{ matrix.shard }}/3)
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -74,12 +109,14 @@ jobs:
             ${{ runner.os }}-playwright-
       - name: Ensure Playwright browsers and system dependencies
         run: npx playwright install --with-deps chromium firefox webkit
-      - name: Jest and Playwright
-        run: bash tests.sh --suite js,playwright
+      - name: Playwright shard
+        env:
+          TEST_SHARD: ${{ matrix.shard }}
+        run: bash tests.sh --suite playwright --shard "$TEST_SHARD/3"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.shard }}
           path: test-results/
           if-no-files-found: ignore
 
@@ -131,7 +168,7 @@ jobs:
   ci-passed:
     name: CI Passed
     runs-on: ubuntu-26.04
-    needs: [go, installer-permissions, javascript, integration, e2e]
+    needs: [modules, go, installer-permissions, javascript, playwright, integration, e2e]
     if: always()
     steps:
       - name: Check results

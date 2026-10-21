@@ -50,7 +50,22 @@ git checkout -b feature/your-feature-name
 
 # Windows - Build both
 .\build.ps1 both
+
+# Builds run lint, all Go modules and JS syntax/Jest first; no browsers by default.
+.\build.ps1 agent -AllTests
+.\build.ps1 agent -TestArgs @('--suite', 'lint,go')
+.\build.ps1 agent -SkipTests # Explicit bypass
 ```
+
+Unix equivalents: `./build.sh agent --all-tests`, or
+`./build.sh agent --test-arg --suite=lint,go`, or `--skip-tests`.
+Custom test arguments replace the default selection; use the runner's flags
+to include browsers (`--suite lint,go,js,playwright`), omit suites or limit modules.
+Release scripts call the build validation gate with **all nonprivileged suites
+before changing versions**, then build without repeating the successful gate.
+Missing Docker/docs prerequisites fail release validation. Explicit release
+`-TestArgs` / repeated `--test-arg` overrides and `-SkipTests` / `--skip-tests`
+remain visible bypasses, not proof of full qualification.
 
 ### Running Tests
 

@@ -10,6 +10,7 @@ COMPONENT=""
 BUMP_TYPE=""
 MESSAGE=""
 SKIP_TESTS=0
+TEST_ARGS=()
 SKIP_PUSH=0
 CREATE_GITHUB_RELEASE=0
 FAIL_ON_EMPTY_CHANGELOG=1
@@ -23,6 +24,7 @@ usage() {
 Usage: ./release.sh <agent|server|both> <patch|minor|major|beta|stable> [message]
 Use --beta with patch/minor/major to start a Beta cycle, beta to advance it, stable to promote it.
 Options: --beta, --skip-tests, --skip-push, --create-github-release, --fail-on-empty-changelog=false, --dry-run
+         --test-arg VALUE (repeatable; replaces the default --all selection)
 EOF
 }
 
@@ -41,6 +43,9 @@ case "$BUMP_TYPE" in patch|minor|major|beta|stable) ;; *) usage; exit 1 ;; esac
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-tests) SKIP_TESTS=1 ;;
+    --test-arg)
+      [[ $# -ge 2 ]] || { echo '--test-arg requires a value' >&2; exit 1; }
+      TEST_ARGS+=(--test-arg "$2"); shift ;;
     --skip-push) SKIP_PUSH=1 ;;
     --create-github-release) CREATE_GITHUB_RELEASE=1 ;;
     --fail-on-empty-changelog=false) FAIL_ON_EMPTY_CHANGELOG=0 ;;
@@ -146,21 +151,20 @@ build_release_binary() {
     status "[DRY RUN] Would build $component" WARN
     return 0
   fi
-  "$PROJECT_ROOT/build.sh" "$component" --release
+  bash "$PROJECT_ROOT/build.sh" "$component" --release --skip-tests
 }
 
 invoke_tests() {
-  local component="$1"
   if [[ "$DRY_RUN" == "1" ]]; then
-    status "[DRY RUN] Would test $component" WARN
+    status "[DRY RUN] Would run build validation gate with all nonprivileged suites (or explicit --test-arg/--skip-tests)" WARN
     return 0
   fi
   if [[ "$SKIP_TESTS" == "1" ]]; then
     status "Skipping tests (--skip-tests flag)" WARN
     return 0
   fi
-  status "Running tests for $component..." STEP
-  (cd "$PROJECT_ROOT/$component" && go test ./... -v)
+  status "Running full nonprivileged validation through build -> tests..." STEP
+  bash "$PROJECT_ROOT/build.sh" "$COMPONENT" --test-only --all-tests "${TEST_ARGS[@]}"
 }
 
 get_changelog_since_last_tag() {
@@ -451,6 +455,8 @@ main() {
     [[ "$continue_answer" == "y" ]] || exit 1
   fi
 
+  invoke_tests
+
   status "Bumping version ($BUMP_TYPE)..." STEP
   case "$COMPONENT" in
     both)
@@ -478,13 +484,6 @@ main() {
       final_version="${version_info[1]}"
       ;;
   esac
-
-  if [[ "$COMPONENT" == "both" ]]; then
-    invoke_tests agent
-    invoke_tests server
-  else
-    invoke_tests "$COMPONENT"
-  fi
 
   if [[ "$COMPONENT" == "both" ]]; then
     build_release_binary agent

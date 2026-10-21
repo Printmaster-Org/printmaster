@@ -44,6 +44,10 @@ Agent (site) ──WebSocket/HTTP──▶ Server (central) ◀── Agent (sit
 .\build.ps1 agent          # Dev build agent
 .\build.ps1 server         # Dev build server
 .\build.ps1 both           # Build both
+# Builds gate on lint/all Go modules/JS syntax/Jest; browsers are opt-in.
+.\build.ps1 agent -AllTests          # Full nonprivileged gate
+.\build.ps1 agent -TestArgs @('--suite','lint,go') # Explicit narrower gate
+.\build.ps1 agent -SkipTests         # Explicit bypass, never qualification evidence
 
 # VS Code tasks (Ctrl+Shift+B): "Build: Agent (Dev)", "Test: Agent (all)", etc.
 
@@ -56,7 +60,9 @@ Agent (site) ──WebSocket/HTTP──▶ Server (central) ◀── Agent (sit
 # CI uses the same runner. Report omissions and test-level skips; a partial
 # selection is not a complete release baseline. Live installers are never enabled.
 # Release (NEVER edit VERSION files manually)
-.\release.ps1 agent patch  # Bumps version, creates tag
+.\release.ps1 agent patch  # build -> tests --all gate BEFORE version changes/tags
+# CI starts three Playwright shards independently (two workers each), Jest,
+# PostgreSQL, Docker/native checks, and a discovered parallel Go-module matrix.
 ```
 
 ## Project Patterns

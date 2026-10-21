@@ -22,7 +22,7 @@ function parseArgs(args, availableModules = modulesAt(root)) {
         docsDir: path.resolve(root, '..', 'docs.printmaster.work')
     };
     const selected = [], skipped = [];
-    const values = new Set(['suite', 'module', 'package', 'workers', 'staticcheck', 'hugo', 'docs-dir']);
+    const values = new Set(['suite', 'module', 'package', 'workers', 'shard', 'staticcheck', 'hugo', 'docs-dir']);
     let all = false, docker = false, docs = false, privileged = false;
     for (let i = 0; i < args.length; i++) {
         const match = /^--([a-z-]+)(?:=(.*))?$/.exec(args[i]);
@@ -60,6 +60,10 @@ function parseArgs(args, availableModules = modulesAt(root)) {
     options.suites = [...new Set(options.suites)].filter(suite => !skipped.includes(suite));
     if (!options.suites.length) throw new Error('No suites selected');
     if (!/^[1-9]\d*$/.test(options.workers)) throw new Error('--workers must be a positive integer');
+    if (options.shard) {
+        const match = /^([1-9]\d*)\/([1-9]\d*)$/.exec(options.shard);
+        if (!match || Number(match[1]) > Number(match[2])) throw new Error('--shard must be INDEX/TOTAL with 1 <= INDEX <= TOTAL');
+    }
     if (options.packages?.some(value => !value.startsWith('./') || value.includes('\\') || value.split('/').includes('..'))) {
         throw new Error('--package must be a relative Go package pattern such as ./storage or ./...');
     }
@@ -85,6 +89,7 @@ Default: ${core.join(', ')}. Go modules are discovered from top-level go.mod fil
   --privileged        Add root-only Unix permission/package fixtures (sudo -n)
   --coverage          Write CI-compatible Go coverage files
   --workers N         Playwright workers (default 2); all six projects, no retries
+  --shard INDEX/TOTAL  Run one Playwright shard (CI parallel runners)
   --staticcheck PATH  Existing compatible staticcheck executable
   --hugo PATH         Existing Hugo executable for docs
   --docs-dir PATH     Documentation checkout
@@ -157,6 +162,12 @@ class Runner {
             }
             if (failures.length) throw new AggregateError(failures, failures.map(error => error.message).join('\n'));
         } else if (suite === 'js') {
+            for (const component of ['agent', 'server', 'common']) {
+                const directory = path.join(root, component, 'web');
+                for (const file of fs.globSync('**/*.js', { cwd: directory }).sort()) {
+                    this.command(process.execPath, ['--check', path.join(directory, file)]);
+                }
+            }
             this.command(process.execPath, [require.resolve('jest/bin/jest'), '--runInBand']);
         } else if (suite === 'playwright') {
             for (const component of ['agent', 'server']) {
@@ -164,7 +175,7 @@ class Runner {
                 this.command('go', ['build', '-o', binary, '.'], { cwd: path.join(root, component) });
             }
             this.command(process.execPath, [require.resolve('@playwright/test/cli'),
-                'test', '--config=playwright.config.js', '--retries=0'], {
+                'test', '--config=playwright.config.js', '--retries=0', ...(o.shard ? [`--shard=${o.shard}`] : [])], {
                 env: { PW_ALL_BROWSERS: '1', PW_WORKERS: o.workers }
             });
         } else if (suite === 'integration') {
