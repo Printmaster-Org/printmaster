@@ -8,6 +8,26 @@ const picomatch = require('picomatch');
 const root = path.resolve(__dirname, '..');
 const workflow = fs.readFileSync(path.join(root, '.github/workflows/cd-agent.yml'), 'utf8');
 
+test('native installer permission qualification is required by the CI release gate', () => {
+    const ci = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8'));
+    const qualification = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/installer-permissions.yml'), 'utf8'));
+    const native = qualification.jobs.native;
+    expect(qualification.on).toEqual({ workflow_dispatch: {}, workflow_call: {} });
+    expect(qualification.permissions).toEqual({ contents: 'read' });
+    expect(ci.jobs['installer-permissions'].uses).toBe('./.github/workflows/installer-permissions.yml');
+    expect(native.strategy.matrix.os).toEqual(['ubuntu-26.04', 'windows-latest', 'macos-latest']);
+    expect(native.strategy['fail-fast']).toBe(false);
+    const checks = native.steps.find(step => step.name === 'Native permission and substitution checks');
+    expect(checks.run).toBe('node scripts/run-tests.js --suite native');
+    expect(checks.env.TMPDIR).toContain('/private/tmp');
+    const unixRoot = native.steps.find(step => step.if === "runner.os != 'Windows'");
+    expect(unixRoot.run).toBe('bash tests.sh --suite privileged --privileged');
+    expect(ci.jobs['ci-passed'].needs).toContain('installer-permissions');
+    expect(ci.jobs['ci-passed'].steps[0].env.RESULTS).toBe('${{ toJSON(needs) }}');
+    expect(native['continue-on-error']).toBeUndefined();
+    for (const step of native.steps) expect(step['continue-on-error']).toBeUndefined();
+});
+
 test('publisher workflow is serialized, opt-in, scoped and preserves failure evidence', () => {
     const publisher = yaml.load(fs.readFileSync(path.join(root, '.github', 'workflows', 'update-publisher.yml'), 'utf8'));
     expect(publisher.on.workflow_dispatch.inputs.lane.options).toEqual(['rehearsal', 'production']);

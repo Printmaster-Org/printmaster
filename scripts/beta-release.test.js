@@ -47,7 +47,7 @@ describe.each(availableShells)('%s Beta release lifecycle', shell => {
         fs.mkdirSync(path.join(directory, 'scripts'));
         fs.copyFileSync(path.join(root, 'scripts', 'release-version.sh'), path.join(directory, 'scripts', 'release-version.sh'));
         fs.writeFileSync(path.join(directory, 'build.sh'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
-        fs.writeFileSync(path.join(directory, 'build.ps1'), 'param($Component, [switch]$Release, [switch]$VerboseBuild)\n$global:LASTEXITCODE = 0\n');
+        fs.writeFileSync(path.join(directory, 'build.ps1'), 'param($Component, [switch]$Release, [switch]$VerboseBuild, [switch]$SkipTests)\n$global:LASTEXITCODE = 0\n');
         for (const component of ['agent', 'server']) {
             fs.mkdirSync(path.join(directory, component));
             fs.writeFileSync(path.join(directory, component, 'VERSION'), '0.31.1');

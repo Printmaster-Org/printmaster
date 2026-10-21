@@ -33,9 +33,11 @@ git checkout -b feature/your-feature-name
 
 ### Prerequisites
 
-- **Go 1.24+** - [Download](https://go.dev/dl/)
+- **Go matching the module files** (CI: 1.27.0) - [Download](https://go.dev/dl/)
 - **Git** - For version control
 - **PowerShell** (Windows) or Bash (Linux/macOS) - For build scripts
+- **Node.js 26**, locked npm test dependencies, compatible **staticcheck**, and
+  installed Playwright browsers - For the shared test runner (see `--help`)
 
 ### Building
 
@@ -48,17 +50,42 @@ git checkout -b feature/your-feature-name
 
 # Windows - Build both
 .\build.ps1 both
+
+# Builds run lint, all Go modules and JS syntax/Jest first; no browsers by default.
+.\build.ps1 agent -AllTests
+.\build.ps1 agent -TestArgs @('--suite', 'lint,go')
+.\build.ps1 agent -SkipTests # Explicit bypass
 ```
+
+Unix equivalents: `./build.sh agent --all-tests`, or
+`./build.sh agent --test-arg --suite=lint,go`, or `--skip-tests`.
+Custom test arguments replace the default selection; use the runner's flags
+to include browsers (`--suite lint,go,js,playwright`), omit suites or limit modules.
+Release scripts call the build validation gate with **all nonprivileged suites
+before changing versions**, then build without repeating the successful gate.
+Missing Docker/docs prerequisites fail release validation. Explicit release
+`-TestArgs` / repeated `--test-arg` overrides and `-SkipTests` / `--skip-tests`
+remain visible bypasses, not proof of full qualification.
 
 ### Running Tests
 
 ```powershell
-# Test agent packages
-cd agent; go test ./... -v
-
-# Test server packages
-cd server; go test ./... -v
+# Core baseline: Go/lint/Jest/all browser projects
+.\tests.ps1
+# Focused iteration with browsers explicitly omitted
+.\tests.ps1 --skip-playwright
+# Optional Docker and sibling-docs validation
+.\tests.ps1 --all
 ```
+
+On Unix/macOS use `./tests.sh` with the same flags. Both wrappers and CI use
+`scripts/run-tests.js`; `--suite`, `--module`, `--package`, `--dry-run` and
+`--help` support focused runs. `--privileged` explicitly adds isolated Unix
+root fixtures; it never enables live installers. Missing prerequisites fail
+visibly, and omitted/test-level skipped checks are not qualification evidence.
+The runner stops at the first failed command by default. Use `--keep-going`
+to collect independent failures; Docker log capture and cleanup still run on failure.
+See the [canonical testing guide](https://docs.printmaster.work/development/testing/).
 
 ### Quick Development Workflow
 
@@ -134,11 +161,11 @@ Examples:
 ### Running Tests
 
 ```bash
-# Run all tests for a component
-cd agent && go test ./...
-cd server && go test ./...
+# Run a focused component suite from the repository root
+./tests.sh --suite go --module agent
+./tests.sh --suite go --module server
 
-# Run specific test
+# Direct Go commands remain useful for individual-test diagnostics (inside a module)
 go test -v -run TestFunctionName ./package/
 
 # Run with race detection

@@ -68,15 +68,17 @@
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
-        <Directory Id="INSTALLDIR" Name="PrintMaster">
-          <Component Id="AgentBinaryComponent" Guid="{C1E3E0D2-3E65-4AA7-B7B4-09D0B1E0E0F1}" Win64="yes">
-            <File Id="AgentBinaryFile" Source="$(var.AgentBinaryPath)" KeyPath="yes" Checksum="yes" />
-          </Component>
-          <Directory Id="AgentConfigDir" Name="config">
-            <Component Id="BootstrapFiles" Guid="{0A98592F-A395-4C9F-BA51-AB305D50B5AA}" Win64="yes">
-              <File Id="BootstrapToml" Source="build\windows\msi\config\bootstrap.toml" KeyPath="yes" />
-              <File Id="BootstrapMetadata" Source="build\windows\msi\config\metadata.json" />
+        <Directory Id="PMInstallRoot" Name="PrintMaster">
+          <Directory Id="INSTALLDIR" Name="Agent">
+            <Component Id="AgentBinaryComponent" Guid="{6D585077-C1D7-40DC-87AA-02A7821C4DF1}" Win64="yes">
+              <File Id="AgentBinaryFile" Name="printmaster-agent.exe" Source="$(var.AgentBinaryPath)" KeyPath="yes" Checksum="yes" />
             </Component>
+            <Directory Id="AgentConfigDir" Name="config">
+              <Component Id="BootstrapFiles" Guid="{922F880F-C6B6-4A07-82E1-50D5E9971AC2}" Win64="yes">
+                <File Id="BootstrapToml" Source="build\windows\msi\config\bootstrap.toml" KeyPath="yes" />
+                <File Id="BootstrapMetadata" Source="build\windows\msi\config\metadata.json" />
+              </Component>
+            </Directory>
           </Directory>
         </Directory>
       </Directory>

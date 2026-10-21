@@ -11,6 +11,10 @@ TARGET="agent"
 RELEASE=0
 VERBOSE_BUILD=0
 INCREMENT_VERSION=0
+SKIP_TESTS=0
+ALL_TESTS=0
+TEST_ONLY=0
+TEST_ARGS=()
 
 if [[ ! -d "$LOG_DIR" ]]; then
   mkdir -p "$LOG_DIR"
@@ -41,29 +45,25 @@ usage() {
 Usage: ./build.sh [target] [options]
 Targets: agent, server, both, all, clean, test, test-storage, test-all
 Options: -Release, -VerboseBuild, -IncrementVersion
+         --skip-tests, --all-tests, --test-only, --test-arg VALUE (repeatable)
 EOF
 }
 
-is_flag() {
+while [[ $# -gt 0 ]]; do
   case "$1" in
-    -Release|--release|-release|-VerboseBuild|--verbose-build|-verbose-build|-IncrementVersion|--increment-version|-increment-version) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-for arg in "$@"; do
-  if ! is_flag "$arg"; then
-    TARGET="$arg"
-    break
-  fi
-done
-
-for arg in "$@"; do
-  case "$arg" in
     -Release|--release|-release) RELEASE=1 ;;
     -VerboseBuild|--verbose-build|-verbose-build) VERBOSE_BUILD=1 ;;
     -IncrementVersion|--increment-version|-increment-version) INCREMENT_VERSION=1 ;;
+    --skip-tests) SKIP_TESTS=1 ;;
+    --all-tests) ALL_TESTS=1 ;;
+    --test-only) TEST_ONLY=1 ;;
+    --test-arg)
+      [[ $# -ge 2 ]] || { echo '--test-arg requires a value' >&2; exit 1; }
+      TEST_ARGS+=("$2"); shift ;;
+    agent|server|both|all|clean|test|test-storage|test-all|-h|--help|help) TARGET="$1" ;;
+    *) echo "Unknown build argument: $1" >&2; exit 1 ;;
   esac
+  shift
 done
 
 case "$TARGET" in
@@ -78,10 +78,6 @@ case "$TARGET" in
     ;;
 esac
 
-js_tests_passed="${PRINTMASTER_JS_TESTS_PASSED:-0}"
-playwright_passed="${PRINTMASTER_PLAYWRIGHT_PASSED:-0}"
-js_syntax_passed="${PRINTMASTER_JS_SYNTAX_PASSED:-0}"
-
 ensure_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     log "$1 not found" ERROR
@@ -89,81 +85,11 @@ ensure_cmd() {
   fi
 }
 
-run_js_unit_tests() {
-  if [[ "$js_tests_passed" == "1" ]]; then
-    log "JS unit tests already passed this session, skipping"
-    return 0
-  fi
-  if [[ "${PRINTMASTER_SKIP_JS_TESTS:-0}" == "1" ]]; then
-    log "Skipping JS unit tests because PRINTMASTER_SKIP_JS_TESTS=1" WARN
-    return 0
-  fi
-  log "Running JavaScript unit tests (jest)..."
-  (cd "$PROJECT_ROOT" && npm run test:js)
-  js_tests_passed=1
-  export PRINTMASTER_JS_TESTS_PASSED=1
-}
-
-run_js_syntax_check() {
-  if [[ "$js_syntax_passed" == "1" ]]; then
-    log "JS syntax check already passed this session, skipping"
-    return 0
-  fi
-  log "Running JS syntax check (node --check)"
-  local found=0 failed=0 dir file
-  for dir in "$PROJECT_ROOT/agent/web" "$PROJECT_ROOT/server/web" "$PROJECT_ROOT/common/web"; do
-    [[ -d "$dir" ]] || continue
-    while IFS= read -r -d '' file; do
-      found=1
-      log "Checking JS syntax: $file"
-      if ! node --check "$file" >/dev/null 2>&1; then
-        failed=1
-        log "Syntax error in $file" ERROR
-      fi
-    done < <(find "$dir" -type f -name '*.js' -print0)
-  done
-  if [[ "$found" == "0" ]]; then
-    log "No JS files found for syntax check" WARN
-  fi
-  if [[ "$failed" == "1" ]]; then
-    log "JS syntax check failed" ERROR
-    return 1
-  fi
-  js_syntax_passed=1
-  export PRINTMASTER_JS_SYNTAX_PASSED=1
-}
-
-run_playwright_tests() {
-  if [[ "$playwright_passed" == "1" ]]; then
-    log "Playwright tests already passed this session, skipping"
-    return 0
-  fi
-  if [[ "${PRINTMASTER_SKIP_PLAYWRIGHT:-0}" == "1" ]]; then
-    log "Skipping Playwright tests because PRINTMASTER_SKIP_PLAYWRIGHT=1" WARN
-    return 0
-  fi
-  log "Running Playwright smoke tests..."
-  (cd "$PROJECT_ROOT" && npx playwright install >/dev/null 2>&1) || true
-  (cd "$PROJECT_ROOT" && npm run test:playwright)
-  playwright_passed=1
-  export PRINTMASTER_PLAYWRIGHT_PASSED=1
-}
-
 test_prerequisites() {
-  local go_path
   log "Checking build prerequisites..."
   ensure_cmd go
   ensure_cmd git
-  ensure_cmd npm
-  ensure_cmd npx
-  if ! command -v staticcheck >/dev/null 2>&1; then
-    log "staticcheck not found - installing..." WARN
-    go install honnef.co/go/tools/cmd/staticcheck@latest
-    go_path="$(go env GOPATH)"
-    export PATH="$go_path/bin:$PATH"
-  fi
   log "Found: $(go version)"
-  log "Found staticcheck: $(staticcheck -version 2>/dev/null || echo installed)"
   log "Found: $(git --version)"
 }
 
@@ -180,10 +106,6 @@ component_version_file() {
   printf '%s/%s/VERSION' "$PROJECT_ROOT" "$1"
 }
 
-component_build_files() {
-  printf '%s/%s/.buildnumber\n%s/%s/.lastversion\n' "$PROJECT_ROOT" "$1" "$PROJECT_ROOT" "$1"
-}
-
 build_component() {
   local component="$1"
   local display_name output_name version_file version last_version build_number_file last_version_file build_number version_string build_type git_commit build_time ldflags out_dir build_args
@@ -193,18 +115,6 @@ build_component() {
   version_file="$(component_version_file "$component")"
   build_number_file="$PROJECT_ROOT/$component/.buildnumber"
   last_version_file="$PROJECT_ROOT/$component/.lastversion"
-
-  if [[ "$component" == "common" ]]; then
-    log "Running linters for common..."
-    pushd "$PROJECT_ROOT/common" >/dev/null
-    go vet ./... 2>&1 | tee -a "$LOG_FILE"
-    if command -v staticcheck >/dev/null 2>&1; then
-      staticcheck ./... 2>&1 | tee -a "$LOG_FILE"
-    fi
-    go test ./... -v 2>&1 | tee -a "$LOG_FILE"
-    popd >/dev/null
-    return 0
-  fi
 
   if [[ "$component" == "agent" && "$RELEASE" == "1" ]]; then
     (cd "$PROJECT_ROOT/common" && go run ./cmd/update-keys check-root -root ../agent/update_publisher_root.json)
@@ -250,12 +160,6 @@ build_component() {
   log "Version: $version_string"
   log "Build Number: $build_number"
   log "Log File: $(basename "$LOG_FILE")"
-
-  if [[ "$component" == "agent" || "$component" == "server" ]]; then
-    run_js_unit_tests
-    run_playwright_tests
-  fi
-  run_js_syntax_check
 
   build_time="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   git_commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
@@ -304,14 +208,14 @@ build_component() {
 test_storage() {
   log "Running storage tests..."
   pushd "$PROJECT_ROOT/agent" >/dev/null
-  go test ./storage -v 2>&1 | tee -a "$LOG_FILE"
+  node "$PROJECT_ROOT/scripts/run-tests.js" --suite go --module agent --package ./storage 2>&1 | tee -a "$LOG_FILE"
   popd >/dev/null
 }
 
 test_all() {
-  log "Running all agent tests..."
+  log "Running all discovered Go module tests..."
   pushd "$PROJECT_ROOT/agent" >/dev/null
-  go test ./... -v 2>&1 | tee -a "$LOG_FILE"
+  node "$PROJECT_ROOT/scripts/run-tests.js" --suite go 2>&1 | tee -a "$LOG_FILE"
   popd >/dev/null
 }
 
@@ -319,6 +223,17 @@ main() {
   log "=== PrintMaster Build Script ==="
   log "Target: $TARGET"
   log "Project Root: $PROJECT_ROOT"
+  if [[ "$TARGET" =~ ^(agent|server|both|all)$ || "$TEST_ONLY" == "1" ]]; then
+    if [[ "$SKIP_TESTS" == "1" ]]; then
+      log "Skipping shared test gate (--skip-tests)" WARN
+    else
+      local gate_args=(--skip-playwright)
+      if [[ "$ALL_TESTS" == "1" ]]; then gate_args=(--all); fi
+      if [[ ${#TEST_ARGS[@]} -gt 0 ]]; then gate_args=("${TEST_ARGS[@]}"); fi
+      bash "$PROJECT_ROOT/tests.sh" "${gate_args[@]}"
+    fi
+    if [[ "$TEST_ONLY" == "1" ]]; then return 0; fi
+  fi
   test_prerequisites
 
   local git_branch_raw git_branch_sanitized
@@ -336,21 +251,17 @@ main() {
       clean_artifacts
       ;;
     agent)
-      build_component common
       build_component agent
       ;;
     server)
-      build_component common
       build_component server
       ;;
     both)
-      build_component common
       build_component agent
       build_component server
       ;;
     all)
       build_component agent
-      test_storage
       ;;
     test)
       test_storage

@@ -1,7 +1,7 @@
 # PrintMaster Build Script
 # Usage: .\build.ps1 [target] [options]
 # Targets: agent, server, both, all, clean, test, test-storage, test-all
-# Options: -Release, -VerboseBuild, -IncrementVersion
+# Options: -Release, -VerboseBuild, -IncrementVersion, -SkipTests, -AllTests, -TestOnly, -TestArgs
 
 param(
     [Parameter(Position=0)]
@@ -15,7 +15,11 @@ param(
     [switch]$VerboseBuild,
     
     [Parameter()]
-    [switch]$IncrementVersion
+    [switch]$IncrementVersion,
+    [switch]$SkipTests,
+    [switch]$AllTests,
+    [switch]$TestOnly,
+    [string[]]$TestArgs = @()
 )
 
 $ErrorActionPreference = 'Continue'
@@ -24,158 +28,9 @@ $LogDir = Join-Path $ProjectRoot "logs"
 $LogFile = $null  # Will be set dynamically with version info
 $MaxLogFiles = 10
 
-# Track which tests have already passed this session (avoid redundant runs)
-# Use environment variables to persist across sub-process invocations (e.g., release.ps1 calling build.ps1 twice)
-$script:JSUnitTestsPassed = ($env:PRINTMASTER_JS_TESTS_PASSED -eq '1')
-$script:PlaywrightTestsPassed = ($env:PRINTMASTER_PLAYWRIGHT_PASSED -eq '1')
-$script:JSSyntaxCheckPassed = ($env:PRINTMASTER_JS_SYNTAX_PASSED -eq '1')
-
 # Ensure logs directory exists
 if (-not (Test-Path $LogDir)) {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
-}
-
-# Runs an external command and streams its output to the console and build log
-# line-by-line as it is produced, instead of buffering until the command exits.
-# Returns the command's exit code.
-function Invoke-StreamedCommand {
-    param(
-        [Parameter(Mandatory=$true)][string]$Label,
-        [Parameter(Mandatory=$true)][scriptblock]$Command
-    )
-
-    Write-BuildLog "Executing: $Label" "INFO"
-    # UTF-8 so jest/Playwright symbols (checkmarks, bullets, arrows) are not garbled
-    $prevOutputEncoding = [Console]::OutputEncoding
-    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-    $timer = [System.Diagnostics.Stopwatch]::StartNew()
-    $global:LASTEXITCODE = 0
-    try {
-        & $Command 2>&1 | ForEach-Object { Write-BuildLog "$_" "INFO" }
-        $exitCode = $LASTEXITCODE
-    }
-    finally {
-        [Console]::OutputEncoding = $prevOutputEncoding
-    }
-    $level = if ($exitCode -eq 0) { "INFO" } else { "ERROR" }
-    Write-BuildLog ("{0} finished in {1:hh\:mm\:ss} (exit code {2})" -f $Label, $timer.Elapsed, $exitCode) $level
-    return $exitCode
-}
-
-function Invoke-JSUnitTests {
-    # Skip if already passed this session
-    if ($script:JSUnitTestsPassed) {
-        Write-BuildLog "JS unit tests already passed this session, skipping" "INFO"
-        return $true
-    }
-
-    Write-BuildLog "Running JavaScript unit tests (jest)..." "INFO"
-
-    if ($env:PRINTMASTER_SKIP_JS_TESTS -eq '1') {
-        Write-BuildLog "Skipping JS unit tests because PRINTMASTER_SKIP_JS_TESTS=1" "WARN"
-        return $true
-    }
-
-    Push-Location $ProjectRoot
-    try {
-        $testExit = Invoke-StreamedCommand "npm run test:js" { npm run test:js }
-        if ($testExit -ne 0) {
-            Write-BuildLog "JS unit tests failed" "ERROR"
-            return $false
-        }
-        Write-BuildLog "JS unit tests passed" "INFO"
-        $script:JSUnitTestsPassed = $true
-        $env:PRINTMASTER_JS_TESTS_PASSED = '1'
-        return $true
-    }
-    finally { Pop-Location }
-}
-
-function Invoke-JSSyntaxCheck {
-    # Skip if already passed this session
-    if ($script:JSSyntaxCheckPassed) {
-        Write-BuildLog "JS syntax check already passed this session, skipping" "INFO"
-        return $true
-    }
-
-    Write-BuildLog "Running JS syntax check (node --check)" "INFO"
-
-    Push-Location $ProjectRoot
-    try {
-        $pathsToCheck = @(
-            (Join-Path $ProjectRoot "agent\web"),
-            (Join-Path $ProjectRoot "server\web"),
-            (Join-Path $ProjectRoot "common\web")
-        )
-
-        $failed = $false
-        foreach ($p in $pathsToCheck) {
-            if (-not (Test-Path $p)) { continue }
-            Get-ChildItem -Path $p -Recurse -Include *.js -File | ForEach-Object {
-                $file = $_.FullName
-                Write-BuildLog "Checking JS syntax: $file" "INFO"
-                $out = & node --check $file 2>&1
-                $exit = $LASTEXITCODE
-                if ($exit -ne 0) {
-                    $out | ForEach-Object { Write-BuildLog $_ "ERROR" }
-                    Write-BuildLog "Syntax error in $file" "ERROR"
-                    $failed = $true
-                }
-            }
-        }
-
-        if ($failed) {
-            Write-BuildLog "JS syntax check failed" "ERROR"
-            return $false
-        }
-
-        Write-BuildLog "JS syntax check passed" "INFO"
-        $script:JSSyntaxCheckPassed = $true
-        $env:PRINTMASTER_JS_SYNTAX_PASSED = '1'
-        return $true
-    }
-    finally { Pop-Location }
-}
-
-function Invoke-PlaywrightTests {
-    # Skip if already passed this session
-    if ($script:PlaywrightTestsPassed) {
-        Write-BuildLog "Playwright tests already passed this session, skipping" "INFO"
-        return $true
-    }
-
-    Write-BuildLog "Running Playwright smoke tests..." "INFO"
-
-    if ($env:PRINTMASTER_SKIP_PLAYWRIGHT -eq '1') {
-        Write-BuildLog "Skipping Playwright tests because PRINTMASTER_SKIP_PLAYWRIGHT=1" "WARN"
-        return $true
-    }
-
-    Push-Location $ProjectRoot
-    try {
-        # Ensure the browsers playwright.config.js will use are installed. Local
-        # runs only use Chromium; CI / PW_ALL_BROWSERS=1 also need Firefox+WebKit.
-        $allBrowsers = ($env:CI -eq 'true') -or ($env:PW_ALL_BROWSERS -eq '1')
-        if ($allBrowsers) {
-            $installExit = Invoke-StreamedCommand "npx playwright install" { npx playwright install }
-        } else {
-            $installExit = Invoke-StreamedCommand "npx playwright install chromium" { npx playwright install chromium }
-        }
-        if ($installExit -ne 0) {
-            Write-BuildLog "Playwright browser install reported a failure; continuing with existing browsers" "WARN"
-        }
-
-        $testExit = Invoke-StreamedCommand "npm run test:playwright" { npm run test:playwright }
-        if ($testExit -ne 0) {
-            Write-BuildLog "Playwright smoke tests failed" "ERROR"
-            return $false
-        }
-        Write-BuildLog "Playwright smoke tests passed" "INFO"
-        $script:PlaywrightTestsPassed = $true
-        $env:PRINTMASTER_PLAYWRIGHT_PASSED = '1'
-        return $true
-    }
-    finally { Pop-Location }
 }
 
 # ANSI color codes
@@ -270,21 +125,6 @@ function Test-Prerequisites {
     }
     Write-BuildLog "Found: $goVersion" "INFO"
     
-    # Check for staticcheck
-    $staticcheckVersion = & staticcheck -version 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-BuildLog "staticcheck not found - installing..." "WARN"
-        Write-BuildLog "Running: go install honnef.co/go/tools/cmd/staticcheck@latest" "INFO"
-        & go install honnef.co/go/tools/cmd/staticcheck@latest
-        if ($LASTEXITCODE -ne 0) {
-            Write-BuildLog "Failed to install staticcheck" "ERROR"
-            return $false
-        }
-        Write-BuildLog "staticcheck installed successfully" "INFO"
-    } else {
-        Write-BuildLog "Found staticcheck: $staticcheckVersion" "INFO"
-    }
-    
     # Check git (for version injection)
     $gitVersion = & git --version 2>&1
     if ($LASTEXITCODE -ne 0) {
@@ -294,141 +134,6 @@ function Test-Prerequisites {
     }
     
     return $true
-}
-
-function Invoke-Linters {
-    param(
-        [Parameter(Mandatory=$true)]
-        [string]$Component
-    )
-    
-    Write-BuildLog "Running linters for $Component..." "INFO"
-    
-    $componentDir = Join-Path $ProjectRoot $Component
-    Push-Location $componentDir
-    
-    try {
-        Write-BuildLog "Running go vet..." "INFO"
-        $vetExit = Invoke-StreamedCommand "go vet ./..." { go vet ./... }
-        if ($vetExit -ne 0) {
-            $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"
-            Write-BuildLog "$Component failed go vet checks (see above output)" "ERROR"
-            Add-Content -Path $script:LogFile -Value "[$timestamp] [ERROR] FAIL: $Component failed go vet checks"
-            return $false
-        }
-        # Colorize PASS
-        $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"
-        Write-BuildLog "$Component passed go vet checks" "INFO"
-        Add-Content -Path $script:LogFile -Value "[$timestamp] [INFO] PASS: $Component passed go vet checks"
-
-        Write-BuildLog "Running staticcheck..." "INFO"
-        $scExit = Invoke-StreamedCommand "staticcheck ./..." { staticcheck ./... }
-        if ($scExit -ne 0) {
-            $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"
-            Write-BuildLog "$Component failed staticcheck (see above output)" "ERROR"
-            Add-Content -Path $script:LogFile -Value "[$timestamp] [ERROR] FAIL: $Component failed staticcheck"
-            return $false
-        }
-        # Colorize PASS
-        $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"
-        Write-BuildLog "$Component passed staticcheck" "INFO"
-        Add-Content -Path $script:LogFile -Value "[$timestamp] [INFO] PASS: $Component passed staticcheck"
-
-        # After Go linters pass, run a JS syntax check to catch broken JS bundles early
-        if (-not (Invoke-JSSyntaxCheck)) {
-            Write-BuildLog "Aborting: JS syntax check failed" "ERROR"
-            return $false
-        }
-
-        return $true
-    }
-    finally {
-        Pop-Location
-    }
-}
-
-function Invoke-Tests {
-    param(
-        [Parameter(Mandatory=$true)]
-        [string]$Component
-    )
-    
-    Write-BuildLog "Running tests for $Component..." "INFO"
-
-    # Support skipping tests via environment variable for update/CI convenience.
-    if ($env:PRINTMASTER_SKIP_TESTS -eq '1') {
-        Write-BuildLog "Skipping tests for $Component because PRINTMASTER_SKIP_TESTS=1" "WARN"
-        Add-Content -Path $script:LogFile -Value "[$(Get-Date -Format 'yyyy-MM-ddTHH:mm:sszzz')] [WARN] Skipping tests for $Component due to PRINTMASTER_SKIP_TESTS=1"
-        return $true
-    }
-    
-    $componentDir = Join-Path $ProjectRoot $Component
-    Push-Location $componentDir
-    
-    try {
-        $testExitCode = Invoke-StreamedCommand "go test ./... -v ($Component)" { go test ./... -v }
-        
-        if ($testExitCode -ne 0) {
-            # Colorize FAIL
-            $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"
-            Write-Host "${ColorDim}${timestamp}${ColorReset} ${ColorRed}[ERROR]${ColorReset} ${ColorRed}FAIL:${ColorReset} $Component failed tests"
-            Add-Content -Path $script:LogFile -Value "[$timestamp] [ERROR] FAIL: $Component failed tests"
-            return $false
-        }
-        
-        # Colorize PASS
-        $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"
-        Write-Host "${ColorDim}${timestamp}${ColorReset} ${ColorBlue}[INFO]${ColorReset} ${ColorGreen}PASS:${ColorReset} $Component passed tests"
-        Add-Content -Path $script:LogFile -Value "[$timestamp] [INFO] PASS: $Component passed tests"
-        
-        return $true
-    }
-    finally {
-        Pop-Location
-    }
-}
-
-# Track E2E test state
-$script:E2ETestsPassed = $false
-
-function Invoke-E2ETests {
-    # Skip if already passed this session
-    if ($script:E2ETestsPassed) {
-        Write-BuildLog "E2E tests already passed this session, skipping" "INFO"
-        return $true
-    }
-
-    Write-BuildLog "Running E2E tests..." "INFO"
-
-    # Support skipping tests via environment variable
-    if ($env:PRINTMASTER_SKIP_E2E_TESTS -eq '1') {
-        Write-BuildLog "Skipping E2E tests because PRINTMASTER_SKIP_E2E_TESTS=1" "WARN"
-        return $true
-    }
-
-    $testsDir = Join-Path $ProjectRoot "tests"
-    Push-Location $testsDir
-
-    try {
-        # Run E2E tests (mock-based, no Docker required)
-        $testExitCode = Invoke-StreamedCommand "go test -v -count=1 ./... (e2e)" { go test -v -count=1 ./... }
-
-        if ($testExitCode -ne 0) {
-            $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"
-            Write-Host "${ColorDim}${timestamp}${ColorReset} ${ColorRed}[ERROR]${ColorReset} ${ColorRed}FAIL:${ColorReset} E2E tests failed"
-            Add-Content -Path $script:LogFile -Value "[$timestamp] [ERROR] FAIL: E2E tests failed"
-            return $false
-        }
-
-        $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"
-        Write-Host "${ColorDim}${timestamp}${ColorReset} ${ColorBlue}[INFO]${ColorReset} ${ColorGreen}PASS:${ColorReset} E2E tests passed"
-        Add-Content -Path $script:LogFile -Value "[$timestamp] [INFO] PASS: E2E tests passed"
-        $script:E2ETestsPassed = $true
-        return $true
-    }
-    finally {
-        Pop-Location
-    }
 }
 
 function Build-Component {
@@ -520,16 +225,6 @@ function Build-Component {
         # Set versioned log file
         Set-BuildLogFile -Component $Component -Version $version -BuildNumber $buildNumber
 
-        # Run JavaScript tests (unit + playwright smoke) before compiling Go binary
-        if (-not (Invoke-JSUnitTests)) {
-            Write-BuildLog "Aborting $Component build due to JS unit test failures" "ERROR"
-            return $false
-        }
-        if (-not (Invoke-PlaywrightTests)) {
-            Write-BuildLog "Aborting $Component build due to Playwright smoke test failures" "ERROR"
-            return $false
-        }
-        
         # Get build metadata
         $buildTime = Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ"
         $gitCommit = (git rev-parse --short HEAD 2>$null) -join ""
@@ -640,14 +335,11 @@ function Test-Storage {
     Push-Location (Join-Path $ProjectRoot "agent")
     
     try {
-        $testArgs = @("test", "./storage", "-v")
-        if ($VerbosePreference -eq 'Continue') {
-            $testArgs += "-count=1"  # Disable cache for verbose
-        }
+        $testArgs = @((Join-Path $ProjectRoot 'scripts\run-tests.js'), '--suite', 'go', '--module', 'agent', '--package', './storage')
         
-        Write-BuildLog "Command: go $($testArgs -join ' ')"
+        Write-BuildLog "Command: node $($testArgs -join ' ')"
         
-        $testOutput = & go @testArgs 2>&1
+        $testOutput = & node @testArgs 2>&1
         $testExitCode = $LASTEXITCODE
         
         # Log all output
@@ -676,20 +368,17 @@ function Test-Storage {
 }
 
 function Test-All {
-    Write-BuildLog "Running all agent tests..."
+    Write-BuildLog "Running all discovered Go module tests..."
     Write-BuildLog "Working directory: $(Get-Location)"
     
     Push-Location (Join-Path $ProjectRoot "agent")
     
     try {
-        $testArgs = @("test", "./...", "-v")
-        if ($VerbosePreference -eq 'Continue') {
-            $testArgs += "-count=1"
-        }
+        $testArgs = @((Join-Path $ProjectRoot 'scripts\run-tests.js'), '--suite', 'go')
         
-        Write-BuildLog "Command: go $($testArgs -join ' ')"
+        Write-BuildLog "Command: node $($testArgs -join ' ')"
         
-        $testOutput = & go @testArgs 2>&1
+        $testOutput = & node @testArgs 2>&1
         $testExitCode = $LASTEXITCODE
         
         # Log all output
@@ -721,6 +410,18 @@ function Test-All {
 Write-BuildLog "=== PrintMaster Build Script ===" "INFO"
 Write-BuildLog "Target: $Target" "INFO"
 Write-BuildLog "Project Root: $ProjectRoot" "INFO"
+
+if ($Target -in @('agent', 'server', 'both', 'all') -or $TestOnly) {
+    if ($SkipTests) {
+        Write-BuildLog "Skipping shared test gate (-SkipTests)" "WARN"
+    } else {
+        $gateArgs = @(if ($AllTests) { '--all' } else { '--skip-playwright' })
+        if ($TestArgs.Count) { $gateArgs = @($TestArgs) }
+        & (Join-Path $ProjectRoot 'tests.ps1') @gateArgs
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
+    if ($TestOnly) { exit 0 }
+}
 
 # Check prerequisites (Go, staticcheck, git)
 if (-not (Test-Prerequisites)) {
@@ -757,85 +458,12 @@ switch ($Target) {
         $success = $true
     }
     'agent' {
-        # Run linters for common (shared dependency) first
-        if (-not (Invoke-Linters -Component 'common')) {
-            Write-BuildLog "Linter checks failed for common" "ERROR"
-            exit 1
-        }
-        # Run tests for common
-        if (-not (Invoke-Tests -Component 'common')) {
-            Write-BuildLog "Tests failed for common" "ERROR"
-            exit 1
-        }
-        # Run linters before build
-        if (-not (Invoke-Linters -Component 'agent')) {
-            Write-BuildLog "Linter checks failed for agent" "ERROR"
-            exit 1
-        }
-        # Run tests before build
-        if (-not (Invoke-Tests -Component 'agent')) {
-            Write-BuildLog "Tests failed for agent" "ERROR"
-            exit 1
-        }
         $success = Build-Agent -IsRelease:$Release -IncrementVersion:$IncrementVersion
     }
     'server' {
-        # Run linters for common (shared dependency) first
-        if (-not (Invoke-Linters -Component 'common')) {
-            Write-BuildLog "Linter checks failed for common" "ERROR"
-            exit 1
-        }
-        # Run tests for common
-        if (-not (Invoke-Tests -Component 'common')) {
-            Write-BuildLog "Tests failed for common" "ERROR"
-            exit 1
-        }
-        # Run linters before build
-        if (-not (Invoke-Linters -Component 'server')) {
-            Write-BuildLog "Linter checks failed for server" "ERROR"
-            exit 1
-        }
-        # Run tests before build
-        if (-not (Invoke-Tests -Component 'server')) {
-            Write-BuildLog "Tests failed for server" "ERROR"
-            exit 1
-        }
         $success = Build-Server -IsRelease:$Release -IncrementVersion:$IncrementVersion
     }
     'both' {
-        # Run linters for common (shared dependency) first
-        if (-not (Invoke-Linters -Component 'common')) {
-            Write-BuildLog "Linter checks failed for common" "ERROR"
-            exit 1
-        }
-        # Run tests for common
-        if (-not (Invoke-Tests -Component 'common')) {
-            Write-BuildLog "Tests failed for common" "ERROR"
-            exit 1
-        }
-        # Run linters for both components
-        if (-not (Invoke-Linters -Component 'agent')) {
-            Write-BuildLog "Linter checks failed for agent" "ERROR"
-            exit 1
-        }
-        if (-not (Invoke-Linters -Component 'server')) {
-            Write-BuildLog "Linter checks failed for server" "ERROR"
-            exit 1
-        }
-        # Run tests for both components
-        if (-not (Invoke-Tests -Component 'agent')) {
-            Write-BuildLog "Tests failed for agent" "ERROR"
-            exit 1
-        }
-        if (-not (Invoke-Tests -Component 'server')) {
-            Write-BuildLog "Tests failed for server" "ERROR"
-            exit 1
-        }
-        # Run E2E tests
-        if (-not (Invoke-E2ETests)) {
-            Write-BuildLog "E2E tests failed" "ERROR"
-            exit 1
-        }
         # Build both agent and server
         $success = Build-Agent -IsRelease:$Release -IncrementVersion:$IncrementVersion
         if ($success) {
@@ -855,9 +483,6 @@ switch ($Target) {
     'all' {
         # Build agent and run tests
         $success = Build-Agent -IsRelease:$Release -IncrementVersion:$IncrementVersion
-        if ($success) {
-            $success = Test-Storage
-        }
     }
 }
 

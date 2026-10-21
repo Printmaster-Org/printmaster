@@ -7,7 +7,6 @@ on:
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
-    # Release tags reuse CI Passed for this SHA via the CD workflows.
   pull_request:
     branches: [main]
     paths-ignore:
@@ -26,325 +25,154 @@ env:
   GO_VERSION: '1.27.0'
 
 jobs:
-  # ============================================================================
-  # LINT & TEST - Common runs first, agent/server run in parallel after
-  # ============================================================================
-  common:
-    name: Common
+  modules:
+    name: Discover Go modules
     runs-on: ubuntu-26.04
+    outputs:
+      modules: ${{ steps.discover.outputs.modules }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: discover
+        run: node -e 'const {modulesAt}=require("./scripts/run-tests"); console.log("modules="+JSON.stringify(modulesAt(process.cwd())))' >> "$GITHUB_OUTPUT"
+
+  go:
+    name: Go (${{ matrix.module }})
+    needs: modules
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        module: ${{ fromJSON(needs.modules.outputs.modules) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: |
-            common/go.sum
-            agent/go.sum
-            server/go.sum
-
-      - name: Lint
-        working-directory: ./common
-        run: |
-          go install honnef.co/go/tools/cmd/staticcheck@latest
-          go vet ./...
-          staticcheck ./...
-
-      - name: Test
-        working-directory: ./common
-        run: go test -v -coverprofile=coverage.out ./...
-
+          cache-dependency-path: '**/go.sum'
+      - name: Install lint prerequisite
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
+      - name: Test all discovered Go modules
+        env:
+          TEST_MODULE: ${{ matrix.module }}
+        run: bash tests.sh --suite lint,go --module "$TEST_MODULE" --coverage
       - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with:
-          files: ./common/coverage.out
-          flags: common
+          files: '${{ matrix.module }}/coverage.out'
+          flags: ${{ matrix.module }}
           fail_ci_if_error: false
 
-  agent:
-    name: Agent
-    runs-on: ubuntu-26.04
-    needs: [common]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: |
-            common/go.sum
-            agent/go.sum
+  installer-permissions:
+    uses: ./.github/workflows/installer-permissions.yml
 
-      - name: Lint
-        working-directory: ./agent
-        run: |
-          go install honnef.co/go/tools/cmd/staticcheck@latest
-          go vet ./...
-          staticcheck ./...
-
-      - name: Test
-        working-directory: ./agent
-        run: go test -v -coverprofile=coverage.out ./...
-
-      - name: Root-side package intake and isolated Debian qualification
-        working-directory: ./agent
-        run: |
-          set -euo pipefail
-          binary="$RUNNER_TEMP/printmaster-package-intake.test"
-          trap 'rm -f "$binary"' EXIT
-          go test -c -o "$binary" ./autoupdate
-          sudo -n "$binary" -test.v -test.timeout=3m \
-            '-test.run=^(TestPrivilegedRepositoryPackage|TestRootPackageTree)'
-          sudo -n env PRINTMASTER_TEST_ISOLATED_DEB=1 \
-            "$binary" -test.v -test.timeout=3m \
-            '-test.run=^TestPrivilegedRepositoryPackageIsolatedDebian$'
-
-      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
-        with:
-          files: ./agent/coverage.out
-          flags: agent
-          fail_ci_if_error: false
-
-  server:
-    name: Server
-    runs-on: ubuntu-26.04
-    needs: [common]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: |
-            common/go.sum
-            server/go.sum
-
-      - name: Lint
-        working-directory: ./server
-        run: |
-          go install honnef.co/go/tools/cmd/staticcheck@latest
-          go vet ./...
-          staticcheck ./...
-
-      - name: Test
-        working-directory: ./server
-        run: go test -v -coverprofile=coverage.out ./...
-
-      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
-        with:
-          files: ./server/coverage.out
-          flags: server
-          fail_ci_if_error: false
-
-      - name: Integration Tests (Postgres)
-        working-directory: ./server
-        run: go test -v -tags=integration -coverprofile=coverage-integration.out ./storage/...
-
-      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
-        with:
-          files: ./server/coverage-integration.out
-          flags: server-integration
-          fail_ci_if_error: false
-
-  # ============================================================================
-  # JAVASCRIPT - Jest unit tests + Playwright UI tests
-  # ============================================================================
   javascript:
-    name: JavaScript
+    name: Jest
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26'
-          cache: 'npm'
-
+          cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Jest
+        run: bash tests.sh --suite js
 
-      - name: Jest unit tests
-        run: npm run test:js
-
+  playwright:
+    name: Playwright (${{ matrix.shard }}/6)
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
+          cache: npm
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: '**/go.sum'
+      - name: Install dependencies
+        run: npm ci
       - name: Cache Playwright browsers
-        id: playwright-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-playwright-
-
       - name: Ensure Playwright browsers and system dependencies
         run: npx playwright install --with-deps chromium firefox webkit
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: |
-            common/go.sum
-            agent/go.sum
-            server/go.sum
-
-      - name: Build binaries for Playwright
-        run: |
-          (cd agent && go build -o printmaster-agent .)
-          (cd server && go build -o printmaster-server .)
-
-      - name: Playwright tests (cross-browser)
+      - name: Playwright shard
         env:
-          PW_ALL_BROWSERS: '1'
-          # CI runners have limited CPU; too many parallel browser workers
-          # causes actionability/networkidle timeouts under contention.
-          PW_WORKERS: '2'
-        run: npm run test:playwright:all
-
+          TEST_SHARD: ${{ matrix.shard }}
+        run: bash tests.sh --suite playwright --shard "$TEST_SHARD/6"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.shard }}
           path: test-results/
           if-no-files-found: ignore
 
-  # ============================================================================
-  # E2E - Runs after both agent and server pass (mock-based tests)
-  # ============================================================================
-  e2e:
-    name: E2E (Mock)
+  integration:
+    name: PostgreSQL integration
     runs-on: ubuntu-26.04
-    needs: [agent, server]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: |
-            common/go.sum
-            agent/go.sum
-            server/go.sum
-            tests/go.sum
-
-      - name: Run E2E tests (mock-based)
-        working-directory: ./tests
-        run: go test -v -count=1 ./...
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: always()
+          cache-dependency-path: '**/go.sum'
+      - name: PostgreSQL tests
+        run: bash tests.sh --suite integration --coverage
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with:
-          name: e2e-test-results
-          path: tests/*.log
-          if-no-files-found: ignore
+          files: server/coverage-integration.out
+          flags: server-integration
+          fail_ci_if_error: false
 
-  # ============================================================================
-  # E2E Docker - Full integration tests with real containers
-  # ============================================================================
-  e2e-docker:
+  e2e:
     name: E2E (Docker)
     runs-on: ubuntu-26.04
-    needs: [agent, server]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
-
-      - name: Create data directories
-        run: |
-          mkdir -p tests/testdata/server
-          mkdir -p tests/testdata/agent
-
-      - name: Start E2E environment
-        working-directory: ./tests
-        run: |
-          docker compose -f docker-compose.e2e.yml up -d --build server agent
-          echo "Waiting for services to be healthy..."
-          sleep 10
-          docker compose -f docker-compose.e2e.yml ps
-
-      - name: Wait for services (schema init)
-        run: ./tests/wait_for_e2e_services.sh
-
-      # Seed data with the sqlite3 CLI while the servers are stopped. Seeding
-      # while the containers are running caused intermittent "database disk
-      # image is malformed" errors: the Go server holds server.db/agent.db
-      # open in WAL mode via the pure-Go modernc.org/sqlite driver, and
-      # writing into the same file concurrently from the C sqlite3 CLI (a
-      # different SQLite implementation) is an unsafe multi-writer race.
-      - name: Stop containers before seeding
-        working-directory: ./tests
-        run: docker compose -f docker-compose.e2e.yml down
-
-      - name: Seed test data (containers stopped)
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends sqlite3
-
-          # Files are owned by root (container's default user); fold any
-          # pending WAL frames into the main file, then seed.
-          echo "Seeding server test data..."
-          sudo sqlite3 tests/testdata/server/server.db "PRAGMA wal_checkpoint(FULL);"
-          sudo sqlite3 tests/testdata/server/server.db < tests/testdata/seed/server_data.sql
-
-          echo "Seeding agent test data..."
-          sudo sqlite3 tests/testdata/agent/agent.db "PRAGMA wal_checkpoint(FULL);"
-          sudo sqlite3 tests/testdata/agent/agent.db < tests/testdata/seed/agent_data.sql
-
-          echo "Verifying seeded data..."
-          sudo sqlite3 tests/testdata/server/server.db "SELECT 'Server devices: ' || COUNT(*) FROM devices;"
-          sudo sqlite3 tests/testdata/agent/agent.db "SELECT 'Agent devices: ' || COUNT(*) FROM devices;"
-
-      - name: Restart E2E environment (seeded data)
-        working-directory: ./tests
-        run: |
-          docker compose -f docker-compose.e2e.yml up -d server agent
-          echo "Waiting for services to be healthy..."
-          sleep 10
-          docker compose -f docker-compose.e2e.yml ps
-
-      - name: Wait for services (post-seed)
-        run: ./tests/wait_for_e2e_services.sh
-
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: |
-            common/go.sum
-            agent/go.sum
-            server/go.sum
-            tests/go.sum
-
-      - name: Run E2E Docker tests
-        working-directory: ./tests
-        env:
-          E2E_SERVER_URL: http://localhost:9090
-          E2E_AGENT_URL: http://localhost:8080
-          E2E_ADMIN_PASSWORD: e2e-test-password
-        run: go test -tags=e2e -v -count=1 ./...
-
-      - name: Collect container logs
-        if: always()
-        working-directory: ./tests
-        run: |
-          mkdir -p results
-          docker compose -f docker-compose.e2e.yml logs server > results/server.log 2>&1 || true
-          docker compose -f docker-compose.e2e.yml logs agent > results/agent.log 2>&1 || true
-
-      - name: Stop E2E environment
-        if: always()
-        working-directory: ./tests
-        run: docker compose -f docker-compose.e2e.yml down -v
-
+          cache-dependency-path: '**/go.sum'
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Install SQLite seed prerequisite
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends sqlite3
+      - name: Isolated Docker E2E
+        run: bash tests.sh --suite docker
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: e2e-docker-results
-          path: tests/results/
+          path: test-results/pm-tests-*/
           if-no-files-found: ignore
 
   ci-passed:
     name: CI Passed
     runs-on: ubuntu-26.04
-    needs: [agent, server, javascript, e2e, e2e-docker]
+    needs: [modules, go, installer-permissions, javascript, playwright, integration, e2e]
     if: always()
     steps:
       - name: Check results
+        env:
+          RESULTS: ${{ toJSON(needs) }}
         run: |
-          if [[ "${{ needs.agent.result }}" != "success" || "${{ needs.server.result }}" != "success" || "${{ needs.javascript.result }}" != "success" || "${{ needs.e2e.result }}" != "success" || "${{ needs.e2e-docker.result }}" != "success" ]]; then
-            echo "One or more jobs failed"
-            exit 1
-          fi
-          echo "All CI checks passed"
+          node -e 'const results = JSON.parse(process.env.RESULTS); if (Object.values(results).some(job => job.result !== "success")) { console.error(results); process.exit(1); } console.log("All CI checks passed");'

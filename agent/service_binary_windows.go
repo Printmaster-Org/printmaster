@@ -57,9 +57,10 @@ func prepareWindowsServiceExecutable() error {
 		windows.CloseHandle(sourceHandle)
 		return err
 	}
-	if sourceInfo.FileAttributes&(windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DIRECTORY) != 0 {
+	if sourceInfo.FileAttributes&(windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DIRECTORY) != 0 ||
+		sourceInfo.NumberOfLinks != 1 {
 		windows.CloseHandle(sourceHandle)
-		return fmt.Errorf("source Agent executable is not an ordinary file")
+		return fmt.Errorf("source Agent executable must be ordinary and have exactly one hard link")
 	}
 
 	sourceFile := os.NewFile(uintptr(sourceHandle), source)
@@ -114,12 +115,19 @@ func protectWindowsServiceDirectory(path string) error {
 }
 
 func protectWindowsServiceFile(path string) error {
-	attributes, err := windows.GetFileAttributes(windows.StringToUTF16Ptr(path))
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.FILE_READ_ATTRIBUTES,
+		windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
 		return err
 	}
-	if attributes&(windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DIRECTORY) != 0 {
-		return fmt.Errorf("service executable is not an ordinary file")
+	defer windows.CloseHandle(handle)
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
+		return err
+	}
+	if info.FileAttributes&(windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DIRECTORY) != 0 ||
+		info.NumberOfLinks != 1 {
+		return fmt.Errorf("service executable must be ordinary and have exactly one hard link")
 	}
 	return setPrivateWindowsSecurity(path)
 }
