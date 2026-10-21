@@ -40,7 +40,11 @@ func RunRepositoryPackageHelper(ctx context.Context, args []string, input, outpu
 	if err != nil {
 		return err
 	}
-	return ServePrivilegedRepositoryPackageResponse(ctx, root, metadataURL, packageHelperStateDir, packageHelperPolicyPath, input, output)
+	return serveRepositoryPackageResponseCompleted(ctx, root, metadataURL, packageHelperStateDir, packageHelperPolicyPath,
+		input, output, runPrivilegedPackageCommand, func(ctx context.Context, outcome *RepositoryPackageOutcome) error {
+			return completeRepositoryPackageService(ctx, packageHelperStateDir, outcome, runPrivilegedPackageCommand,
+				func(pid int) error { return verifyNativeServiceExecutable(pid, "/usr/bin/printmaster-agent") })
+		})
 }
 
 func decodePackageHelperConfiguration(data []byte) (string, error) {

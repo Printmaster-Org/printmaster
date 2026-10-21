@@ -35,6 +35,11 @@ func ServePrivilegedRepositoryPackageResponse(ctx context.Context, root []byte, 
 
 func serveRepositoryPackageResponse(ctx context.Context, root []byte, metadataURL, stateDir, policyPath string,
 	input, output *os.File, run repositoryCommand) (result error) {
+	return serveRepositoryPackageResponseCompleted(ctx, root, metadataURL, stateDir, policyPath, input, output, run, nil)
+}
+
+func serveRepositoryPackageResponseCompleted(ctx context.Context, root []byte, metadataURL, stateDir, policyPath string,
+	input, output *os.File, run repositoryCommand, complete func(context.Context, *RepositoryPackageOutcome) error) (result error) {
 	if output == nil {
 		if input != nil {
 			return errors.Join(fmt.Errorf("native package response pipe is required"), input.Close())
@@ -51,6 +56,9 @@ func serveRepositoryPackageResponse(ctx context.Context, root []byte, metadataUR
 	}
 	outcome := RepositoryPackageOutcome{Schema: 1, Status: "rejected"}
 	err := serveRepositoryPackage(ctx, root, metadataURL, stateDir, policyPath, input, &outcome, run)
+	if err == nil && complete != nil {
+		err = complete(ctx, &outcome)
+	}
 	if err != nil && outcome.Status == "awaiting-startup" {
 		// A close/cleanup/lock failure can follow native completion. Do not
 		// conceal it behind a success-shaped transport reply.
@@ -172,7 +180,7 @@ func validateRepositoryPackageOutcome(outcome RepositoryPackageOutcome) error {
 		if outcome.Target == nil {
 			return fmt.Errorf("native package inspection outcome lacks target")
 		}
-	case "awaiting-startup":
+	case "awaiting-startup", "startup-confirmed":
 		if outcome.Target == nil || outcome.RunID == "" {
 			return fmt.Errorf("native package completion outcome lacks target/run")
 		}

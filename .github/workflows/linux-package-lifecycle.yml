@@ -1,0 +1,83 @@
+name: Linux package lifecycle qualification
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    name: Native ${{ matrix.format }} and systemd
+    runs-on: ubuntu-26.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        format: [deb, rpm]
+    env:
+      PRINTMASTER_LIVE_LINUX_PACKAGES: disposable-github-runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.0'
+          cache-dependency-path: '**/go.sum'
+      - name: Build exact fixture executables
+        working-directory: agent
+        env:
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p "$RUNNER_TEMP/linux-qualification"
+          go test -c -o "$RUNNER_TEMP/linux-qualification/updater.test" ./autoupdate
+          go build -o "$RUNNER_TEMP/linux-qualification/helper" ./cmd/printmaster-agent-update
+          for version in 1.0.0 1.1.0; do
+            go build -ldflags="-X main.Version=$version" -o "$RUNNER_TEMP/linux-qualification/agent-$version" .
+          done
+      - name: Qualify actual Debian packages on disposable runner systemd
+        if: matrix.format == 'deb'
+        run: |
+          sudo env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted \
+            PRINTMASTER_LIVE_LINUX_PACKAGES=disposable-github-runner \
+            bash scripts/qualify-linux-packages.sh deb "$GITHUB_WORKSPACE" "$RUNNER_TEMP/linux-qualification"
+      - name: Qualify actual RPM packages with disposable Fedora systemd
+        if: matrix.format == 'rpm'
+        run: |
+          docker build --file scripts/linux-package-qualification.Dockerfile --tag pm-linux-qualification .
+          docker run --detach --name pm-linux-qualification --privileged --cgroupns=host \
+            --volume /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            --volume "$GITHUB_WORKSPACE:/source:ro" \
+            --volume "$RUNNER_TEMP/linux-qualification:/qualification" \
+            --tmpfs /run --tmpfs /tmp \
+            --env GITHUB_ACTIONS=true --env RUNNER_ENVIRONMENT=github-hosted \
+            --env PRINTMASTER_LIVE_LINUX_PACKAGES=disposable-github-runner \
+            pm-linux-qualification
+          for attempt in $(seq 1 30); do
+            if docker exec pm-linux-qualification systemctl show-environment; then break; fi
+            sleep 1
+          done
+          docker exec pm-linux-qualification systemctl show-environment
+          docker exec pm-linux-qualification bash /source/scripts/qualify-linux-packages.sh rpm /source /qualification
+      - name: Collect native evidence
+        if: always()
+        run: |
+          if [[ '${{ matrix.format }}' == rpm ]]; then
+            docker exec pm-linux-qualification sh -c 'if [ -d /var/lib/printmaster-update ]; then cp -a /var/lib/printmaster-update /qualification/evidence/active-on-exit; fi; chmod -R a+rX /qualification/evidence' || true
+            docker exec pm-linux-qualification journalctl --no-pager > "$RUNNER_TEMP/linux-qualification/evidence/system-journal.txt" 2>&1 || true
+            docker logs pm-linux-qualification > "$RUNNER_TEMP/linux-qualification/evidence/container.txt" 2>&1 || true
+          else
+            if sudo test -d /var/lib/printmaster-update; then
+              sudo cp -a /var/lib/printmaster-update "$RUNNER_TEMP/linux-qualification/evidence/active-on-exit"
+            fi
+            sudo chmod -R a+rX "$RUNNER_TEMP/linux-qualification/evidence"
+            sudo journalctl --no-pager -u printmaster-agent -u 'printmaster-agent-update@*' > "$RUNNER_TEMP/linux-qualification/evidence/system-journal.txt"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: linux-package-lifecycle-${{ matrix.format }}
+          path: ${{ runner.temp }}/linux-qualification/evidence/
+          if-no-files-found: error
+      - name: Remove only qualification container
+        if: always() && matrix.format == 'rpm'
+        run: docker rm -f pm-linux-qualification

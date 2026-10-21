@@ -35,7 +35,8 @@ func ExchangeRepositoryPackage(parent context.Context, request, response, source
 		sent <- err
 	}()
 	outcome, readErr := ReadRepositoryPackageOutcome(ctx, response, target)
-	if readErr != nil || outcome.Status != "awaiting-startup" {
+	completed := outcome.Status == "awaiting-startup" || outcome.Status == "startup-confirmed"
+	if readErr != nil || !completed {
 		// Early configuration rejection may arrive while the sender is still
 		// blocked. Cancel both directions rather than waiting for pipe capacity.
 		cancel()
@@ -45,7 +46,7 @@ func ExchangeRepositoryPackage(parent context.Context, request, response, source
 		return RepositoryPackageOutcome{}, fmt.Errorf("native package exchange incomplete; inspect protected state before retry: %w",
 			errors.Join(readErr, sendErr))
 	}
-	if outcome.Status != "awaiting-startup" {
+	if !completed {
 		return outcome, fmt.Errorf("native package helper reported %s; do not automatically retry", outcome.Status)
 	}
 	return outcome, nil

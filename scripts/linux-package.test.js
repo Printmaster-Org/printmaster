@@ -58,6 +58,19 @@ test('release builds the architecture-matched helper before DEB and passes it in
 });
 
 const debianTest = process.platform === 'linux' ? test : test.skip;
+test('destructive Linux systemd qualification is manual and disposable only', () => {
+    const workflow = yaml.load(read('.github/workflows/linux-package-lifecycle.yml'));
+    expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
+    expect(workflow.jobs.qualify['runs-on']).toBe('ubuntu-26.04');
+    expect(workflow.jobs.qualify.strategy.matrix.format).toEqual(['deb', 'rpm']);
+    expect(workflow.jobs.qualify['timeout-minutes']).toBe(25);
+    const fixture = read('scripts/qualify-linux-packages.sh');
+    expect(fixture).toContain('disposable-github-runner');
+    expect(fixture).toContain('RUNNER_ENVIRONMENT');
+    expect(fixture).toContain('TestLiveLinuxPackageServiceLifecycle');
+    expect(read('scripts/run-tests.js')).toContain('PRINTMASTER_LIVE_');
+});
+
 debianTest('actual Debian build requires helper and contains protected helper/units with no privilege grant', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-package-test-'));
     const run = (command, args) => {
