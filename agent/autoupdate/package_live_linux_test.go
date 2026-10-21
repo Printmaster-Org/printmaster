@@ -31,7 +31,7 @@ type livePackageManagerResult struct {
 
 func TestLiveLinuxPackageManagerSender(t *testing.T) {
 	if os.Getenv("PRINTMASTER_TEST_LINUX_MANAGER_CHILD") == "" {
-		return
+		t.Skip("sender subprocess for explicitly opted-in disposable native qualification")
 	}
 	if os.Geteuid() == 0 || os.Getenv("PRINTMASTER_LIVE_LINUX_PACKAGES") != "disposable-github-runner" {
 		t.Fatal("native Manager sender fixture must run as the unprivileged service user")
@@ -219,7 +219,8 @@ func TestLiveLinuxPackageServiceLifecycle(t *testing.T) {
 				err     error
 			}
 			reply := make(chan result, 1)
-			clientDir, err := os.MkdirTemp("/tmp", "pm-native-manager-")
+			// The Fedora container deliberately mounts /tmp as noexec.
+			clientDir, err := os.MkdirTemp("/var/lib", "pm-native-manager-")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -254,6 +255,9 @@ func TestLiveLinuxPackageServiceLifecycle(t *testing.T) {
 				"ca.pem":        pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}),
 				"manifest.json": manifestData, "url": []byte(server.URL)} {
 				write(filepath.Join(clientDir, name), data)
+				if err := os.Chmod(filepath.Join(clientDir, name), 0o644); err != nil {
+					t.Fatal(err)
+				}
 			}
 			executable, err := os.Executable()
 			if err != nil {
@@ -265,6 +269,9 @@ func TestLiveLinuxPackageServiceLifecycle(t *testing.T) {
 			}
 			childPath := filepath.Join(clientDir, "sender.test")
 			if err := os.WriteFile(childPath, testBytes, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(childPath, 0o755); err != nil {
 				t.Fatal(err)
 			}
 			go func() {
