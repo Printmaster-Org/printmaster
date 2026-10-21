@@ -156,6 +156,7 @@ try {
         }
         $installerExit = $installer.ExitCode
         if ($installerExit -eq 0 -or $installerExit -eq 3010) {
+            Start-PreviousService
             $message = 'MSI installation completed.'
             if ($installerExit -eq 3010) { $message = 'MSI installation completed; a reboot is required.' }
             Write-Outcome 'succeeded' '' $message $installerExit

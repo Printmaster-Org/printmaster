@@ -122,27 +122,31 @@ test('lint keep-going collects failures from both checks and every module', () =
     expect(runner.results).toEqual([{ suite: 'lint', status: 'FAIL' }, { suite: 'js', status: 'FAIL' }]);
 });
 
-test('dry run never executes commands and inherited live-installer opt-ins are removed', () => {
-    const previous = process.env.PRINTMASTER_LIVE_INSTALLER_PERMISSIONS;
-    process.env.PRINTMASTER_LIVE_INSTALLER_PERMISSIONS = 'qualify-test-agent-msi';
+test.each(['PRINTMASTER_LIVE_INSTALLER_PERMISSIONS', 'PRINTMASTER_LIVE_MSI_FAILURE',
+    'PRINTMASTER_LIVE_MSI_BASELINE_SHA256'])('dry run never executes commands and inherited %s is removed', name => {
+    const previous = process.env[name];
+    process.env[name] = 'must-not-reach-tests';
     try {
         const execute = jest.fn(() => ({ status: 0 }));
         const runner = new Runner(parseArgs(['--all', '--dry-run']), execute);
-        expect(runner.env.PRINTMASTER_LIVE_INSTALLER_PERMISSIONS).toBeUndefined();
+        expect(runner.env[name]).toBeUndefined();
         expect(runner.run()).toBe(0);
         expect(execute).not.toHaveBeenCalled();
     } finally {
-        if (previous === undefined) delete process.env.PRINTMASTER_LIVE_INSTALLER_PERMISSIONS;
-        else process.env.PRINTMASTER_LIVE_INSTALLER_PERMISSIONS = previous;
+        if (previous === undefined) delete process.env[name];
+        else process.env[name] = previous;
     }
 });
 
 test('native selection retains descriptor, identity and recovery checks', () => {
     for (const name of ['TestInstallationProtectionSeparateUnixIdentities',
         'TestInstallationDescriptorRejectsSubstitutionBeforeApply',
-        'TestFailedInstallRecoveryOnlyRestoresRecordedPreviousArtifact']) {
+        'TestFailedInstallRecoveryOnlyRestoresRecordedPreviousArtifact',
+        'TestWindowsHelperExecutesMSITransaction',
+        'TestWindowsHelperScriptIsBoundedAndReportsDurableOutcomes']) {
         expect(name).toMatch(new RegExp(permissionTests));
     }
+    expect('TestLiveWindowsMSIRejectedPackageRecovery').not.toMatch(new RegExp(permissionTests));
 });
 
 test('Docker fixture seeds only after stopping and always cleans its uniquely scoped project after failure', () => {

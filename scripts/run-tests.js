@@ -7,7 +7,7 @@ const root = path.resolve(__dirname, '..');
 const core = ['lint', 'go', 'js', 'playwright'];
 const optional = ['integration', 'docker', 'native', 'docs'];
 const suites = [...core, ...optional, 'privileged'];
-const permissionTests = '^Test(InstallationProtection|SecureUpdaterDirectories|ValidateInstallPath|WindowsUpdater|WindowsService|InstallationDescriptor|FailedInstallRecovery|PrepareWindowsServiceExecutable|ProtectWindowsServiceFile)';
+const permissionTests = '^Test(InstallationProtection|SecureUpdaterDirectories|ValidateInstallPath|WindowsUpdater|WindowsService|WindowsHelper|InstallationDescriptor|FailedInstallRecovery|PrepareWindowsServiceExecutable|ProtectWindowsServiceFile)';
 
 function modulesAt(directory) {
     return fs.readdirSync(directory, { withFileTypes: true })
