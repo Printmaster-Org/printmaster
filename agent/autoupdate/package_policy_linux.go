@@ -51,6 +51,10 @@ func readRootPackageConfiguration(path string, limit int64) (data []byte, result
 	if os.Geteuid() != 0 {
 		return nil, fmt.Errorf("native package configuration access requires root")
 	}
+	return readProtectedPackageFile(path, limit)
+}
+
+func readProtectedPackageFile(path string, limit int64) (data []byte, result error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return nil, fmt.Errorf("native package configuration requires a clean absolute path")
 	}

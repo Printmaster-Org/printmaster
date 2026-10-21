@@ -50,6 +50,7 @@ type PendingUpdateState struct {
 	Method           string                  `json:"method"` // "binary", "msi", "dnf", "apt", "yum"
 	HelperResultPath string                  `json:"helper_result_path,omitempty"`
 	Installation     *InstallationDescriptor `json:"installation,omitempty"`
+	RepositoryTarget *updatetrust.Target     `json:"repository_target,omitempty"`
 }
 
 // ProgressCallback is invoked when update status changes, allowing real-time
@@ -899,18 +900,10 @@ func validateManifestFormat(manifest *UpdateManifest, requested updatepolicy.Art
 	return nil
 }
 
-// A verified discovery binary does not authenticate repository packages.
-// Acquire/authenticate the package, but keep installation blocked until a
-// privileged consumer can independently verify and protect those exact bytes.
+// The service-user acquisition and independent root intake each authorize the
+// exact package bytes. Only the separately provisioned helper may install them.
 func (m *Manager) executeUpdateViaPackageManager(ctx context.Context, manifest *UpdateManifest) error {
-	_, err := m.acquireRepositoryPackage(ctx, manifest, m.runUpdateCommandIn)
-	if err == nil {
-		err = fmt.Errorf("%w: exact repository package authenticated, but protected privileged installation is not yet available; unattended update blocked", ErrPublisherTrust)
-	}
-	m.logWarn("Blocked repository package installation", "package_manager", m.packageManager, "error", err)
-	m.setStatusWithError(StatusFailed, ErrCodeManifestError, err.Error())
-	m.reportTelemetry(ctx, StatusFailed, ErrCodeManifestError, err.Error())
-	return err
+	return m.executeRepositoryPackage(ctx, manifest)
 }
 
 func (m *Manager) downloadWithRetry(ctx context.Context, manifest *UpdateManifest, destPath string) error {
@@ -1253,6 +1246,9 @@ func (m *Manager) ValidatePostUpdate() (bool, string, error) {
 	if err := m.publishProgress(StatusVerifying, 90, "Validating the running agent version...", ""); err != nil {
 		return true, state.FromVersion, err
 	}
+	if state.RepositoryTarget != nil {
+		return m.validateRepositoryPostUpdate(state)
+	}
 
 	var outcome *helperOutcome
 	if state.HelperResultPath != "" {
@@ -1431,6 +1427,9 @@ func (m *Manager) unresolvedHelperHandoff() error {
 		return fmt.Errorf("cannot start another update while pending handoff state is invalid: %w", err)
 	}
 	if state.HelperResultPath == "" {
+		if state.RepositoryTarget != nil {
+			return m.repositoryHandoffBlocker(state)
+		}
 		return nil
 	}
 	outcome, err := m.readHelperOutcome(state)

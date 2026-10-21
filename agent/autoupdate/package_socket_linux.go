@@ -18,8 +18,8 @@ import (
 const repositoryPackageSocketPath = "/run/printmaster-agent-update.sock"
 
 // SubmitRepositoryPackage sends one authenticated snapshot to the independently
-// supervised systemd helper. An awaiting-startup reply is not update success or
-// proof of helper exit; protected reconciliation must confirm the service later.
+// supervised systemd helper. Only startup-confirmed describes root service
+// confirmation; a reply alone does not prove helper exit or this Agent's startup.
 func SubmitRepositoryPackage(ctx context.Context, source *os.File, target updatetrust.Target) (RepositoryPackageOutcome, error) {
 	if err := validateRepositoryPackageSocket(repositoryPackageSocketPath); err != nil {
 		return RepositoryPackageOutcome{}, err

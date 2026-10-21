@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -63,6 +64,10 @@ func TestLiveLinuxPackageServiceLifecycle(t *testing.T) {
 			command("/usr/bin/systemctl", "daemon-reload")
 			command("/usr/bin/systemctl", "restart", "printmaster-agent.service")
 			if _, err := queryNativeService(context.Background(), "/", runPrivilegedPackageCommand); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile("/etc/sudoers.d/printmaster-agent",
+				[]byte("# owner-modified historical fixture\nprintmaster ALL=(root) NOPASSWD: /usr/bin/true\n"), 0o440); err != nil {
 				t.Fatal(err)
 			}
 			fixtureDir := "packages"
@@ -182,6 +187,10 @@ func TestLiveLinuxPackageServiceLifecycle(t *testing.T) {
 				t.Fatalf("wrong root transaction evidence: %+v %v", transaction, err)
 			}
 			if wantPhase == "startup-confirmed" {
+				grants, err := os.ReadFile("/etc/sudoers.d/printmaster-agent")
+				if err != nil || strings.Contains(string(grants), "NOPASSWD:") {
+					t.Fatalf("upgrade retained historical active sudo grants: %s %v", grants, err)
+				}
 				if _, err := queryNativeService(context.Background(), "/", runPrivilegedPackageCommand); err != nil {
 					t.Fatal(err)
 				}
@@ -193,6 +202,35 @@ func TestLiveLinuxPackageServiceLifecycle(t *testing.T) {
 				defer replayCancel()
 				if outcome, err := SubmitRepositoryPackage(replayCtx, file, target); err == nil || outcome.Status == "startup-confirmed" {
 					t.Fatalf("failed transaction allowed replay: %+v %v", outcome, err)
+				}
+				if err := os.Remove(broken); err != nil && !errors.Is(err, os.ErrNotExist) {
+					t.Fatal(err)
+				}
+				if format == "deb" {
+					command("/usr/bin/dpkg", "--install", "--", baseline)
+				} else {
+					command("/usr/bin/rpm", "--upgrade", "--oldpackage", "--replacepkgs", "--", baseline)
+				}
+				command("/usr/bin/systemctl", "daemon-reload")
+				command("/usr/bin/systemctl", "restart", "printmaster-agent.service")
+				recoveryPath := "/usr/libexec/printmaster-agent-update-recovery"
+				if err := checkRootPackageExecutable(recoveryPath); err != nil {
+					t.Fatal(err)
+				}
+				repairCtx, repairCancel := context.WithTimeout(context.Background(), time.Minute)
+				defer repairCancel()
+				repair := exec.CommandContext(repairCtx, recoveryPath, "confirm-repair", transaction.RunID)
+				repair.Env = packageCommandEnvironment()
+				if output, err := repair.CombinedOutput(); err != nil {
+					t.Fatalf("installed owner recovery command failed: %v: %s", err, output)
+				}
+				repaired, err := readRepositoryPackageObservation(packageHelperResultPath)
+				if err != nil || repaired.Phase != "owner-repaired" || repaired.RunID != transaction.RunID ||
+					repaired.RepairedVersion != "1.0.0" {
+					t.Fatalf("owner recovery lost exact failed run: %+v %v", repaired, err)
+				}
+				if _, err := os.Stat(filepath.Join(packageHelperStateDir, packageTransactionFile)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("owner-confirmed repair did not retire active blocker: %v", err)
 				}
 			}
 			command("/usr/bin/systemctl", "stop", "printmaster-agent-update.socket")
@@ -207,7 +245,10 @@ func TestLiveLinuxPackageServiceLifecycle(t *testing.T) {
 				time.Sleep(100 * time.Millisecond)
 			}
 			evidence := filepath.Join(work, "evidence", scenario)
-			if err := os.Rename(packageHelperStateDir, evidence); err != nil {
+			if err := os.CopyFS(evidence, os.DirFS(packageHelperStateDir)); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(packageHelperStateDir, packageHelperStateDir+"-qualification-"+scenario); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.Remove(broken); err != nil && !errors.Is(err, os.ErrNotExist) {

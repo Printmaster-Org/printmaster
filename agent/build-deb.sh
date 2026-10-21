@@ -46,8 +46,9 @@ if [ -z "$BINARY" ] || [ ! -f "$BINARY" ]; then
     exit 1
 fi
 HELPER="$AGENT_DIR/printmaster-agent-update-linux-$ARCH"
-if [ ! -f "$HELPER" ]; then
-    echo "Error: Missing Linux update helper: $HELPER" >&2
+RECOVERY="$AGENT_DIR/printmaster-agent-update-recovery-linux-$ARCH"
+if [ ! -f "$HELPER" ] || [ ! -f "$RECOVERY" ]; then
+    echo "Error: Missing Linux update helper or recovery executable: $HELPER / $RECOVERY" >&2
     exit 1
 fi
 
@@ -74,6 +75,7 @@ mkdir -p "$PKG_DIR/var/log/printmaster"
 cp "$BINARY" "$PKG_DIR/usr/bin/printmaster-agent"
 chmod 755 "$PKG_DIR/usr/bin/printmaster-agent"
 install -m 755 "$HELPER" "$PKG_DIR/usr/libexec/printmaster-agent-update"
+install -m 755 "$RECOVERY" "$PKG_DIR/usr/libexec/printmaster-agent-update-recovery"
 install -m 644 "$AGENT_DIR/systemd/printmaster-agent-update.socket" \
     "$PKG_DIR/lib/systemd/system/printmaster-agent-update.socket"
 install -m 644 "$AGENT_DIR/systemd/printmaster-agent-update@.service" \

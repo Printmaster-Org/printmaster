@@ -1,7 +1,7 @@
 # PrintMaster Agent RPM Spec File
 # Usage: rpmbuild -bb printmaster-agent.spec
 # Requires: PRINTMASTER_VERSION, PRINTMASTER_BINARY, PRINTMASTER_UPDATE_HELPER
-# and PRINTMASTER_SYSTEMD_DIR env vars to be set
+# PRINTMASTER_UPDATE_RECOVERY and PRINTMASTER_SYSTEMD_DIR env vars to be set
 
 %define _binaries_in_noarch_packages_terminate_build 0
 %define debug_package %{nil}
@@ -48,6 +48,7 @@ install -d %{buildroot}%{_localstatedir}/log/printmaster
 # Install binary
 install -m 755 %{getenv:PRINTMASTER_BINARY} %{buildroot}%{_bindir}/printmaster-agent
 install -m 755 %{getenv:PRINTMASTER_UPDATE_HELPER} %{buildroot}/usr/libexec/printmaster-agent-update
+install -m 755 %{getenv:PRINTMASTER_UPDATE_RECOVERY} %{buildroot}/usr/libexec/printmaster-agent-update-recovery
 install -m 644 %{getenv:PRINTMASTER_SYSTEMD_DIR}/printmaster-agent-update.socket %{buildroot}%{_unitdir}/
 install -m 644 %{getenv:PRINTMASTER_SYSTEMD_DIR}/printmaster-agent-update@.service %{buildroot}%{_unitdir}/
 
@@ -159,6 +160,7 @@ fi
 %files
 %{_bindir}/printmaster-agent
 /usr/libexec/printmaster-agent-update
+/usr/libexec/printmaster-agent-update-recovery
 %{_unitdir}/printmaster-agent-update.socket
 %{_unitdir}/printmaster-agent-update@.service
 %{_unitdir}/printmaster-agent.service

@@ -109,14 +109,18 @@ jobs:
         GOOS: linux
         GOARCH: ${{ matrix.goarch }}
         CGO_ENABLED: 0
-      run: go build -trimpath -ldflags="-s -w" -o printmaster-agent-update-linux-${{ matrix.goarch }} ./cmd/printmaster-agent-update
+      run: |
+        go build -trimpath -ldflags="-s -w" -o printmaster-agent-update-linux-${{ matrix.goarch }} ./cmd/printmaster-agent-update
+        go build -trimpath -ldflags="-s -w" -o printmaster-agent-update-recovery-linux-${{ matrix.goarch }} ./cmd/printmaster-agent-update-recovery
 
     - name: Upload package helper (Linux)
       if: matrix.goos == 'linux'
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
       with:
         name: linux-package-helper-${{ matrix.goarch }}
-        path: agent/printmaster-agent-update-linux-${{ matrix.goarch }}
+        path: |
+          agent/printmaster-agent-update-linux-${{ matrix.goarch }}
+          agent/printmaster-agent-update-recovery-linux-${{ matrix.goarch }}
         if-no-files-found: error
 
     - name: Build Debian Package (Linux)

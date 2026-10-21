@@ -21,9 +21,18 @@ for version in 1.0.0 1.1.0; do
     cp -r "$source_dir/agent/systemd" "$stage/"
     cp "$work/agent-$version" "$stage/printmaster-agent"
     cp "$work/helper" "$stage/printmaster-agent-update-linux-amd64"
+    cp "$work/recovery" "$stage/printmaster-agent-update-recovery-linux-amd64"
     if [[ "$format" == rpm ]]; then
         mkdir -p "$stage/fedora"
         cp "$source_dir/agent/fedora/printmaster-agent.spec" "$stage/fedora/"
+    fi
+    if [[ "$version" == 1.0.0 ]]; then
+        # Reproduce the old RPM config-file ownership while granting only a
+        # harmless fixture command. The candidate must revoke this grant.
+        printf 'printmaster ALL=(root) NOPASSWD: /usr/bin/true\n' > "$stage/systemd/printmaster-agent-update.sudoers"
+        if [[ "$format" == rpm ]]; then
+            sed -i 's|^%attr(440,root,root) %{_sysconfdir}/sudoers.d/printmaster-agent$|%config(noreplace) %attr(440,root,root) %{_sysconfdir}/sudoers.d/printmaster-agent|' "$stage/fedora/printmaster-agent.spec"
+        fi
     fi
     bash "$stage/build-$format.sh" "$version" amd64
     find "$stage/dist" -maxdepth 1 -name "*.$format" -exec cp {} "$work/packages/" \;

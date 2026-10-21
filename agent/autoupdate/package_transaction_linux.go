@@ -30,6 +30,7 @@ type RepositoryPackageTransaction struct {
 	StartedAt       time.Time                 `json:"started_at"`
 	UpdatedAt       time.Time                 `json:"updated_at"`
 	Startup         *RepositoryPackageStartup `json:"startup,omitempty"`
+	RepairedVersion string                    `json:"repaired_version,omitempty"`
 	path            string
 }
 
@@ -69,6 +70,10 @@ func readPackageTransactionFile(path string) (transaction RepositoryPackageTrans
 	if len(data) > limit {
 		return transaction, fmt.Errorf("native package transaction exceeds %d bytes", limit)
 	}
+	return decodePackageTransaction(data, path)
+}
+
+func decodePackageTransaction(data []byte, path string) (transaction RepositoryPackageTransaction, result error) {
 	if err := json.Unmarshal(data, &transaction); err != nil {
 		return transaction, fmt.Errorf("decode native package transaction: %w", err)
 	}
@@ -102,8 +107,16 @@ func readPackageTransactionFile(path string) (transaction RepositoryPackageTrans
 		if transaction.Startup == nil || !transaction.Startup.valid() {
 			return transaction, fmt.Errorf("confirmed native package transaction lacks valid startup evidence")
 		}
+	case "owner-repaired":
+		if transaction.Startup == nil || !transaction.Startup.valid() ||
+			(transaction.RepairedVersion != transaction.PreviousVersion && transaction.RepairedVersion != transaction.Target.Version) {
+			return transaction, fmt.Errorf("owner-repaired native transaction lacks exact package/service evidence")
+		}
 	default:
 		return transaction, fmt.Errorf("unknown native package transaction phase %q", transaction.Phase)
+	}
+	if transaction.Phase != "owner-repaired" && transaction.RepairedVersion != "" {
+		return transaction, fmt.Errorf("unrepaired transaction contains repair evidence")
 	}
 	transaction.path = path
 	return transaction, nil
@@ -151,6 +164,9 @@ func (j *RepositoryPackageTransaction) record(previous, phase string) error {
 		return err
 	}
 	*j = next
+	if filepath.Dir(j.path) == packageHelperStateDir {
+		return writeRepositoryPackageObservation(packageHelperResultPath, *j)
+	}
 	return nil
 }
 

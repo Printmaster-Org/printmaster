@@ -12,6 +12,7 @@ test('Linux packages ship the fixed independent helper without direct installer 
     const rpm = read('agent/fedora/printmaster-agent.spec');
     for (const source of [deb, rpm]) {
         expect(source).toContain('/usr/libexec/printmaster-agent-update');
+        expect(source).toContain('/usr/libexec/printmaster-agent-update-recovery');
         expect(source).toContain('printmaster-agent-update.socket');
         expect(source).toContain('printmaster-agent-update@.service');
         expect(source).not.toContain('NOPASSWD:');
@@ -47,12 +48,14 @@ test('release builds the architecture-matched helper before DEB and passes it in
     expect(build.if).toBe("matrix.goos == 'linux'");
     expect(build.env.GOARCH).toBe('${{ matrix.goarch }}');
     expect(build.run).toContain('./cmd/printmaster-agent-update');
+    expect(build.run).toContain('./cmd/printmaster-agent-update-recovery');
     expect(steps.indexOf(build)).toBeLessThan(steps.findIndex(step => step.name === 'Build Debian Package (Linux)'));
     const upload = steps.find(step => step.name === 'Upload package helper (Linux)');
     const download = workflow.jobs['build-rpm'].steps.find(step => step.name === 'Download independent package helper');
     expect(upload.with.name).toBe('linux-package-helper-${{ matrix.goarch }}');
     expect(download.with.name).toBe('linux-package-helper-${{ matrix.arch }}');
     expect(upload.with['if-no-files-found']).toBe('error');
+    expect(upload.with.path).toContain('printmaster-agent-update-recovery-linux-${{ matrix.goarch }}');
     // Public release collectors download agent-*; the internal helper is not a raw Agent asset.
     expect(upload.with.name).not.toMatch(/^agent-/);
 });
@@ -90,12 +93,17 @@ debianTest('actual Debian build requires helper and contains protected helper/un
         const helper = '#!/bin/sh\necho independent-helper\n';
         fs.writeFileSync(path.join(directory, 'printmaster-agent-update-linux-amd64'), helper);
         result = run('bash', ['build-deb.sh', '1.2.3', 'amd64']);
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain('recovery executable');
+        fs.writeFileSync(path.join(directory, 'printmaster-agent-update-recovery-linux-amd64'), helper);
+        result = run('bash', ['build-deb.sh', '1.2.3', 'amd64']);
         expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
         const packagePath = path.join(directory, 'dist/printmaster-agent_1.2.3_amd64.deb');
         result = run('dpkg-deb', ['--extract', packagePath, path.join(directory, 'extracted')]);
         expect(result.status).toBe(0);
         const extracted = path.join(directory, 'extracted');
         expect(fs.readFileSync(path.join(extracted, 'usr/libexec/printmaster-agent-update'), 'utf8')).toBe(helper);
+        expect(fs.readFileSync(path.join(extracted, 'usr/libexec/printmaster-agent-update-recovery'), 'utf8')).toBe(helper);
         expect(fs.statSync(path.join(extracted, 'usr/libexec/printmaster-agent-update')).mode & 0o777).toBe(0o755);
         expect(fs.statSync(path.join(extracted, 'etc/sudoers.d/printmaster-agent')).mode & 0o777).toBe(0o440);
         expect(fs.readFileSync(path.join(extracted, 'etc/sudoers.d/printmaster-agent'), 'utf8')).not.toMatch(/^[^#\s]/m);

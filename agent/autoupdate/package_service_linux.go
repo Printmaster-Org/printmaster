@@ -36,6 +36,11 @@ func completeRepositoryPackageService(parent context.Context, stateDir string, o
 			if outcome.Target == nil || transaction.Target != *outcome.Target {
 				return fmt.Errorf("native startup confirmation target changed")
 			}
+			if stateDir == packageHelperStateDir {
+				if err := writeRepositoryPackageObservation(packageHelperResultPath, transaction); err != nil {
+					return err
+				}
+			}
 			outcome.Status = "startup-confirmed"
 			return nil
 		}
@@ -66,7 +71,13 @@ func failRepositoryPackageStartup(stateDir, runID string, failure error) error {
 		if err != nil {
 			return err
 		}
-		return writePackageTransaction(transaction.path, data)
+		if err := writePackageTransaction(transaction.path, data); err != nil {
+			return err
+		}
+		if stateDir == packageHelperStateDir {
+			return writeRepositoryPackageObservation(packageHelperResultPath, transaction)
+		}
+		return nil
 	})
 	return errors.Join(failure, recordErr)
 }

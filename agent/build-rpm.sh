@@ -45,8 +45,9 @@ if [ -z "$BINARY" ] || [ ! -f "$BINARY" ]; then
     exit 1
 fi
 HELPER="$AGENT_DIR/printmaster-agent-update-linux-$ARCH"
-if [ ! -f "$HELPER" ]; then
-    echo "Error: Missing Linux update helper: $HELPER" >&2
+RECOVERY="$AGENT_DIR/printmaster-agent-update-recovery-linux-$ARCH"
+if [ ! -f "$HELPER" ] || [ ! -f "$RECOVERY" ]; then
+    echo "Error: Missing Linux update helper or recovery executable: $HELPER / $RECOVERY" >&2
     exit 1
 fi
 
@@ -70,6 +71,8 @@ PRINTMASTER_BINARY="$(realpath "$BINARY")"
 export PRINTMASTER_BINARY
 PRINTMASTER_UPDATE_HELPER="$(realpath "$HELPER")"
 export PRINTMASTER_UPDATE_HELPER
+PRINTMASTER_UPDATE_RECOVERY="$(realpath "$RECOVERY")"
+export PRINTMASTER_UPDATE_RECOVERY
 export PRINTMASTER_SYSTEMD_DIR="$AGENT_DIR/systemd"
 
 # Build the RPM

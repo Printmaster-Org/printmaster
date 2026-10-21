@@ -172,6 +172,7 @@ describe('Beta package metadata', () => {
         fs.copyFileSync(path.join(root, 'agent', 'fedora', 'printmaster-agent.spec'), path.join(directory, 'fedora', 'printmaster-agent.spec'));
         fs.writeFileSync(path.join(directory, 'printmaster-agent'), 'test binary');
         fs.writeFileSync(path.join(directory, 'printmaster-agent-update-linux-amd64'), 'test update helper');
+        fs.writeFileSync(path.join(directory, 'printmaster-agent-update-recovery-linux-amd64'), 'test recovery command');
         fs.cpSync(path.join(root, 'agent', 'systemd'), path.join(directory, 'systemd'), { recursive: true });
         fs.mkdirSync(path.join(directory, 'tools'));
         fs.writeFileSync(path.join(directory, 'tools', 'dpkg-deb'),

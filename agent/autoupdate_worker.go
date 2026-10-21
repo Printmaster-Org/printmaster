@@ -230,10 +230,18 @@ func startAutoUpdateManager(
 				"error", validationErr,
 				"current_version", currentVersion,
 				"from_version", fromVersion)
-		} else {
+		} else if manager.Status().Status == autoupdate.StatusSucceeded {
 			log.Info("Post-update validation PASSED",
 				"new_version", currentVersion,
 				"previous_version", fromVersion)
+		} else if manager.Status().Status == autoupdate.StatusVerifying || manager.Status().Status == autoupdate.StatusRestarting {
+			log.Info("Post-update validation awaiting independent helper outcome",
+				"current_version", currentVersion,
+				"from_version", fromVersion,
+				"status", manager.Status().Status)
+		} else {
+			log.Warn("Previous update did not succeed; inspect persisted update progress",
+				"current_version", currentVersion, "status", manager.Status().Status)
 		}
 	} else if validationErr != nil {
 		log.Error("Could not validate pending update", "error", validationErr)
