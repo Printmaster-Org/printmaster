@@ -61,7 +61,7 @@ Agent (site) ──WebSocket/HTTP──▶ Server (central) ◀── Agent (sit
 # selection is not a complete release baseline. Live installers are never enabled.
 # Release (NEVER edit VERSION files manually)
 .\release.ps1 agent patch  # build -> tests --all gate BEFORE version changes/tags
-# CI starts three Playwright shards independently (two workers each), Jest,
+# CI starts six Playwright shards independently (two workers each), Jest,
 # PostgreSQL, Docker/native checks, and a discovered parallel Go-module matrix.
 ```
 

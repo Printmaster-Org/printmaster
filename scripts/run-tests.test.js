@@ -193,12 +193,12 @@ test('CI uses the same runner for every test suite and preserves the complete ga
     expect(ci.jobs['ci-passed'].needs).toEqual(['modules', 'go', 'installer-permissions', 'javascript', 'playwright', 'integration', 'e2e']);
     expect(ci.jobs.playwright.needs).toBeUndefined();
     expect(ci.jobs.javascript.needs).toBeUndefined();
-    expect(ci.jobs.playwright.strategy.matrix.shard).toEqual([1, 2, 3]);
+    expect(ci.jobs.playwright.strategy.matrix.shard).toEqual([1, 2, 3, 4, 5, 6]);
     expect(ci.jobs.playwright.strategy['fail-fast']).toBe(false);
     expect(ci.jobs.go.strategy.matrix.module).toBe('${{ fromJSON(needs.modules.outputs.modules) }}');
     expect(commands.join('\n')).toContain('modulesAt(process.cwd())');
     expect(commands.join('\n')).toContain('--module "$TEST_MODULE"');
-    expect(commands.join('\n')).toContain('--shard "$TEST_SHARD/3"');
+    expect(commands.join('\n')).toContain('--shard "$TEST_SHARD/6"');
     expect(native.jobs.native.steps.map(step => step.run || '').join('\n')).toContain('--suite privileged --privileged');
 });
 
