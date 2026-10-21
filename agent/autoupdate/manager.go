@@ -269,7 +269,10 @@ func NewManager(opts Options) (*Manager, error) {
 	var useMSI bool
 	var msiProductCode string
 	if opts.Enabled && runtime.GOOS == "windows" {
-		productCode, isMSI := checkMSIInstallation()
+		productCode, isMSI, err := checkMSIInstallation(binaryPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to determine Windows Installer ownership: %w", err)
+		}
 		if isMSI {
 			useMSI = true
 			msiProductCode = productCode
