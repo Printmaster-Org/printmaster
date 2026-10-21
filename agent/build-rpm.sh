@@ -2,7 +2,7 @@
 # build-rpm.sh - Build RPM package for PrintMaster Agent
 # Usage: ./build-rpm.sh [version] [arch]
 #
-# This script creates an .rpm package from a pre-built binary.
+# This script creates an .rpm package from pre-built Agent and update-helper binaries.
 # Run this on Fedora/RHEL/CentOS after building the Go binary.
 
 set -e
@@ -44,6 +44,11 @@ if [ -z "$BINARY" ] || [ ! -f "$BINARY" ]; then
     echo "  - $AGENT_DIR/${BINARY_NAME}-linux-${ARCH}"
     exit 1
 fi
+HELPER="$AGENT_DIR/printmaster-agent-update-linux-$ARCH"
+if [ ! -f "$HELPER" ]; then
+    echo "Error: Missing Linux update helper: $HELPER" >&2
+    exit 1
+fi
 
 echo "Building RPM package..."
 echo "  Package: $PACKAGE_NAME"
@@ -63,6 +68,9 @@ cp "$AGENT_DIR/fedora/printmaster-agent.spec" "$BUILD_ROOT/SPECS/"
 export PRINTMASTER_VERSION="${VERSION/-beta./~beta.}"
 PRINTMASTER_BINARY="$(realpath "$BINARY")"
 export PRINTMASTER_BINARY
+PRINTMASTER_UPDATE_HELPER="$(realpath "$HELPER")"
+export PRINTMASTER_UPDATE_HELPER
+export PRINTMASTER_SYSTEMD_DIR="$AGENT_DIR/systemd"
 
 # Build the RPM
 rpmbuild --define "_topdir $BUILD_ROOT" \

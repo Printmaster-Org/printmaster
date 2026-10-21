@@ -15,7 +15,7 @@ import (
 	"printmaster/common/updatetrust"
 )
 
-// WriteRepositoryPackageRequest owns and closes output, which must be a pipe.
+// WriteRepositoryPackageRequest owns and closes the pipe or Unix stream output.
 // The caller retains source. Sending preserves its offset and grants no install
 // authority: the root helper must independently authorize the received bytes.
 func WriteRepositoryPackageRequest(parent context.Context, output, source *os.File, target updatetrust.Target) (result error) {

@@ -102,6 +102,23 @@ jobs:
       run: |
         go build -ldflags="-s -w -X 'main.Version=${{ steps.version.outputs.agent_version }}' -X 'main.BuildTime=${{ steps.version.outputs.build_time }}' -X 'main.GitCommit=${{ steps.version.outputs.git_commit }}' -X 'main.BuildType=${{ steps.version.outputs.build_type }}'" -o printmaster-agent-v${{ steps.version.outputs.agent_version }}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }} .
 
+    - name: Build independent package helper (Linux)
+      if: matrix.goos == 'linux'
+      working-directory: ./agent
+      env:
+        GOOS: linux
+        GOARCH: ${{ matrix.goarch }}
+        CGO_ENABLED: 0
+      run: go build -trimpath -ldflags="-s -w" -o printmaster-agent-update-linux-${{ matrix.goarch }} ./cmd/printmaster-agent-update
+
+    - name: Upload package helper (Linux)
+      if: matrix.goos == 'linux'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+      with:
+        name: linux-package-helper-${{ matrix.goarch }}
+        path: agent/printmaster-agent-update-linux-${{ matrix.goarch }}
+        if-no-files-found: error
+
     - name: Build Debian Package (Linux)
       if: matrix.goos == 'linux'
       working-directory: ./agent
@@ -387,6 +404,12 @@ jobs:
 
     - name: Trust checkout in Fedora container
       run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+    - name: Download independent package helper
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: linux-package-helper-${{ matrix.arch }}
+        path: agent/
 
     - name: Get version
       id: version

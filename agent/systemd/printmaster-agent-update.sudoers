@@ -1,0 +1,2 @@
+# Direct package-manager and service-control sudo grants are intentionally revoked.
+# Authenticated package intake uses the separately provisioned systemd socket.

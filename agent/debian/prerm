@@ -3,6 +3,10 @@ set -e
 
 case "$1" in
     remove)
+        if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+            systemctl stop printmaster-agent-update.socket
+            systemctl disable printmaster-agent-update.socket
+        fi
         # Stop and disable the service before removal
         if systemctl is-active --quiet printmaster-agent.service; then
             systemctl stop printmaster-agent.service || true

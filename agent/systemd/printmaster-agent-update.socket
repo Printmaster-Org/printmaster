@@ -1,0 +1,18 @@
+[Unit]
+Description=PrintMaster authenticated package update intake
+ConditionPathExists=/etc/printmaster/update-helper.json
+ConditionPathExists=/etc/printmaster/update-publisher-root.json
+ConditionPathExists=/etc/printmaster/update-policy.json
+
+[Socket]
+ListenStream=/run/printmaster-agent-update.sock
+SocketUser=root
+SocketGroup=printmaster
+SocketMode=0660
+Accept=yes
+MaxConnections=1
+Backlog=1
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

@@ -24,7 +24,7 @@ type RepositoryPackageOutcome struct {
 	Target *updatetrust.Target `json:"target,omitempty"`
 }
 
-// ServePrivilegedRepositoryPackageResponse owns both pipe handles. It emits a
+// ServePrivilegedRepositoryPackageResponse owns both stream handles. It emits a
 // bounded reply even after operation cancellation, using a separate five-second
 // write budget. The original error remains available to the helper's caller;
 // raw command output, file paths and policy are not serialized to the Agent.
@@ -42,9 +42,8 @@ func serveRepositoryPackageResponse(ctx context.Context, root []byte, metadataUR
 		return fmt.Errorf("native package response pipe is required")
 	}
 	defer func() { result = errors.Join(result, output.Close()) }()
-	info, pipeErr := output.Stat()
-	if pipeErr != nil || info.Mode()&os.ModeNamedPipe == 0 {
-		failure := errors.Join(fmt.Errorf("native package response requires a pipe"), pipeErr)
+	if err := validatePackageTransport(output); err != nil {
+		failure := fmt.Errorf("invalid native package response transport: %w", err)
 		if input != nil {
 			failure = errors.Join(failure, input.Close())
 		}
@@ -184,12 +183,8 @@ func validateRepositoryPackageOutcome(outcome RepositoryPackageOutcome) error {
 }
 
 func boundPackageOutcomePipe(ctx context.Context, file *os.File, write bool) (func() error, error) {
-	info, err := file.Stat()
-	if err != nil {
+	if err := validatePackageTransport(file); err != nil {
 		return nil, err
-	}
-	if info.Mode()&os.ModeNamedPipe == 0 {
-		return nil, fmt.Errorf("native package outcome requires a pipe")
 	}
 	deadline, ok := ctx.Deadline()
 	if !ok {

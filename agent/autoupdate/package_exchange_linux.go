@@ -9,13 +9,13 @@ import (
 	"printmaster/common/updatetrust"
 )
 
-// ExchangeRepositoryPackage owns request and response pipes, not source or the
-// helper process. The caller must supervise/wait the trusted helper separately;
-// a valid reply alone cannot prove process success. No process is launched here.
+// ExchangeRepositoryPackage owns request and response pipes or Unix streams,
+// not source or the helper process. The caller must supervise the trusted helper
+// separately; a valid reply alone cannot prove process success or service startup.
 func ExchangeRepositoryPackage(parent context.Context, request, response, source *os.File,
 	target updatetrust.Target) (RepositoryPackageOutcome, error) {
 	if request == nil || response == nil {
-		err := fmt.Errorf("native package exchange requires request and response pipes")
+		err := fmt.Errorf("native package exchange requires request and response streams")
 		if request != nil {
 			err = errors.Join(err, request.Close())
 		}

@@ -68,7 +68,7 @@ func receiveRepositoryPackage(parent context.Context, input *os.File, stateDir s
 	input = pipe
 	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
-	// Pipes support read deadlines; reject unsupported handles instead of
+	// Pipes and Unix streams support read deadlines; reject other handles instead of
 	// allowing an untrusted writer to hold the root intake lock indefinitely.
 	deadline, _ := ctx.Deadline()
 	if err := input.SetReadDeadline(deadline); err != nil {

@@ -2,7 +2,7 @@
 # build-deb.sh - Build Debian package for PrintMaster Agent
 # Usage: ./build-deb.sh [version] [arch]
 #
-# This script creates a .deb package from a pre-built binary.
+# This script creates a .deb package from pre-built Agent and update-helper binaries.
 # Run this on Ubuntu/Debian after building the Go binary.
 
 set -e
@@ -45,6 +45,11 @@ if [ -z "$BINARY" ] || [ ! -f "$BINARY" ]; then
     echo "  - $AGENT_DIR/${BINARY_NAME}-linux-${ARCH}"
     exit 1
 fi
+HELPER="$AGENT_DIR/printmaster-agent-update-linux-$ARCH"
+if [ ! -f "$HELPER" ]; then
+    echo "Error: Missing Linux update helper: $HELPER" >&2
+    exit 1
+fi
 
 echo "Building Debian package..."
 echo "  Package: $PACKAGE_NAME"
@@ -59,6 +64,7 @@ PKG_DIR="$BUILD_DIR/${PACKAGE_NAME}_${VERSION}_${DEB_ARCH}"
 rm -rf "$BUILD_DIR"
 mkdir -p "$PKG_DIR/DEBIAN"
 mkdir -p "$PKG_DIR/usr/bin"
+mkdir -p "$PKG_DIR/usr/libexec"
 mkdir -p "$PKG_DIR/lib/systemd/system"
 mkdir -p "$PKG_DIR/etc/printmaster"
 mkdir -p "$PKG_DIR/var/lib/printmaster"
@@ -67,24 +73,15 @@ mkdir -p "$PKG_DIR/var/log/printmaster"
 # Copy binary
 cp "$BINARY" "$PKG_DIR/usr/bin/printmaster-agent"
 chmod 755 "$PKG_DIR/usr/bin/printmaster-agent"
+install -m 755 "$HELPER" "$PKG_DIR/usr/libexec/printmaster-agent-update"
+install -m 644 "$AGENT_DIR/systemd/printmaster-agent-update.socket" \
+    "$PKG_DIR/lib/systemd/system/printmaster-agent-update.socket"
+install -m 644 "$AGENT_DIR/systemd/printmaster-agent-update@.service" \
+    "$PKG_DIR/lib/systemd/system/printmaster-agent-update@.service"
 
-# Create sudoers.d directory and file for package manager auto-update
+# Replace the legacy package-manager grants; the socket stays disabled until provisioned.
 mkdir -p "$PKG_DIR/etc/sudoers.d"
-cat > "$PKG_DIR/etc/sudoers.d/printmaster-agent" << 'SUDOERS'
-# PrintMaster Agent - Allow auto-update via package manager
-# This file allows the printmaster service user to update only the printmaster-agent package
-# Remove this file to disable automatic package updates
-
-# Debian/Ubuntu apt-get commands
-printmaster ALL=(root) NOPASSWD: /usr/bin/apt-get update -qq
-printmaster ALL=(root) NOPASSWD: /usr/bin/apt-get install -y -qq --allow-downgrades printmaster-agent
-printmaster ALL=(root) NOPASSWD: /usr/bin/apt-get install -y -qq --allow-downgrades ^printmaster-agent=[0-9][A-Za-z0-9._+~-]*$
-
-# Allow agent to restart itself after update
-printmaster ALL=(root) NOPASSWD: /usr/bin/systemctl restart --no-block printmaster-agent.service
-printmaster ALL=(root) NOPASSWD: /bin/systemctl restart --no-block printmaster-agent.service
-SUDOERS
-chmod 440 "$PKG_DIR/etc/sudoers.d/printmaster-agent"
+install -m 440 "$AGENT_DIR/systemd/printmaster-agent-update.sudoers" "$PKG_DIR/etc/sudoers.d/printmaster-agent"
 
 # Copy systemd service (modify path for /usr/bin)
 sed 's|/usr/local/bin/printmaster-agent|/usr/bin/printmaster-agent|g' \
@@ -185,6 +182,10 @@ set -e
 case "$1" in
     remove|upgrade|deconfigure)
         if command -v systemctl >/dev/null 2>&1; then
+            if [ "$1" = remove ] && [ -d /run/systemd/system ]; then
+                systemctl stop printmaster-agent-update.socket
+                systemctl disable printmaster-agent-update.socket
+            fi
             if systemctl is-active --quiet printmaster-agent.service; then
                 systemctl stop printmaster-agent.service || true
             fi

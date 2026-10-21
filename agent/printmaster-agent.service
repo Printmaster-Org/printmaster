@@ -21,8 +21,7 @@ StandardError=journal
 SyslogIdentifier=printmaster-agent
 
 # Security hardening
-# Note: NoNewPrivileges and ProtectSystem are NOT set to allow sudo for package manager auto-updates
-# The sudoers.d/printmaster-agent file restricts sudo to only specific update commands
+# Privileged updates use a separately provisioned systemd socket, not sudo.
 PrivateTmp=true
 ProtectHome=true
 

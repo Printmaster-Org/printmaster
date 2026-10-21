@@ -171,6 +171,8 @@ describe('Beta package metadata', () => {
         fs.mkdirSync(path.join(directory, 'fedora'));
         fs.copyFileSync(path.join(root, 'agent', 'fedora', 'printmaster-agent.spec'), path.join(directory, 'fedora', 'printmaster-agent.spec'));
         fs.writeFileSync(path.join(directory, 'printmaster-agent'), 'test binary');
+        fs.writeFileSync(path.join(directory, 'printmaster-agent-update-linux-amd64'), 'test update helper');
+        fs.cpSync(path.join(root, 'agent', 'systemd'), path.join(directory, 'systemd'), { recursive: true });
         fs.mkdirSync(path.join(directory, 'tools'));
         fs.writeFileSync(path.join(directory, 'tools', 'dpkg-deb'),
             '#!/usr/bin/env bash\nsed -n "s/^Version: //p" "$3/DEBIAN/control" > "$4"\n', { mode: 0o755 });

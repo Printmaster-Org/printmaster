@@ -1,0 +1,16 @@
+[Unit]
+Description=PrintMaster authenticated package update transaction
+
+[Service]
+Type=exec
+User=root
+Group=root
+ExecStart=/usr/libexec/printmaster-agent-update
+WorkingDirectory=/
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+RuntimeMaxSec=16min
+TimeoutStopSec=30s
+KillMode=process
+Restart=no

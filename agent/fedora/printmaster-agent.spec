@@ -1,6 +1,7 @@
 # PrintMaster Agent RPM Spec File
 # Usage: rpmbuild -bb printmaster-agent.spec
-# Requires: PRINTMASTER_VERSION and PRINTMASTER_BINARY env vars to be set
+# Requires: PRINTMASTER_VERSION, PRINTMASTER_BINARY, PRINTMASTER_UPDATE_HELPER
+# and PRINTMASTER_SYSTEMD_DIR env vars to be set
 
 %define _binaries_in_noarch_packages_terminate_build 0
 %define debug_package %{nil}
@@ -37,6 +38,7 @@ Features:
 %install
 # Create directories
 install -d %{buildroot}%{_bindir}
+install -d %{buildroot}/usr/libexec
 install -d %{buildroot}%{_unitdir}
 install -d %{buildroot}%{_sysconfdir}/printmaster
 install -d %{buildroot}%{_sysconfdir}/sudoers.d
@@ -45,31 +47,12 @@ install -d %{buildroot}%{_localstatedir}/log/printmaster
 
 # Install binary
 install -m 755 %{getenv:PRINTMASTER_BINARY} %{buildroot}%{_bindir}/printmaster-agent
+install -m 755 %{getenv:PRINTMASTER_UPDATE_HELPER} %{buildroot}/usr/libexec/printmaster-agent-update
+install -m 644 %{getenv:PRINTMASTER_SYSTEMD_DIR}/printmaster-agent-update.socket %{buildroot}%{_unitdir}/
+install -m 644 %{getenv:PRINTMASTER_SYSTEMD_DIR}/printmaster-agent-update@.service %{buildroot}%{_unitdir}/
 
-# Install sudoers file for package manager auto-update
-cat > %{buildroot}%{_sysconfdir}/sudoers.d/printmaster-agent << 'EOF'
-# PrintMaster Agent - Allow auto-update via package manager
-# This file allows the printmaster service user to update only the printmaster-agent package
-# Remove this file to disable automatic package updates
-
-# Fedora/RHEL dnf commands
-# Note: --setopt=logdir=/tmp prevents dnf5 from writing to /var/log/dnf5.log which may be read-only for the service
-# The wildcard allows installing specific versions (e.g., printmaster-agent-0.27.4)
-printmaster ALL=(root) NOPASSWD: /usr/bin/dnf --setopt=logdir=/tmp --refresh install -y --allowerasing printmaster-agent
-printmaster ALL=(root) NOPASSWD: /usr/bin/dnf --setopt=logdir=/tmp --refresh install -y --allowerasing printmaster-agent-*
-printmaster ALL=(root) NOPASSWD: /usr/bin/dnf --setopt=logdir=/tmp --refresh upgrade -y printmaster-agent
-
-# RHEL/CentOS yum commands (fallback for older systems)
-printmaster ALL=(root) NOPASSWD: /usr/bin/yum clean metadata -q
-printmaster ALL=(root) NOPASSWD: /usr/bin/yum install -y -q printmaster-agent
-printmaster ALL=(root) NOPASSWD: /usr/bin/yum install -y -q printmaster-agent-*
-printmaster ALL=(root) NOPASSWD: /usr/bin/yum upgrade -y -q printmaster-agent
-
-# Allow agent to restart itself after update
-printmaster ALL=(root) NOPASSWD: /usr/bin/systemctl restart --no-block printmaster-agent.service
-printmaster ALL=(root) NOPASSWD: /bin/systemctl restart --no-block printmaster-agent.service
-EOF
-chmod 440 %{buildroot}%{_sysconfdir}/sudoers.d/printmaster-agent
+# Managed replacement revokes old direct installer privileges on upgrade.
+install -m 440 %{getenv:PRINTMASTER_SYSTEMD_DIR}/printmaster-agent-update.sudoers %{buildroot}%{_sysconfdir}/sudoers.d/printmaster-agent
 
 # Install systemd service
 cat > %{buildroot}%{_unitdir}/printmaster-agent.service << 'EOF'
@@ -96,8 +79,7 @@ Environment=PRINTMASTER_DATA_DIR=/var/lib/printmaster
 SELinuxContext=system_u:system_r:unconfined_service_t:s0
 
 # Security hardening (systemd-level, independent of SELinux)
-# Note: NoNewPrivileges and ProtectSystem are NOT set to allow sudo for package manager auto-updates
-# The sudoers.d/printmaster-agent file restricts sudo to only specific update commands
+# Privileged updates use a separately provisioned systemd socket, not sudo.
 ProtectHome=true
 PrivateTmp=true
 
@@ -162,6 +144,7 @@ systemctl restart printmaster-agent.service || true
 echo "PrintMaster Agent installed and running at http://localhost:8080"
 
 %preun
+%systemd_preun printmaster-agent-update.socket
 %systemd_preun printmaster-agent.service
 
 %postun
@@ -175,10 +158,13 @@ fi
 
 %files
 %{_bindir}/printmaster-agent
+/usr/libexec/printmaster-agent-update
+%{_unitdir}/printmaster-agent-update.socket
+%{_unitdir}/printmaster-agent-update@.service
 %{_unitdir}/printmaster-agent.service
 %dir %{_sysconfdir}/printmaster
 %config(noreplace) %{_sysconfdir}/printmaster/agent.toml.example
-%config(noreplace) %attr(440,root,root) %{_sysconfdir}/sudoers.d/printmaster-agent
+%attr(440,root,root) %{_sysconfdir}/sudoers.d/printmaster-agent
 %dir %attr(750,printmaster,printmaster) %{_sharedstatedir}/printmaster
 %dir %attr(750,printmaster,printmaster) %{_localstatedir}/log/printmaster
 
