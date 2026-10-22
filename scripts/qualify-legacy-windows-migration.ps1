@@ -60,6 +60,6 @@ Get-FileHash "$Work\candidate.exe", "$Work\candidate.msi", "$Work\failure.msi" -
     Select-Object Path, Hash | ConvertTo-Json | Set-Content "$Work\evidence\candidate-sha256.json"
 $env:PRINTMASTER_LIVE_LEGACY_MSI_DIR = $Work
 $env:PRINTMASTER_LIVE_LEGACY_MSI_VERSION = $Version
-& "$Work\migration.test.exe" -test.v -test.timeout=12m '-test.run=^TestLiveLegacyWindowsMSIMigration$' 2>&1 |
+& "$Work\migration.test.exe" '-test.v' '-test.timeout=12m' '-test.run=^TestLiveLegacyWindowsMSIMigration$' 2>&1 |
     Tee-Object "$Work\evidence\migration.txt"
 if ($LASTEXITCODE -ne 0) { throw "Native MSI migration qualification failed: $LASTEXITCODE" }
