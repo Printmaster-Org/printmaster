@@ -56,6 +56,16 @@ if [[ "${#candidates[@]}" -ne 1 ]]; then
 fi
 cp "${candidates[0]}" "$work/candidate.$format"
 sha256sum "$work/candidate.$format" > "$work/evidence/candidate-sha256.txt"
+mkdir -p "$work/extracted"
+if [[ "$format" == deb ]]; then
+    dpkg-deb --extract "$work/candidate.deb" "$work/extracted"
+else
+    # RPM's standard build-root processing can transform ELF bytes. Compare
+    # installation to the exact package payload, not its pre-packaging input.
+    (cd "$work/extracted"; rpm2cpio "$work/candidate.rpm" | cpio --extract --make-directories --quiet './usr/bin/printmaster-agent')
+fi
+cp "$work/extracted/usr/bin/printmaster-agent" "$work/candidate-agent"
+sha256sum "$work/agent" "$work/candidate-agent" > "$work/evidence/executable-sha256.txt"
 PRINTMASTER_LIVE_LEGACY_MIGRATION_DIR="$work" \
 PRINTMASTER_LIVE_LEGACY_MIGRATION_FORMAT="$format" \
 PRINTMASTER_LIVE_LEGACY_MIGRATION_VERSION="$version" \

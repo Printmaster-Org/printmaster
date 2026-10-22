@@ -223,7 +223,7 @@ func TestLiveLegacyLinuxMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectedBinary, err := os.ReadFile(filepath.Join(work, "agent"))
+	expectedBinary, err := os.ReadFile(filepath.Join(work, "candidate-agent"))
 	if err != nil || !bytes.Equal(newBinary, expectedBinary) {
 		t.Fatalf("package did not install exact candidate: %v", err)
 	}

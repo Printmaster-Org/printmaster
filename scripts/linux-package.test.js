@@ -89,6 +89,9 @@ test('released legacy migration uses pinned assets and only disposable manual na
     expect(script.match(/digest=[a-f0-9]{64}/g)).toHaveLength(4);
     expect(script.match(/sha256sum --check/g)).toHaveLength(2);
     expect(script).toContain('--proto-redir');
+    expect(script).toContain('rpm2cpio');
+    expect(script).toContain('dpkg-deb --extract');
+    expect(script).toContain('candidate-agent');
     expect(script).not.toMatch(/--oldpackage|--force|--nodeps/);
     const fixture = read('agent/autoupdate/migration_live_linux_test.go');
     expect(fixture).toContain('PRAGMA integrity_check');
