@@ -63,7 +63,7 @@ test.each(['agent', 'server'])('%s workflow labels platform images and annotates
     for (const jobName of ['build-docker', 'merge-docker']) {
         const steps = workflow.jobs[jobName].steps;
         const generator = steps.find(step => step.id === 'container_metadata');
-        expect(generator.env.REVISION).toBe('${{ github.sha }}');
+        expect(generator.env.REVISION).toBe('${{ env.SOURCE_SHA }}');
         expect(generator.env.VERSION).toBe('${{ steps.version.outputs.version }}');
         expect(generator.env.BUILD_TYPE).toBe('${{ steps.version.outputs.build_type }}');
         expect(generator.env.CREATED).toBe('${{ steps.version.outputs.build_time }}');

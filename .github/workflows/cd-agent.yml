@@ -1,18 +1,19 @@
 name: CD Agent
-run-name: "CD Agent: ${{ github.ref_name }}"
+run-name: "CD Agent: ${{ github.event.workflow_run.head_sha || github.ref_name }}"
 
 on:
   push:
-    branches: [main]
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
     tags:
       - 'agent-v[0-9]+.[0-9]+.[0-9]+'
       - 'agent-v[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+'
   workflow_dispatch: {}
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
 
 env:
+  SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
   REGISTRY: ghcr.io
   # Hardcoded lowercase: GHCR/Docker require lowercase image paths, but the
   # GitHub org name (Printmaster-Org) contains uppercase letters.
@@ -22,30 +23,36 @@ permissions:
   contents: read
 
 jobs:
-  # Wait for CI to pass on this commit
-  wait-for-ci:
-    name: Wait for CI
+  ci-gate:
+    name: Verify completed CI
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch'))
     runs-on: ubuntu-26.04
+    timeout-minutes: 3
+    outputs:
+      publish: ${{ steps.verify.outputs.publish }}
     permissions:
       contents: read
-      checks: read
+      actions: read
     steps:
-    - name: Wait for CI checks to pass
-      uses: matiasalbarello/wait-on-check-action-ts@8087812521cdb59ebc7751984b31b17209b30eeb # v1.2.0
-      timeout-minutes: 15
+    - name: Checkout trusted gate
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
-        repo-token: ${{ secrets.GITHUB_TOKEN }}
-        check-name: CI Passed
         ref: ${{ github.sha }}
-        allowed-conclusions: success
-        wait-interval: 15
-        fail-on-no-checks: 'true'
-        # CI's aggregate job may not register immediately; allow the full wait budget.
-        checks-discovery-timeout: 900
+        persist-credentials: false
+    - name: Verify exact completed CI attempt
+      id: verify
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: node scripts/cd-ci-gate.js
 
   build-agent:
     name: Build Agent Binaries
-    needs: [wait-for-ci]
+    needs: [ci-gate]
+    if: needs.ci-gate.outputs.publish == 'true'
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -72,6 +79,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
+        ref: ${{ env.SOURCE_SHA }}
         fetch-depth: 0
     
     - name: Set up Go
@@ -213,7 +221,8 @@ jobs:
 
   build-docker:
     name: Build Docker (${{ matrix.platform }})
-    needs: [wait-for-ci]
+    needs: [ci-gate]
+    if: needs.ci-gate.outputs.publish == 'true'
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -232,7 +241,9 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-    
+      with:
+        ref: ${{ env.SOURCE_SHA }}
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
     
@@ -253,7 +264,7 @@ jobs:
       env:
         VERSION: ${{ steps.version.outputs.version }}
         BUILD_TYPE: ${{ steps.version.outputs.build_type }}
-        REVISION: ${{ github.sha }}
+        REVISION: ${{ env.SOURCE_SHA }}
         CREATED: ${{ steps.version.outputs.build_time }}
       run: |
         {
@@ -306,7 +317,9 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-    
+      with:
+        ref: ${{ env.SOURCE_SHA }}
+
     - name: Download digests
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
@@ -334,7 +347,7 @@ jobs:
       env:
         VERSION: ${{ steps.version.outputs.version }}
         BUILD_TYPE: ${{ steps.version.outputs.build_type }}
-        REVISION: ${{ github.sha }}
+        REVISION: ${{ env.SOURCE_SHA }}
         CREATED: ${{ steps.version.outputs.build_time }}
       run: |
         {
@@ -399,6 +412,8 @@ jobs:
 
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ env.SOURCE_SHA }}
 
     - name: Download Linux binary
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -452,6 +467,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
+        ref: ${{ env.SOURCE_SHA }}
         fetch-depth: 0
     
     - name: Download release artifacts
@@ -634,7 +650,7 @@ jobs:
           
           ### ⏱️ Build Information
           - **Workflow run:** ${{ github.run_id }}
-          - **Commit:** ${{ github.sha }}
+          - **Commit:** ${{ env.SOURCE_SHA }}
           
           ### 🔗 Links
           - [Documentation](https://docs.printmaster.work/)
@@ -678,6 +694,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
+        ref: ${{ env.SOURCE_SHA }}
         fetch-depth: 0
     
     - name: Download release artifacts
@@ -723,7 +740,7 @@ jobs:
       uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
       with:
         tag_name: ${{ steps.version.outputs.tag }}
-        target_commitish: ${{ github.sha }}
+        target_commitish: ${{ env.SOURCE_SHA }}
         name: PrintMaster Agent v${{ steps.version.outputs.version }} (Dev)
         body: |
           ## PrintMaster Agent v${{ steps.version.outputs.version }} (Development Build)
@@ -737,7 +754,7 @@ jobs:
           ### ⏱️ Build Information
           - **Base Version:** ${{ steps.version.outputs.base_version }}
           - **Commit:** ${{ steps.version.outputs.git_commit }}
-          - **Full SHA:** ${{ github.sha }}
+          - **Full SHA:** ${{ env.SOURCE_SHA }}
           - **Workflow run:** ${{ github.run_id }}
           
           ### 🔗 Links
@@ -821,6 +838,7 @@ jobs:
     - name: Checkout main for version
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
+        ref: ${{ env.SOURCE_SHA }}
         path: main-repo
         sparse-checkout: |
           agent/VERSION

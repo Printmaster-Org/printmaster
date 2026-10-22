@@ -125,7 +125,7 @@ test('main dev publication has no tag-only RPM dependency; stable packaging stay
 
 test('dev publication pins built SHA and rejects missing uploads', () => {
     const dev = job('release-agent-dev');
-    expect(dev).toContain('target_commitish: ${{ github.sha }}');
+    expect(dev).toContain('target_commitish: ${{ env.SOURCE_SHA }}');
     expect(dev).toContain('fail_on_unmatched_files: true');
     expect(dev).toContain('prerelease: true');
     expect(dev).toContain('bash scripts/prepare-agent-dev-release.sh artifacts "$DEV_VERSION"');
@@ -185,7 +185,7 @@ describe('documentation-only workflow filtering', () => {
     ]));
     const events = [
         ['ci', 'push'], ['ci', 'pull_request'],
-        ['cd-agent', 'push'], ['cd-server', 'push'], ['codeql', 'push'],
+        ['codeql', 'push'],
     ];
 
     test.each(events)('%s %s ignores only documentation paths', (name, event) => {
@@ -238,18 +238,33 @@ test('Playwright caches its default browser directory and installs system depend
 
 test.each(['agent', 'server'])('%s CD reuses successful CI for the exact SHA and rejects untested commits', component => {
     const cd = fs.readFileSync(path.join(root, `.github/workflows/cd-${component}.yml`), 'utf8');
-    const gate = cd.slice(cd.indexOf('\n  wait-for-ci:'), cd.indexOf(`\n  build-${component}:`));
-    expect(gate).toContain('check-name: CI Passed');
+    const gate = cd.slice(cd.indexOf('\n  ci-gate:'), cd.indexOf(`\n  build-${component}:`));
     expect(gate).toContain('ref: ${{ github.sha }}');
-    expect(gate).toContain('allowed-conclusions: success');
-    expect(gate).toContain("fail-on-no-checks: 'true'");
-    expect(gate).toContain('timeout-minutes: 15');
-    expect(gate).toContain('checks-discovery-timeout: 900');
+    expect(gate).toContain('node scripts/cd-ci-gate.js');
+    expect(gate).toContain('actions: read');
+    expect(gate).toContain("github.event.workflow_run.conclusion == 'success'");
+    expect(gate).toContain('github.event.workflow_run.head_repository.full_name == github.repository');
+    expect(cd).not.toContain('wait-on-check-action');
+    const parsed = yaml.load(cd);
+    expect(parsed.on.workflow_run).toEqual({ workflows: ['CI'], types: ['completed'], branches: ['main'] });
+    expect(parsed.on.push.branches).toBeUndefined();
+    expect(parsed.env.SOURCE_SHA).toBe('${{ github.event.workflow_run.head_sha || github.sha }}');
+    const devRelease = parsed.jobs[`release-${component}-dev`].steps.find(step => step.name === 'Create GitHub Dev Release');
+    expect(devRelease.with.target_commitish).toBe('${{ env.SOURCE_SHA }}');
+    for (const [name, job] of Object.entries(parsed.jobs)) {
+        for (const step of job.steps || []) {
+            if (!step.uses?.startsWith('actions/checkout@')) continue;
+            const expected = name === 'ci-gate' ? '${{ github.sha }}' :
+                step.name === 'Checkout gh-pages' ? 'gh-pages' : '${{ env.SOURCE_SHA }}';
+            expect(step.with.ref).toBe(expected);
+        }
+    }
     expect(cd).toMatch(/tags:\n\s+- '.*-v/);
     for (const build of [`build-${component}`, 'build-docker']) {
         const match = cd.match(new RegExp(`^  ${build}:\\n([\\s\\S]*?)(?=^  [a-z][a-z-]*:|$(?![\\s\\S]))`, 'm'));
         expect(match).not.toBeNull();
-        expect(match[1]).toContain('needs: [wait-for-ci]');
+        expect(match[1]).toContain('needs: [ci-gate]');
+        expect(match[1]).toContain("if: needs.ci-gate.outputs.publish == 'true'");
     }
 });
 
