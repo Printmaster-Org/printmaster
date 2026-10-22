@@ -28,6 +28,10 @@ $source = Join-Path $PSScriptRoot '..\build\windows\msi\printmaster-agent.wxs'
 [xml]$failure = Get-Content $source -Raw
 $ns = 'http://schemas.microsoft.com/wix/2006/wi'
 $product = $failure.DocumentElement.SelectSingleNode("*[local-name()='Product']")
+$systemDirectory = $failure.CreateElement('Directory', $ns)
+$systemDirectory.SetAttribute('Id', 'SystemFolder')
+$targetDirectory = $product.SelectSingleNode("*[local-name()='Directory' and @Id='TARGETDIR']")
+[void]$targetDirectory.AppendChild($systemDirectory)
 $action = $failure.CreateElement('CustomAction', $ns)
 $action.SetAttribute('Id', 'RejectMigrationFixture')
 $action.SetAttribute('Directory', 'SystemFolder')
