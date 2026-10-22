@@ -50,6 +50,7 @@ test('legacy MSI qualification is disposable manual-only, independently pinned a
     expect(script).toContain('467515862f9760761e7467e435a73862b1a549f2df18c6e998533b69ad25a6ab');
     expect(script).toContain('447fd61df0f985c0b2e8fde01f545469c30bed77f781c9fcb5bec6d42ff4cc42');
     expect(script).toContain("'InstallServices'");
+    expect(script).toContain("'-test.v' '-test.timeout=12m' '-test.run=^TestLiveLegacyWindowsMSIMigration$'");
     const test = read('agent/autoupdate/migration_live_windows_test.go');
     expect(test).toContain('"/norestart", "REBOOT=ReallySuppress"');
     expect(test).toContain('runMSI("/x", "candidate", 0)');

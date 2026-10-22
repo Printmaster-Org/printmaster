@@ -115,6 +115,30 @@ func TestLiveLegacyWindowsMSIMigration(t *testing.T) {
 		}
 		return config
 	}
+	checkServicePolicy := func() {
+		t.Helper()
+		service, err := connection.OpenService("PrintMasterAgent")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer service.Close()
+		actions, err := service.RecoveryActions()
+		if err != nil {
+			t.Fatal(err)
+		}
+		reset, err := service.ResetPeriod()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(actions) != 3 || reset != 0 {
+			t.Fatalf("unexpected MSI recovery policy: actions=%+v reset=%d", actions, reset)
+		}
+		for _, action := range actions {
+			if action.Type != mgr.ServiceRestart || action.Delay != 5*time.Second {
+				t.Fatalf("unexpected MSI recovery action: %+v", action)
+			}
+		}
+	}
 	control := func(start bool) {
 		t.Helper()
 		service, err := connection.OpenService("PrintMasterAgent")
@@ -259,9 +283,11 @@ func TestLiveLegacyWindowsMSIMigration(t *testing.T) {
 	binary := filepath.Join(os.Getenv("ProgramFiles"), "PrintMaster", "Agent", "printmaster-agent.exe")
 	current := serviceConfig()
 	if !strings.EqualFold(current.BinaryPathName, `"`+binary+`" --service run`) ||
-		!strings.EqualFold(current.ServiceStartName, "LocalSystem") || current.StartType != mgr.StartAutomatic {
+		!strings.EqualFold(current.ServiceStartName, "LocalSystem") || current.StartType != mgr.StartAutomatic ||
+		!current.DelayedAutoStart {
 		t.Fatalf("migration did not bind protected SYSTEM service: %+v", current)
 	}
+	checkServicePolicy()
 	want, err := fileIdentity(filepath.Join(work, "candidate.exe"))
 	if err != nil {
 		t.Fatal(err)
@@ -299,18 +325,20 @@ func TestLiveLegacyWindowsMSIMigration(t *testing.T) {
 	waitVersion("0.32.0")
 	fresh := serviceConfig()
 	if fresh.BinaryPathName != current.BinaryPathName || fresh.ServiceStartName != current.ServiceStartName ||
-		fresh.StartType != current.StartType {
+		fresh.StartType != current.StartType || fresh.DelayedAutoStart != current.DelayedAutoStart {
 		t.Fatalf("fresh native service registration differs from migrated registration: %+v", fresh)
 	}
+	checkServicePolicy()
 	checkPreserved()
 	result, err := json.MarshalIndent(map[string]any{
 		"legacy_version": version, "candidate_version": "0.32.0",
 		"legacy_service_path": original.BinaryPathName, "service_path": current.BinaryPathName,
 		"service_account": current.ServiceStartName, "product_code": product, "installed_sha256": want.SHA256,
-		"rollback":  "real MSI exit 1603 restored legacy binary, service registration and retained data",
-		"preserved": []string{"configuration", "agent_id", "agent_token", "server_join_token", "saved printer", "SQLite integrity"},
-		"reboot":    "all MSI operations /norestart REBOOT=ReallySuppress; only exact expected exits accepted",
-		"trust":     "production root unchanged; owner-controlled installer rehearsal only",
+		"service_policy": "automatic delayed start; three restart actions at five seconds; reset zero days",
+		"rollback":       "real MSI exit 1603 restored legacy binary, service registration and retained data",
+		"preserved":      []string{"configuration", "agent_id", "agent_token", "server_join_token", "saved printer", "SQLite integrity"},
+		"reboot":         "all MSI operations /norestart REBOOT=ReallySuppress; only exact expected exits accepted",
+		"trust":          "production root unchanged; owner-controlled installer rehearsal only",
 	}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
