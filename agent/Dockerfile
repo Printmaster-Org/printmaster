@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.4
 
 # Build stage (uses BuildKit cache mounts for faster dependency download and compile cache)
-FROM golang:1.27-alpine AS builder
+FROM golang:1.27.3-alpine AS builder
 
 WORKDIR /build
 

@@ -13,8 +13,9 @@ test('Agent MSI includes old-product removal in rollback and native service cont
     expect(source).toMatch(/<MajorUpgrade\b[^>]*Schedule="afterInstallInitialize"/);
     expect(source).toMatch(/<ServiceControl\b[^>]*Name="PrintMasterAgent"[^>]*Stop="both"[^>]*Start="install"[^>]*Wait="yes"/);
     expect(source).not.toMatch(/CustomAction Id="(?:StartServiceFreshInstall|StartServiceAfterUpgrade|StopService)"/);
-    expect(source).toContain('NOT Installed AND NOT WIX_UPGRADE_DETECTED');
-    expect(source).toContain('REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE');
+    expect(source).toMatch(/<ServiceInstall\b[^>]*Name="PrintMasterAgent"[^>]*Account="LocalSystem"[^>]*Vital="yes"/);
+    expect(source).toMatch(/<ServiceControl\b[^>]*Remove="uninstall"/);
+    expect(source).not.toMatch(/CustomAction Id="(?:InstallService|UninstallService)"/);
     const detection = fs.readFileSync(path.join(root, 'agent/autoupdate/msi_windows.go'), 'utf8');
     expect(detection).toContain(source.match(/UpgradeCode="([^"]+)"/)[1]);
     expect(detection).toContain(source.match(/Id="AgentBinaryComponent" Guid="([^"]+)"/)[1]);
