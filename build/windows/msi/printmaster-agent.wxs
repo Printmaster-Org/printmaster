@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
   <Product Id="*"
            Name="PrintMaster Agent"
            Language="1033"
@@ -23,35 +24,25 @@
     <Property Id="ARPHELPLINK" Value="https://github.com/printmaster-org/printmaster" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/printmaster-org/printmaster" />
 
-    <CustomAction Id="InstallService"
-                  FileKey="AgentBinaryFile"
-                  ExeCommand="--service install --quiet"
-                  Execute="deferred"
-                  Impersonate="no"
-                  Return="check" />
-    <CustomAction Id="UninstallService"
-                  FileKey="AgentBinaryFile"
-                  ExeCommand="--service uninstall --quiet"
-                  Execute="deferred"
-                  Impersonate="no"
-                  Return="ignore" />
-
-    <!-- WIX_UPGRADE_DETECTED is set when upgrading from an older version -->
-    <InstallExecuteSequence>
-      <!-- Native ServiceControl owns stop/start, including repair and rollback. -->
-      <Custom Action="InstallService" After="InstallFiles">NOT Installed AND NOT WIX_UPGRADE_DETECTED</Custom>
-      <!-- Uninstall: remove service before removing files -->
-      <Custom Action="UninstallService" Before="RemoveFiles">REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
-    </InstallExecuteSequence>
-
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
         <Directory Id="PMInstallRoot" Name="PrintMaster">
           <Directory Id="INSTALLDIR" Name="Agent">
             <Component Id="AgentBinaryComponent" Guid="{6D585077-C1D7-40DC-87AA-02A7821C4DF1}" Win64="yes">
               <File Id="AgentBinaryFile" Name="printmaster-agent.exe" Source="$(var.AgentBinaryPath)" KeyPath="yes" Checksum="yes" />
+              <!-- Native registration migrates legacy ImagePath and participates in rollback. -->
+              <ServiceInstall Id="AgentServiceInstall" Name="PrintMasterAgent"
+                              DisplayName="PrintMaster Agent"
+                              Description="PrintMaster printer and copier fleet management agent. Discovers network printers, collects device metadata, and provides web-based management."
+                              Type="ownProcess" Start="auto" ErrorControl="normal"
+                              Account="LocalSystem" Arguments="--service run" Vital="yes">
+                <ServiceConfig DelayedAutoStart="yes" OnInstall="yes" OnReinstall="yes" />
+                <util:ServiceConfig FirstFailureActionType="restart" SecondFailureActionType="restart"
+                                    ThirdFailureActionType="restart" RestartServiceDelayInSeconds="5"
+                                    ResetPeriodInDays="0" />
+              </ServiceInstall>
               <ServiceControl Id="AgentServiceControl" Name="PrintMasterAgent"
-                              Stop="both" Start="install" Wait="yes" />
+                              Stop="both" Start="install" Remove="uninstall" Wait="yes" />
             </Component>
             <Directory Id="AgentConfigDir" Name="config">
               <Component Id="BootstrapFiles" Guid="{922F880F-C6B6-4A07-82E1-50D5E9971AC2}" Win64="yes">

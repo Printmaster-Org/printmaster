@@ -1,0 +1,61 @@
+name: Legacy Windows MSI migration qualification
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    name: Legacy ${{ matrix.version }} MSI
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['0.31.0', '0.31.1']
+    env:
+      PRINTMASTER_LIVE_LEGACY_MSI: disposable-github-runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.0'
+          cache-dependency-path: '**/go.sum'
+      - name: Build candidate and qualification executable
+        shell: pwsh
+        working-directory: agent
+        env:
+          CGO_ENABLED: 0
+        run: |
+          $work = Join-Path $env:RUNNER_TEMP 'legacy-msi-migration'
+          New-Item -ItemType Directory -Path "$work\evidence" -Force | Out-Null
+          go test -c -o "$work\migration.test.exe" ./autoupdate
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go build -ldflags="-X main.Version=0.32.0" -o "$work\candidate.exe" .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:GITHUB_SHA | Set-Content "$work\evidence\source-sha.txt"
+      - name: Qualify actual legacy MSI migration and rollback without reboot
+        shell: pwsh
+        env:
+          LEGACY_VERSION: ${{ matrix.version }}
+        run: |
+          & .\scripts\qualify-legacy-windows-migration.ps1 -Version $env:LEGACY_VERSION -Work (Join-Path $env:RUNNER_TEMP 'legacy-msi-migration')
+      - name: Collect service evidence
+        if: always()
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'legacy-msi-migration\evidence'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          Get-CimInstance Win32_Service -Filter "Name='PrintMasterAgent'" |
+            Select-Object Name, State, StartName, PathName, ProcessId |
+            ConvertTo-Json | Set-Content "$evidence\service.json"
+          Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='MsiInstaller'} -MaxEvents 40 -ErrorAction Continue |
+            Select-Object TimeCreated, Id, Message | ConvertTo-Json -Depth 3 | Set-Content "$evidence\installer-events.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: legacy-msi-migration-${{ matrix.version }}
+          path: ${{ runner.temp }}\legacy-msi-migration\evidence\
+          if-no-files-found: error

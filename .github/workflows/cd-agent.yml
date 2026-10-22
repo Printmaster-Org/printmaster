@@ -189,6 +189,7 @@ jobs:
         $wxs = 'build\windows\msi\printmaster-agent.wxs'
         $candleArgs = @(
           '-nologo',
+          '-ext', 'WixUtilExtension',
           "-dProductVersion=$wixVersion",
           "-dAgentBinaryPath=$agentExe",
           '-out', $wixobj,
@@ -200,6 +201,7 @@ jobs:
         $msiPath = Join-Path $distDir $msiName
         $lightArgs = @(
           '-nologo',
+          '-ext', 'WixUtilExtension',
           '-out', $msiPath,
           $wixobj
         )
