@@ -236,7 +236,12 @@ test('Playwright caches its default browser directory and installs system depend
     expect(javascript).toContain("key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}");
     const job = yaml.load(ci).jobs.playwright;
     expect(job['timeout-minutes']).toBe(25);
+    const mirror = job.steps.find(step => step.name === 'Use upstream Ubuntu package mirror');
+    expect(mirror['timeout-minutes']).toBe(1);
+    expect(mirror.run).toContain("grep -q 'http://azure.archive.ubuntu.com/ubuntu' /etc/apt/apt-mirrors.txt");
+    expect(mirror.run).toContain('https://archive.ubuntu.com/ubuntu');
     const dependencies = job.steps.find(step => step.name === 'Install Playwright system dependencies');
+    expect(job.steps.indexOf(mirror)).toBeLessThan(job.steps.indexOf(dependencies));
     expect(dependencies.run).toBe('npx playwright install-deps chromium firefox webkit');
     expect(dependencies['timeout-minutes']).toBe(5);
     const browsers = job.steps.find(step => step.name === 'Ensure Playwright browsers');

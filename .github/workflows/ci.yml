@@ -115,6 +115,13 @@ jobs:
           key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-playwright-
+      - name: Use upstream Ubuntu package mirror
+        timeout-minutes: 1
+        run: |
+          set -eu
+          grep -q 'http://azure.archive.ubuntu.com/ubuntu' /etc/apt/apt-mirrors.txt
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+          cat /etc/apt/apt-mirrors.txt
       - name: Install Playwright system dependencies
         timeout-minutes: 5
         run: npx playwright install-deps chromium firefox webkit
