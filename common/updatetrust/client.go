@@ -111,6 +111,7 @@ func (c *Client) Authorize(ctx context.Context, target Target) (Authorization, e
 }
 
 func (c *Client) authorize(ctx context.Context, target Target, authorization *Authorization) (result error) {
+	defer func() { result = diagnoseTrust(result, time.Now().UTC()) }()
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	select {
@@ -164,7 +165,11 @@ func (c *Client) authorize(ctx context.Context, target Target, authorization *Au
 	// network or target failure. Preserve that state even when authorization
 	// fails; otherwise retries could lose the library's rollback protection.
 	defer func() {
-		result = errors.Join(result, c.checkpointTrustState())
+		var verifiedAt time.Time
+		if result == nil {
+			verifiedAt = time.Now().UTC()
+		}
+		result = errors.Join(result, c.checkpointTrustState(verifiedAt))
 	}()
 	client, err := updater.New(cfg)
 	if err != nil {

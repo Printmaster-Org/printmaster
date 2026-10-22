@@ -259,7 +259,7 @@ func TestPublisherRefreshesExpiredLocalMetadataWithoutLosingTrust(t *testing.T) 
 	}
 	// Model consistently persisted metadata that has aged, not accidental
 	// modification of one file without its integrity checkpoint.
-	if err := client.checkpointTrustState(); err != nil {
+	if err := client.checkpointTrustState(time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	repo.timestamp.Signed.Version++
