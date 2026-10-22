@@ -388,6 +388,13 @@ test('right-click Agent update opens one picker; inline pending update sends pol
     await expect(page.locator('#agent_update_channel')).toHaveCount(0);
     expect(commands[0].command).toBe('install_channel');
     await page.locator('#agent-action-fixture button').click();
+    expect(commands).toHaveLength(1);
+    await page.evaluate(() => handleAgentUpdateProgress({
+        agent_id: 'agent-1', run_id: 'context-picker-test',
+        run_started_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+        sequence: 1, status: 'idle', progress: -1,
+    }));
+    await page.locator('#agent-action-fixture button').click();
     await expect.poll(() => commands.length).toBe(2);
     expect(commands[1]).toEqual({ command: 'check_update' });
     await expect(page.locator('#agent_update_channel')).toHaveCount(0);

@@ -58,7 +58,7 @@ func TestAgentUpdateManifestAndDownloadHonorFormat(t *testing.T) {
 	}
 
 	manifestRequest := func(token string, fields map[string]interface{}) *httptest.ResponseRecorder {
-		body := map[string]interface{}{"agent_id": "boundary-agent-a", "component": "agent", "platform": "windows", "arch": "amd64", "channel": "stable", "explicit_channel": true}
+		body := map[string]interface{}{"agent_id": "boundary-agent-a", "component": "agent", "platform": "windows", "arch": "amd64", "channel": "stable"}
 		for k, v := range fields {
 			body[k] = v
 		}
@@ -88,7 +88,12 @@ func TestAgentUpdateManifestAndDownloadHonorFormat(t *testing.T) {
 	for _, tc := range []struct {
 		name, requested, wantFormat, wantURLSuffix string
 	}{
-		{"legacy agent omits format", "", "binary", "/windows-amd64"},
+		// Pinned wire contracts: both stable versions omit format and
+		// explicit_channel. This does not execute their legacy installers.
+		// v0.31.0: 84ed40c6bbed41414c4bf345c7a72e533afad404
+		// v0.31.1: fc829197b991853a78da72cab625b1c821d0d91b
+		{"0.31.0 request", "", "binary", "/windows-amd64"},
+		{"0.31.1 request", "", "binary", "/windows-amd64"},
 		{"binary install", "binary", "binary", "/windows-amd64"},
 		{"msi install", "msi", "msi", "/windows-amd64?format=msi"},
 	} {
@@ -96,6 +101,7 @@ func TestAgentUpdateManifestAndDownloadHonorFormat(t *testing.T) {
 			fields := map[string]interface{}{}
 			if tc.requested != "" {
 				fields["format"] = tc.requested
+				fields["explicit_channel"] = true
 			}
 			w := manifestRequest("boundary-machine-a", fields)
 			var resp manifestResponse
