@@ -74,6 +74,29 @@ test('destructive Linux systemd qualification is manual and disposable only', ()
     expect(read('scripts/run-tests.js')).toContain('PRINTMASTER_LIVE_');
 });
 
+test('released legacy migration uses pinned assets and only disposable manual native jobs', () => {
+    const workflow = yaml.load(read('.github/workflows/legacy-linux-migration.yml'));
+    expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
+    const job = workflow.jobs.migrate;
+    expect(job['runs-on']).toBe('ubuntu-26.04');
+    expect(job.strategy.matrix).toEqual({ version: ['0.31.0', '0.31.1'], format: ['deb', 'rpm'] });
+    expect(job['timeout-minutes']).toBe(25);
+    expect(job.env.PRINTMASTER_LIVE_LEGACY_MIGRATION).toBe('disposable-github-runner');
+    const script = read('scripts/qualify-legacy-linux-migration.sh');
+    expect(script).toContain('RUNNER_ENVIRONMENT');
+    expect(script).toContain('GITHUB_ACTIONS');
+    expect(script).toContain('TestLiveLegacyLinuxMigration');
+    expect(script.match(/digest=[a-f0-9]{64}/g)).toHaveLength(4);
+    expect(script.match(/sha256sum --check/g)).toHaveLength(2);
+    expect(script).toContain('--proto-redir');
+    expect(script).not.toMatch(/--oldpackage|--force|--nodeps/);
+    const fixture = read('agent/autoupdate/migration_live_linux_test.go');
+    expect(fixture).toContain('PRAGMA integrity_check');
+    expect(fixture).toContain('verifyNativeServiceExecutable');
+    expect(fixture).toContain('packageHelperRootPath');
+    expect(fixture).toContain('server_join_token');
+});
+
 debianTest('actual Debian build requires helper and contains protected helper/units with no privilege grant', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-package-test-'));
     const run = (command, args) => {

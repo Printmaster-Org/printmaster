@@ -1,0 +1,91 @@
+name: Legacy Linux migration qualification
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    name: Legacy ${{ matrix.version }} ${{ matrix.format }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['0.31.0', '0.31.1']
+        format: [deb, rpm]
+    env:
+      PRINTMASTER_LIVE_LEGACY_MIGRATION: disposable-github-runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.0'
+          cache-dependency-path: '**/go.sum'
+      - name: Build exact candidate and native qualification executable
+        working-directory: agent
+        env:
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p "$RUNNER_TEMP/legacy-migration/evidence"
+          go test -c -o "$RUNNER_TEMP/legacy-migration/migration.test" ./autoupdate
+          go build -ldflags="-X main.Version=0.32.0" -o "$RUNNER_TEMP/legacy-migration/agent" .
+          go build -o "$RUNNER_TEMP/legacy-migration/helper" ./cmd/printmaster-agent-update
+          go build -o "$RUNNER_TEMP/legacy-migration/recovery" ./cmd/printmaster-agent-update-recovery
+          printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/legacy-migration/evidence/source-sha.txt"
+      - name: Fetch independently pinned released package
+        env:
+          LEGACY_VERSION: ${{ matrix.version }}
+          PACKAGE_FORMAT: ${{ matrix.format }}
+        run: |
+          bash scripts/qualify-legacy-linux-migration.sh fetch "$LEGACY_VERSION" "$PACKAGE_FORMAT" "$GITHUB_WORKSPACE" "$RUNNER_TEMP/legacy-migration"
+      - name: Migrate actual Debian installation on disposable systemd runner
+        if: matrix.format == 'deb'
+        env:
+          LEGACY_VERSION: ${{ matrix.version }}
+        run: |
+          sudo env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted \
+            PRINTMASTER_LIVE_LEGACY_MIGRATION=disposable-github-runner \
+            bash scripts/qualify-legacy-linux-migration.sh run "$LEGACY_VERSION" deb "$GITHUB_WORKSPACE" "$RUNNER_TEMP/legacy-migration"
+      - name: Migrate actual RPM installation in disposable Fedora systemd
+        if: matrix.format == 'rpm'
+        env:
+          LEGACY_VERSION: ${{ matrix.version }}
+        run: |
+          docker build --file scripts/linux-package-qualification.Dockerfile --tag pm-legacy-migration .
+          docker run --detach --name pm-legacy-migration --privileged --cgroupns=host \
+            --volume /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            --volume "$GITHUB_WORKSPACE:/source:ro" \
+            --volume "$RUNNER_TEMP/legacy-migration:/qualification" \
+            --tmpfs /run --tmpfs /tmp \
+            --env GITHUB_ACTIONS=true --env RUNNER_ENVIRONMENT=github-hosted \
+            --env PRINTMASTER_LIVE_LEGACY_MIGRATION=disposable-github-runner \
+            pm-legacy-migration
+          for attempt in $(seq 1 30); do
+            if docker exec pm-legacy-migration systemctl show-environment; then break; fi
+            sleep 1
+          done
+          docker exec pm-legacy-migration systemctl show-environment
+          docker exec pm-legacy-migration bash /source/scripts/qualify-legacy-linux-migration.sh run "$LEGACY_VERSION" rpm /source /qualification
+      - name: Collect service and package evidence
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/legacy-migration/evidence"
+          if [[ '${{ matrix.format }}' == rpm ]]; then
+            docker exec pm-legacy-migration journalctl --no-pager > "$RUNNER_TEMP/legacy-migration/evidence/journal.txt" 2>&1 || true
+            docker logs pm-legacy-migration > "$RUNNER_TEMP/legacy-migration/evidence/container.txt" 2>&1 || true
+          else
+            sudo journalctl --no-pager -u printmaster-agent > "$RUNNER_TEMP/legacy-migration/evidence/journal.txt"
+          fi
+          sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/legacy-migration/evidence"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: legacy-migration-${{ matrix.version }}-${{ matrix.format }}
+          path: ${{ runner.temp }}/legacy-migration/evidence/
+          if-no-files-found: error
+      - name: Remove only qualification container
+        if: always() && matrix.format == 'rpm'
+        run: docker rm -f pm-legacy-migration
