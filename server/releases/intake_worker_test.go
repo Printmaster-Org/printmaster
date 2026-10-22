@@ -2,6 +2,7 @@ package releases
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,30 @@ import (
 
 	"printmaster/server/storage"
 )
+
+func TestIntakeDeadlineReportsFailure(t *testing.T) {
+	t.Parallel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+	store, err := storage.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	worker, err := NewIntakeWorker(store, nil, Options{CacheDir: t.TempDir(), BaseAPIURL: upstream.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	var last SyncProgress
+	err = worker.RunOnceWithProgress(ctx, func(progress SyncProgress) { last = progress })
+	if !errors.Is(err, context.DeadlineExceeded) || last.Phase != "error" || last.Error == "" {
+		t.Fatalf("deadline must fail visibly, not complete: %+v %v", last, err)
+	}
+}
 
 func TestIntakeWorkerCachesArtifacts(t *testing.T) {
 	t.Parallel()

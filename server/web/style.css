@@ -1251,6 +1251,19 @@ button.delete:hover {
   cursor: help;
 }
 
+.agent-version-state {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.update-outcome {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  animation: none;
+}
+
 button:hover,
 button:hover:not(:disabled) {
   /* Override the shared brightness filter: combined hover filters/transforms
@@ -8907,6 +8920,7 @@ input[type="checkbox"]:indeterminate::before {
 .agent-update-status {
   font-size: 13px;
   min-height: 18px;
+  overflow-wrap: anywhere;
 }
 
 .agent-update-status.status-info {

@@ -5,6 +5,8 @@ const { JSDOM } = require('jsdom');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+const shared = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'common', 'web', 'shared.js'), 'utf8');
+const progressHelper = shared.slice(shared.indexOf('function updateProgressView('), shared.indexOf('window.__pm_shared.updateProgressView'));
 
 function functionSource(name) {
     const start = source.search(new RegExp(`^(?:async )?function ${name}\\(`, 'm'));
@@ -23,8 +25,10 @@ function setup(names, globals = {}) {
         window: { __pm_shared: { error: jest.fn() } },
         console: { error: jest.fn(), warn: jest.fn() },
         TypeError,
+        Date, setTimeout, clearTimeout, AbortSignal,
         ...globals,
     });
+    vm.runInContext(progressHelper + '; window.__pm_shared ||= {}; window.__pm_shared.updateProgressView = updateProgressView;', context);
     names.forEach(name => vm.runInContext(functionSource(name), context));
     return { context, document: dom.window.document };
 }
@@ -33,15 +37,15 @@ describe('ordered agent update lifecycle', () => {
     let context, agentsVM, toast;
     const event = (sequence, status, progress, run = 'one', started = '2026-10-16T18:00:00.000Z') => ({
         agent_id: 'agent-1', run_id: run, run_started_at: started, sequence, status, progress,
-        target_version: '1.1.0', message: status,
+        target_version: '1.1.0', message: status, updated_at: new Date().toISOString(),
     });
     beforeEach(() => {
         jest.useFakeTimers();
         agentsVM = { items: [{ agent_id: 'agent-1', name: 'Remote office', version: '1.0.0' }], updateState: {} };
         toast = jest.fn();
-        ({ context } = setup(['handleAgentUpdateProgress', 'getSmoothedUpdateProgress', 'handleAgentReconnectAfterUpdate'], {
+        ({ context } = setup(['handleAgentUpdateProgress', 'scheduleAgentUpdateObservation', 'handleAgentReconnectAfterUpdate'], {
             agentsVM, setTimeout, window: { __pm_shared: { showToast: toast } },
-            refreshAgentVersionCell: jest.fn(), startUpdateProgressAnimation: jest.fn(),
+            refreshAgentVersionCell: jest.fn(),
             loadAgents: jest.fn(), fetchSingleAgent: jest.fn().mockResolvedValue({ version: '1.1.0' }),
         }));
     });
@@ -53,7 +57,7 @@ describe('ordered agent update lifecycle', () => {
         context.handleAgentUpdateProgress(event(3, 'restarting', 80));
         context.handleAgentUpdateProgress(event(5, 'restarting', 80));
         context.handleAgentUpdateProgress(event(4, 'succeeded', 100));
-        expect(agentsVM.updateState['agent-1'].status).toBe('complete');
+        expect(agentsVM.updateState['agent-1'].status).toBe('succeeded');
         expect(toast.mock.calls.filter(([message]) => message.includes('complete'))).toHaveLength(1);
         context.handleAgentUpdateProgress(event(1, 'downloading', 10, 'two', '2026-10-16T18:01:00.000Z'));
         context.handleAgentUpdateProgress(event(100, 'succeeded', 100));
@@ -65,7 +69,8 @@ describe('ordered agent update lifecycle', () => {
     test('a persisted snapshot restores silently and uses the agent percentage without rescaling', () => {
         context.handleAgentUpdateProgress(event(8, 'downloading', 45), { silent: true });
         expect(toast).not.toHaveBeenCalled();
-        expect(context.getSmoothedUpdateProgress('agent-1', 'downloading', agentsVM.updateState['agent-1'])).toBe(45);
+        const state = agentsVM.updateState['agent-1'];
+        expect(context.window.__pm_shared.updateProgressView(state.snapshot, state.timestamp).progress).toBe(45);
         context.handleAgentUpdateProgress(event(7, 'downloading', 30));
         expect(agentsVM.updateState['agent-1'].progress).toBe(45);
         context.handleAgentUpdateProgress({ agent_id: 'agent-1', status: 'failed', error: 'legacy error' });
@@ -76,9 +81,151 @@ describe('ordered agent update lifecycle', () => {
         context.handleAgentUpdateProgress(event(2, 'restarting', 80));
         await context.handleAgentReconnectAfterUpdate('agent-1', agentsVM.updateState['agent-1']);
         expect(agentsVM.updateState['agent-1'].status).toBe('restarting');
-        jest.advanceTimersByTime(30000);
-        expect(agentsVM.updateState['agent-1'].message).toContain('outcome is not yet known');
+        jest.advanceTimersByTime(120000);
+        const state = agentsVM.updateState['agent-1'];
+        expect(context.window.__pm_shared.updateProgressView(state.snapshot, state.timestamp).message).toContain('outcome is not yet known');
         expect(toast.mock.calls.some(([message]) => message.includes('complete'))).toBe(false);
+    });
+
+    test('replayed progress does not extend the observation deadline and terminal errors remain visible', () => {
+        const data = event(1, 'applying', 68);
+        context.handleAgentUpdateProgress(data, { silent: true });
+        jest.advanceTimersByTime(119999);
+        context.handleAgentUpdateProgress(data, { silent: true });
+        expect(context.fetchSingleAgent).not.toHaveBeenCalled();
+        jest.advanceTimersByTime(1);
+        expect(context.fetchSingleAgent).toHaveBeenCalledTimes(1);
+        const failure = { ...event(2, 'failed', 68), error: 'Owner repair required; preserve protected journal' };
+        context.handleAgentUpdateProgress(failure);
+        jest.advanceTimersByTime(600000);
+        expect(agentsVM.updateState['agent-1'].error).toBe(failure.error);
+    });
+
+    test.each([true, false])('late command response (%s) cannot overwrite real progress', async success => {
+        let resolve;
+        const fetch = jest.fn(() => new Promise(done => { resolve = done; }));
+        const { context: command } = setup(['updateAgent', 'handleAgentUpdateProgress', 'scheduleAgentUpdateObservation'], {
+            agentsVM, fetch, refreshAgentVersionCell: jest.fn(), fetchSingleAgent: jest.fn(),
+            window: { __pm_shared: { showToast: toast, error: jest.fn() } },
+        });
+        const pending = command.updateAgent('agent-1');
+        expect(agentsVM.updateState['agent-1'].status).toBe('dispatched');
+        command.handleAgentUpdateProgress(event(1, 'downloading', 45));
+        resolve({ ok: true, json: async () => ({ success, message: 'command response' }) });
+        await pending;
+        expect(agentsVM.updateState['agent-1'].status).toBe('downloading');
+        expect(agentsVM.updateState['agent-1'].progress).toBe(45);
+    });
+
+    test('network loss is ambiguous, blocks duplicate dispatch, and never pretends installation failed', async () => {
+        const fetch = jest.fn().mockRejectedValue(new Error('connection lost'));
+        const { context: command } = setup(['updateAgent', 'scheduleAgentUpdateObservation'], {
+            agentsVM, fetch, refreshAgentVersionCell: jest.fn(), fetchSingleAgent: jest.fn(),
+            window: { __pm_shared: { showToast: toast, error: jest.fn() } },
+        });
+        await command.updateAgent('agent-1');
+        await command.updateAgent('agent-1');
+        expect(fetch).toHaveBeenCalledTimes(1);
+        jest.advanceTimersByTime(120000);
+        const state = agentsVM.updateState['agent-1'];
+        const view = command.window.__pm_shared.updateProgressView(state, state.timestamp);
+        expect(view.overdue).toBe(true);
+        expect(view.failed).toBe(false);
+        expect(view.message).toContain('connection lost');
+    });
+
+    test('version cells keep final check/errors visible without hiding later available updates', () => {
+        const { context: render, document } = setup(['renderAgentVersionCell'], {
+            agentsVM, compareVersions: () => 1,
+            escapeHtml: value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;'),
+        });
+        const cell = document.createElement('div');
+        agentsVM.latestVersion = '1.2.0';
+        context.handleAgentUpdateProgress({ ...event(1, 'idle', -1), message: 'No applicable update in the selected channel' }, { silent: true });
+        cell.innerHTML = render.renderAgentVersionCell(agentsVM.items[0], true);
+        expect(cell.textContent).toContain('No applicable update');
+        expect(cell.querySelector('[data-action="update-agent"]')).not.toBeNull();
+        context.handleAgentUpdateProgress({
+            ...event(1, 'failed', -1, 'two', '2026-10-16T18:01:00Z'),
+            error: 'Owner repair required <preserve journal>',
+        }, { silent: true });
+        cell.innerHTML = render.renderAgentVersionCell(agentsVM.items[0], true);
+        expect(cell.textContent).toContain('Owner repair required <preserve journal>');
+        expect(cell.querySelector('.update-outcome').getAttribute('role')).toBe('status');
+        expect(cell.querySelector('preserve')).toBeNull();
+        expect(cell.querySelector('[data-action="update-agent"]')).not.toBeNull();
+    });
+});
+
+describe('replayable upstream release sync', () => {
+    const event = (sequence, phase, extra = {}) => ({
+        run_id: 'sync-one', run_started_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(), deadline: new Date(Date.now() + 3600000).toISOString(),
+        sequence, phase, message: phase, ...extra,
+    });
+    let context, document, toast;
+    beforeEach(() => {
+        jest.useFakeTimers();
+        toast = jest.fn();
+        ({ context, document } = setup([
+            'handleReleaseSyncProgress', 'renderReleaseSyncProgress', 'scheduleReleaseSyncRefresh',
+            'refreshReleaseSyncStatus', 'triggerReleasesSync', 'formatBytes',
+        ], {
+            releaseSyncProgress: null, releaseSyncSnapshot: null, releaseSyncTimer: null,
+            releaseSyncReceivedAt: 0, releasesSyncPending: false,
+            showToast: toast, escapeHtml: value => String(value),
+            loadReleaseArtifacts: jest.fn(), loadSelfUpdateRuns: jest.fn(),
+            window: { __pm_shared: { warn: jest.fn() } },
+            fetch: jest.fn().mockResolvedValue({ ok: true, json: async () => ({ progress: null }) }),
+        }));
+    });
+    afterEach(() => jest.useRealTimers());
+
+    test('reload restores errors silently and terminal replay cannot regress or toast twice', async () => {
+        const failure = event(4, 'error', { error: 'Upstream metadata timed out; cache is incomplete' });
+        context.fetch.mockResolvedValue({ ok: true, json: async () => ({ progress: failure }) });
+        await context.refreshReleaseSyncStatus();
+        context.handleReleaseSyncProgress(event(3, 'downloading'));
+        context.handleReleaseSyncProgress(event(5, 'complete'));
+        expect(document.getElementById('releases_sync_progress').textContent).toContain(failure.error);
+        expect(context.releasesSyncPending).toBe(false);
+        expect(toast).not.toHaveBeenCalled();
+    });
+
+    test('stale sync is unknown, not complete; polling stops after the advertised deadline allowance', () => {
+        const baselineTimers = jest.getTimerCount();
+        context.handleReleaseSyncProgress(event(1, 'fetching'), { silent: true });
+        jest.setSystemTime(Date.now() + 120000);
+        context.renderReleaseSyncProgress();
+        expect(document.getElementById('releases_sync_progress').textContent).toContain('outcome is not yet known');
+        expect(document.getElementById('releases_sync_btn').disabled).toBe(true);
+        expect(context.releasesSyncPending).toBe(true);
+        jest.setSystemTime(Date.now() + 3600001);
+        context.scheduleReleaseSyncRefresh();
+        expect(jest.getTimerCount()).toBe(baselineTimers);
+    });
+
+    test('late successful dispatch cannot overwrite a final error', async () => {
+        let resolve;
+        context.fetch.mockImplementation(() => new Promise(done => { resolve = done; }));
+        const pending = context.triggerReleasesSync();
+        const initial = event(1, 'fetching');
+        context.handleReleaseSyncProgress({ ...initial, sequence: 2, phase: 'error', error: 'Download verification failed' });
+        resolve({ ok: true, json: async () => ({ success: true, progress: initial }) });
+        await pending;
+        expect(document.getElementById('releases_sync_progress').textContent).toContain('Download verification failed');
+        expect(context.releaseSyncProgress.phase).toBe('error');
+        expect(toast).toHaveBeenCalledTimes(1);
+    });
+
+    test('lost command response is unresolved and cannot immediately dispatch a duplicate', async () => {
+        context.fetch.mockRejectedValue(new Error('network lost'));
+        await context.triggerReleasesSync();
+        await context.triggerReleasesSync();
+        expect(context.fetch).toHaveBeenCalledTimes(1);
+        expect(context.releaseSyncProgress.phase).toBe('fetching');
+        expect(context.releasesSyncPending).toBe(true);
+        expect(document.getElementById('releases_sync_progress').textContent).toContain('could not be confirmed');
     });
 });
 
@@ -320,16 +467,19 @@ describe('Agent details and update entry points', () => {
         const fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
         const { context } = setup(['updateAgent'], {
             showAgentUpdateChannelConfirm, fetch, agentsVM: { updateState: {}, latestVersion: '0.32.0' },
-            refreshAgentVersionCell: jest.fn(), startUpdateProgressAnimation: jest.fn(),
+            refreshAgentVersionCell: jest.fn(),
+            scheduleAgentUpdateObservation: jest.fn(),
         });
         await context.updateAgent('agent-1');
         expect(showAgentUpdateChannelConfirm).not.toHaveBeenCalled();
         expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ command: 'check_update' });
+        context.agentsVM.updateState = {};
         await context.updateAgent('agent-1', { chooseChannel: true });
         expect(showAgentUpdateChannelConfirm).toHaveBeenCalledTimes(1);
         expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({
             command: 'install_channel', data: { channel: 'beta', reason: 'server_ui_channel_install' },
         });
+        context.agentsVM.updateState = {};
         showAgentUpdateChannelConfirm.mockResolvedValueOnce(null);
         await context.updateAgent('agent-1', { chooseChannel: true });
         expect(fetch).toHaveBeenCalledTimes(2);

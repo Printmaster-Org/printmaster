@@ -318,14 +318,17 @@ test('Agent update progress restores from storage and terminal events cannot reg
     }] });
     await page.evaluate(() => loadAgents(true));
     expect(await page.evaluate(() => agentsVM.updateState['agent-1'].progress)).toBe(45);
-    const actualProgress = await page.evaluate(() => getSmoothedUpdateProgress('agent-1', 'downloading', agentsVM.updateState['agent-1']));
+    const actualProgress = await page.evaluate(() => {
+        const state = agentsVM.updateState['agent-1'];
+        return window.__pm_shared.updateProgressView(state.snapshot, state.timestamp).progress;
+    });
     expect(actualProgress).toBe(45);
     await page.evaluate(snapshot => {
         handleAgentUpdateProgress({ ...snapshot, agent_id: 'agent-1', sequence: 10, status: 'succeeded', progress: 100 });
         handleAgentUpdateProgress({ ...snapshot, agent_id: 'agent-1', sequence: 9, status: 'restarting', progress: 80 });
         handleAgentUpdateProgress({ ...snapshot, agent_id: 'agent-1', sequence: 11, status: 'restarting', progress: 80 });
     }, snapshot);
-    expect(await page.evaluate(() => agentsVM.updateState['agent-1'].status)).toBe('complete');
+    expect(await page.evaluate(() => agentsVM.updateState['agent-1'].status)).toBe('succeeded');
 });
 
 test('Agent update channel modal dispatches exact selection and cancels without command', async ({ page }) => {
@@ -346,6 +349,11 @@ test('Agent update channel modal dispatches exact selection and cancels without 
         await page.locator('.modal-overlay [data-action="confirm"]').click();
         await expect.poll(() => commands.length).toBe(channels.indexOf(channel) + 1);
         expect(commands.at(-1)).toEqual(channel === 'fleet' ? { command: 'force_update', data: { reason: 'server_ui_force_fleet_channel' } } : channel ? { command: 'install_channel', data: { channel, reason: 'server_ui_channel_install' } } : { command: 'check_update' });
+        await page.evaluate(index => handleAgentUpdateProgress({
+            agent_id: 'agent-1', run_id: `picker-test-${index}`,
+            run_started_at: new Date(Date.now() + index * 1000).toISOString(),
+            updated_at: new Date().toISOString(), sequence: 1, status: 'idle', progress: -1,
+        }), channels.indexOf(channel));
     }
     await page.evaluate(() => { window.__pm_shared.updateAgent('agent-1', { chooseChannel: true }); });
     await page.locator('.modal-overlay [data-action="cancel"]').click();

@@ -9858,15 +9858,25 @@ func handleAgentUpdateTelemetry(w http.ResponseWriter, r *http.Request) {
 // releaseSyncMu protects against concurrent sync operations
 var releaseSyncMu sync.Mutex
 var releaseSyncInProgress bool
+var releaseSyncState *releaseSyncSnapshot
 
 // handleReleasesSync triggers an immediate sync of release artifacts from GitHub.
 // The sync runs in the background and progress is reported via SSE events.
 func handleReleasesSync(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if !authorizeOrReject(w, r, authz.ActionReleasesWrite, authz.ResourceRef{}) {
+		return
+	}
+	if r.Method == http.MethodGet {
+		releaseSyncMu.Lock()
+		state := copyReleaseSyncStateLocked()
+		active := releaseSyncInProgress
+		releaseSyncMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"in_progress": active, "progress": state})
 		return
 	}
 	if intakeWorker == nil {
@@ -9877,16 +9887,29 @@ func handleReleasesSync(w http.ResponseWriter, r *http.Request) {
 	// Check if sync is already in progress
 	releaseSyncMu.Lock()
 	if releaseSyncInProgress {
+		state := copyReleaseSyncStateLocked()
 		releaseSyncMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": false,
-			"error":   "sync already in progress",
+			"success":  false,
+			"error":    "sync already in progress",
+			"progress": state,
 		})
 		return
 	}
 	releaseSyncInProgress = true
+	now := time.Now().UTC()
+	startedAt := now
+	if releaseSyncState != nil && !startedAt.After(releaseSyncState.RunStartedAt) {
+		startedAt = releaseSyncState.RunStartedAt.Add(time.Millisecond)
+	}
+	releaseSyncState = &releaseSyncSnapshot{
+		RunID: fmt.Sprintf("sync-%d", startedAt.UnixNano()), RunStartedAt: startedAt, UpdatedAt: now,
+		Deadline: now.Add(time.Hour), Sequence: 1,
+		SyncProgress: releases.SyncProgress{Phase: "fetching", Message: "Starting release sync..."},
+	}
+	initial := *releaseSyncState
 	releaseSyncMu.Unlock()
 
 	// Start sync in background
@@ -9897,40 +9920,17 @@ func handleReleasesSync(w http.ResponseWriter, r *http.Request) {
 			releaseSyncMu.Unlock()
 		}()
 
-		ctx := context.Background()
+		ctx, cancel := context.WithDeadline(context.Background(), initial.Deadline)
+		defer cancel()
 		err := intakeWorker.RunOnceWithProgress(ctx, func(progress releases.SyncProgress) {
-			// Broadcast progress via SSE
-			if sseHub != nil {
-				sseHub.Broadcast(SSEEvent{
-					Type: "release_sync_progress",
-					Data: map[string]interface{}{
-						"phase":             progress.Phase,
-						"message":           progress.Message,
-						"total_files":       progress.TotalFiles,
-						"completed_files":   progress.CompletedFiles,
-						"total_bytes":       progress.TotalBytes,
-						"completed_bytes":   progress.CompletedBytes,
-						"current_file":      progress.CurrentFile,
-						"current_file_size": progress.CurrentFileSize,
-						"percent_complete":  progress.PercentComplete,
-						"error":             progress.Error,
-					},
-				})
-			}
+			recordReleaseSyncProgress(initial.RunID, progress)
 		})
 
 		if err != nil {
 			logWarn("Release sync failed", "error", err)
-			if sseHub != nil {
-				sseHub.Broadcast(SSEEvent{
-					Type: "release_sync_progress",
-					Data: map[string]interface{}{
-						"phase":   "error",
-						"message": "Sync failed",
-						"error":   err.Error(),
-					},
-				})
-			}
+			recordReleaseSyncProgress(initial.RunID, releases.SyncProgress{
+				Phase: "error", Message: "Release sync failed; inspect the error before retrying", Error: err.Error(),
+			})
 		} else {
 			logInfo("Release sync completed successfully")
 		}
@@ -9939,8 +9939,9 @@ func handleReleasesSync(w http.ResponseWriter, r *http.Request) {
 	// Return immediately - progress will come via SSE
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"message": "sync started - progress will be reported via SSE",
+		"success":  true,
+		"message":  "sync started - progress will be reported via SSE",
+		"progress": initial,
 	})
 }
 

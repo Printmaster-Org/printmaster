@@ -1316,6 +1316,41 @@ function toggleDatabaseFields() {
 window.__pm_shared = window.__pm_shared || {};
 window.__pm_shared.toggleDatabaseFields = toggleDatabaseFields;
 
+// This is an observation deadline, not an installer timeout or proof of failure.
+function updateProgressView(snapshot, receivedAt, now = Date.now()) {
+    const status = snapshot.status || 'unknown';
+    const labels = {
+        dispatched: 'Command sent', checking: 'Checking', pending: 'Preparing',
+        downloading: 'Downloading', staging: 'Staging', ready: 'Preparing installation',
+        applying: 'Installing', restarting: 'Restarting', verifying: 'Awaiting confirmation',
+        succeeded: 'Updated', failed: 'Update failed', rolled_back: 'Rolled back',
+        skipped: 'Skipped', cancelled: 'Cancelled', idle: 'Idle',
+    };
+    const terminal = ['idle', 'succeeded', 'failed', 'rolled_back', 'skipped', 'cancelled'].includes(status);
+    // Old Agents cannot provide run-bound validation, even if they say "complete".
+    const unconfirmed = ['complete', 'succeeded'].includes(status) && !snapshot.run_id;
+    const busy = !terminal || unconfirmed;
+    const updatedAt = Date.parse(snapshot.updated_at);
+    const observedAt = Number.isFinite(updatedAt) ? Math.min(updatedAt, receivedAt) : receivedAt;
+    const waitMs = Math.max(0, observedAt + 120000 - now);
+    const overdue = busy && waitMs === 0;
+    const uncertain = overdue || unconfirmed || !labels[status];
+    const label = uncertain ? 'Awaiting confirmation' : labels[status];
+    const detail = snapshot.error || snapshot.message || labels[status] || `Unknown update status: ${status}`;
+    const message = uncertain
+        ? `Update outcome is not yet known. Last report: ${detail}. Refresh status and inspect Agent/helper logs; do not start another installation while unresolved.`
+        : detail;
+    const progress = Number.isFinite(snapshot.progress) && snapshot.progress >= 0
+        ? Math.min(snapshot.progress, busy ? 99 : 100) : null;
+    return {
+        status, label, message, busy, uncertain, overdue, progress, waitMs,
+        canCancel: !uncertain && ['checking', 'pending', 'downloading'].includes(status),
+        failed: ['failed', 'rolled_back'].includes(status),
+        succeeded: status === 'succeeded' && !unconfirmed,
+    };
+}
+window.__pm_shared.updateProgressView = updateProgressView;
+
 // Ensure a safe delegator for autosave UI toggle exists. Some bundles
 // (older or compiled server bundles) call `toggleAutosaveUI()` while the
 // authoritative implementation lives in the agent bundle as `toggleAutoSave()`.

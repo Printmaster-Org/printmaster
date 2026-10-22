@@ -1020,6 +1020,7 @@ function connectSSE() {
         window.__pm_shared.log('SSE onopen, readyState=', eventSource.readyState);
         updateLiveIndicator(true);
         if (agentsVM.loaded) loadAgents(true);
+        if (window.__pm_auth?.currentUser?.role === 'admin') void refreshReleaseSyncStatus();
     };
 
     eventSource.addEventListener('connected', (e) => {
@@ -6458,6 +6459,9 @@ function renderSelfUpdateRuns(container, runs) {
 
 // Release sync progress state
 let releaseSyncProgress = null;
+let releaseSyncSnapshot = null;
+let releaseSyncReceivedAt = 0;
+let releaseSyncTimer = null;
 
 function formatBytes(bytes) {
     if (bytes === 0) return '0 B';
@@ -6467,49 +6471,45 @@ function formatBytes(bytes) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
-function handleReleaseSyncProgress(data) {
+function handleReleaseSyncProgress(data, { silent = false, local = false } = {}) {
+    if (data.run_id) {
+        if (releaseSyncSnapshot) {
+            if (data.run_id === releaseSyncSnapshot.run_id) {
+                if (['complete', 'error'].includes(releaseSyncSnapshot.phase) || data.sequence <= releaseSyncSnapshot.sequence) {
+                    renderReleaseSyncProgress();
+                    return;
+                }
+            } else if (Date.parse(data.run_started_at) <= Date.parse(releaseSyncSnapshot.run_started_at)) {
+                return;
+            }
+        }
+        releaseSyncSnapshot = data;
+    } else if (releaseSyncSnapshot && !local) {
+        return;
+    }
     releaseSyncProgress = data;
+    releaseSyncReceivedAt = Date.now();
+    renderReleaseSyncProgress();
+    clearTimeout(releaseSyncTimer);
+    if (!['complete', 'error'].includes(data.phase)) {
+        scheduleReleaseSyncRefresh();
+    } else if (!silent) {
+        showToast(data.error || data.message || (data.phase === 'complete' ? 'Release sync completed' : 'Release sync failed'),
+            data.phase === 'complete' ? 'success' : 'error');
+        if (data.phase === 'complete') {
+            setTimeout(() => { loadReleaseArtifacts(); loadSelfUpdateRuns(); }, 500);
+        }
+    }
+}
 
+function renderReleaseSyncProgress() {
+    const data = releaseSyncProgress;
+    if (!data) return;
     const btn = document.getElementById('releases_sync_btn');
     const progressContainer = document.getElementById('releases_sync_progress');
-
-    if (data.phase === 'complete') {
-        // Sync finished
-        releasesSyncPending = false;
-        if (btn) {
-            btn.disabled = false;
-            btn.textContent = 'Sync from GitHub';
-        }
-        if (progressContainer) {
-            progressContainer.style.display = 'none';
-        }
-        showToast(data.message || 'Release sync completed', 'success');
-        // Reload artifacts list
-        setTimeout(() => {
-            loadReleaseArtifacts();
-            loadSelfUpdateRuns();
-        }, 500);
-        return;
-    }
-
-    if (data.phase === 'error') {
-        // Sync failed
-        releasesSyncPending = false;
-        if (btn) {
-            btn.disabled = false;
-            btn.textContent = 'Sync from GitHub';
-        }
-        if (progressContainer) {
-            progressContainer.style.display = 'none';
-        }
-        showToast(data.error || data.message || 'Release sync failed', 'error');
-        return;
-    }
-
-    // Ongoing sync - update progress display
-    if (btn) {
-        btn.disabled = true;
-    }
+    const terminal = ['complete', 'error'].includes(data.phase);
+    releasesSyncPending = !terminal;
+    const stale = !terminal && Date.now() - Math.min(Date.parse(data.updated_at) || releaseSyncReceivedAt, releaseSyncReceivedAt) >= 120000;
 
     // Create progress container if it doesn't exist
     if (!progressContainer) {
@@ -6517,6 +6517,8 @@ function handleReleaseSyncProgress(data) {
         if (card) {
             const container = document.createElement('div');
             container.id = 'releases_sync_progress';
+            container.setAttribute('role', 'status');
+            container.setAttribute('aria-live', 'polite');
             container.style.cssText = 'margin-bottom:12px;padding:12px;background:var(--bg-secondary);border-radius:6px;';
             card.insertBefore(container, card.firstChild.nextSibling);
         }
@@ -6526,9 +6528,12 @@ function handleReleaseSyncProgress(data) {
     if (container) {
         container.style.display = 'block';
 
-        let progressHtml = `<div style="font-size:13px;color:var(--text);margin-bottom:8px;">${escapeHtml(data.message || 'Syncing...')}</div>`;
+        const message = stale
+            ? `Release sync outcome is not yet known. Last report: ${data.error || data.message || data.phase}. Refresh status before retrying.`
+            : data.error || data.message || 'Syncing...';
+        let progressHtml = `<div style="font-size:13px;overflow-wrap:anywhere;color:${data.phase === 'error' ? 'var(--danger)' : 'var(--text)'};margin-bottom:8px;">${escapeHtml(message)}</div>`;
 
-        if (data.phase === 'downloading' && data.total_files > 0) {
+        if (!stale && data.phase === 'downloading' && data.total_files > 0) {
             const pct = data.percent_complete || 0;
             const completedBytes = formatBytes(data.completed_bytes || 0);
             const totalBytes = formatBytes(data.total_bytes || 0);
@@ -6543,7 +6548,7 @@ function handleReleaseSyncProgress(data) {
                 </div>
                 <div style="text-align:right;font-size:11px;color:var(--muted);margin-top:2px;">${pct}%</div>
             `;
-        } else if (data.phase === 'fetching' || data.phase === 'processing') {
+        } else if (!stale && (data.phase === 'fetching' || data.phase === 'processing')) {
             progressHtml += `
                 <div style="background:var(--bg);border-radius:4px;height:8px;overflow:hidden;">
                     <div style="background:var(--highlight);height:100%;width:100%;animation:pulse 1.5s ease-in-out infinite;"></div>
@@ -6556,11 +6561,38 @@ function handleReleaseSyncProgress(data) {
 
     // Update button text
     if (btn) {
-        if (data.phase === 'downloading' && data.percent_complete !== undefined) {
+        btn.disabled = !terminal;
+        if (terminal) {
+            btn.textContent = 'Sync from GitHub';
+        } else if (stale) {
+            btn.textContent = 'Awaiting sync outcome';
+        } else if (data.phase === 'downloading' && data.percent_complete !== undefined) {
             btn.textContent = `Syncing... ${data.percent_complete}%`;
         } else {
             btn.textContent = 'Syncing...';
         }
+    }
+}
+
+function scheduleReleaseSyncRefresh() {
+    clearTimeout(releaseSyncTimer);
+    const deadline = Date.parse(releaseSyncProgress?.deadline);
+    if (releasesSyncPending && Number.isFinite(deadline) && Date.now() <= deadline + 120000) {
+        releaseSyncTimer = setTimeout(refreshReleaseSyncStatus, 15000);
+    }
+}
+
+async function refreshReleaseSyncStatus() {
+    try {
+        const response = await fetch('/api/v1/releases/sync', { signal: AbortSignal.timeout(15000), credentials: 'same-origin' });
+        if (!response.ok) throw new Error(`Release sync status HTTP ${response.status}`);
+        const data = await response.json();
+        if (data.progress) handleReleaseSyncProgress(data.progress, { silent: true });
+    } catch (err) {
+        window.__pm_shared.warn('Release sync status unavailable; outcome is not confirmed', err);
+    } finally {
+        renderReleaseSyncProgress();
+        scheduleReleaseSyncRefresh();
     }
 }
 
@@ -6577,32 +6609,39 @@ async function triggerReleasesSync() {
     // Show initial progress state
     handleReleaseSyncProgress({
         phase: 'fetching',
-        message: 'Starting sync...'
-    });
+        message: 'Sending sync request; completion is not confirmed.',
+        deadline: new Date(Date.now() + 3600000).toISOString(),
+    }, { local: true });
+    const dispatched = releaseSyncProgress;
 
     try {
         const resp = await fetch('/api/v1/releases/sync', {
             method: 'POST',
+            signal: AbortSignal.timeout(15000),
             headers: { 'Content-Type': 'application/json' },
             credentials: 'same-origin'
         });
-        const data = await resp.json().catch(() => ({}));
+        const data = await resp.json();
+        if (data.progress) {
+            handleReleaseSyncProgress(data.progress, { silent: true });
+            return;
+        }
 
-        if (!resp.ok) {
+        if (!resp.ok && releaseSyncProgress === dispatched) {
             // Sync failed to start
             handleReleaseSyncProgress({
                 phase: 'error',
                 message: 'Failed to start sync',
                 error: data.error || 'Unknown error'
-            });
+            }, { local: true });
         }
         // If ok, progress updates will come via SSE
     } catch (err) {
-        handleReleaseSyncProgress({
-            phase: 'error',
-            message: 'Failed to start sync',
-            error: err.message || 'Network error'
-        });
+        window.__pm_shared.warn('Release sync request delivery could not be confirmed', err);
+        if (releaseSyncProgress === dispatched) {
+            dispatched.error = 'Request delivery could not be confirmed: ' + (err.message || err);
+            renderReleaseSyncProgress();
+        }
     }
 }
 
@@ -6613,6 +6652,7 @@ let releaseArtifactsInitialized = false;
 let releaseArtifactsIsContainer = false;
 
 function initReleaseArtifactsUI() {
+    if (window.__pm_auth?.currentUser?.role === 'admin') void refreshReleaseSyncStatus();
     if (releaseArtifactsInitialized) return;
     releaseArtifactsInitialized = true;
 
@@ -10572,73 +10612,40 @@ function renderAgentCards(agents) {
 function renderAgentVersionCell(agent, forTable = false) {
     const currentVersion = agent.version || '';
     const latestVersion = agentsVM.latestVersion;
-    const displayVersion = escapeHtml(currentVersion || 'N/A');
+    let displayVersion = escapeHtml(currentVersion || 'N/A');
     const agentId = agent.agent_id || '';
 
     // Check if there's an active update for this agent
     const updateState = agentsVM.updateState[agentId];
     if (updateState) {
-        const rawStatus = updateState.status || '';
-        const status = (() => {
-            switch (rawStatus) {
-                case 'pending':
-                    return 'checking';
-                case 'staging':
-                case 'applying':
-                    return 'ready';
-                case 'succeeded':
-                    return 'complete';
-                case 'rolled_back':
-                    return 'failed';
-                default:
-                    return rawStatus;
-            }
-        })();
-
-        // Calculate smooth progress percentage based on phase
-        const smoothProgress = getSmoothedUpdateProgress(agentId, status, updateState);
-
-        // Show progress button for active states
-        if (status === 'checking' || status === 'downloading' || status === 'ready' || status === 'restarting' || status === 'verifying') {
-            const canCancel = status !== 'ready' && status !== 'restarting' && status !== 'verifying';
-            const cancelBtn = canCancel
+        const view = window.__pm_shared.updateProgressView(updateState.snapshot || updateState, updateState.timestamp);
+        if (view.busy) {
+            const cancelBtn = view.canCancel
                 ? `<button class="update-btn cancel" data-action="cancel-update" data-agent-id="${escapeHtml(agentId)}" title="Cancel update">✕</button>`
                 : '';
-            // Progress button with fill effect
-            const progressBtn = `<button class="update-btn progress-btn" data-agent-id="${escapeHtml(agentId)}" disabled style="--progress: ${smoothProgress}%">${Math.round(smoothProgress)}%</button>`;
-            const content = `${progressBtn}${cancelBtn}`;
+            const percent = view.status === 'downloading' && !view.uncertain && view.progress !== null ? ` ${view.progress}%` : '';
+            const progressBtn = `<button class="update-btn" data-agent-id="${escapeHtml(agentId)}" disabled title="${escapeHtml(view.message)}">${escapeHtml(view.label + percent)}</button>`;
+            const detail = view.uncertain ? `<span class="update-progress update-outcome" role="status">${escapeHtml(view.message)}</span>` : '';
+            const content = `${progressBtn}${cancelBtn}${detail}`;
             if (forTable) {
-                return `<div style="display:flex;align-items:center;gap:6px;">${displayVersion} ${content}</div>`;
+                return `<div class="agent-version-state">${displayVersion} ${content}</div>`;
             }
             return `${displayVersion} ${content}`;
         }
 
-        // Show failed state briefly
-        if (status === 'failed') {
-            const errorMsg = updateState.error || 'Failed';
-            const content = `<span class="update-error" title="${escapeHtml(errorMsg)}">✕ Failed</span>`;
-            if (forTable) {
-                return `<div style="display:flex;align-items:center;gap:6px;">${displayVersion} ${content}</div>`;
-            }
-            return `${displayVersion} ${content}`;
+        if (view.failed) {
+            displayVersion += ` <span class="update-error update-outcome" role="status">${escapeHtml(view.label)}: ${escapeHtml(view.message)}</span>`;
         }
 
         // Skipped update (policy or already current)
-        if (status === 'skipped') {
-            const content = `<span class="update-progress">Skipped</span>`;
-            if (forTable) {
-                return `<div style="display:flex;align-items:center;gap:6px;">${displayVersion} ${content}</div>`;
-            }
-            return `${displayVersion} ${content}`;
+        if (['idle', 'skipped', 'cancelled'].includes(view.status)) {
+            const content = `<span class="update-progress update-outcome" role="status">${escapeHtml(view.label)}: ${escapeHtml(view.message)}</span>`;
+            displayVersion += ` ${content}`;
         }
 
-        // Show complete state briefly
-        if (status === 'complete') {
+        if (view.succeeded) {
             const content = `<span class="update-complete">✓ Updated</span>`;
-            if (forTable) {
-                return `<div style="display:flex;align-items:center;gap:6px;">${displayVersion} ${content}</div>`;
-            }
-            return `${displayVersion} ${content}`;
+            displayVersion += ` ${content}`;
         }
     }
 
@@ -10651,99 +10658,11 @@ function renderAgentVersionCell(agent, forTable = false) {
         const buttonClass = canUpdate ? 'update-btn' : 'update-btn disabled';
         const updateBtn = `<button class="${buttonClass}" data-action="update-agent" data-agent-id="${escapeHtml(agentId)}" title="${escapeHtml(tooltip)}" ${canUpdate ? '' : 'disabled'}>↑ ${escapeHtml(latestVersion)}</button>`;
         if (forTable) {
-            return `<div style="display:flex;align-items:center;gap:6px;">${displayVersion} ${updateBtn}</div>`;
+            return `<div class="agent-version-state">${displayVersion} ${updateBtn}</div>`;
         }
         return `${displayVersion} ${updateBtn}`;
     }
     return displayVersion;
-}
-
-// Calculate smoothed progress for update animations
-// Phases: checking (0-5%), downloading (5-55%), ready/installing (55-85%), restarting (85-95%), verifying (95-99%)
-function getSmoothedUpdateProgress(agentId, status, updateState) {
-    if (updateState.runId) {
-        return Math.min(Math.max(updateState.progress, 0), 99);
-    }
-    const now = Date.now();
-    const startTime = updateState.timestamp || now;
-    const elapsed = now - startTime;
-
-    // Initialize or get animation state
-    if (!agentsVM.updateAnimations) {
-        agentsVM.updateAnimations = {};
-    }
-    let anim = agentsVM.updateAnimations[agentId];
-    if (!anim || anim.status !== status) {
-        // Status changed, start new animation from current display progress or phase start
-        const phaseStart = getPhaseStartPercent(status);
-        const previousProgress = anim ? anim.displayProgress : phaseStart;
-        anim = {
-            status,
-            startTime: now,
-            startProgress: Math.max(previousProgress, phaseStart),
-            displayProgress: Math.max(previousProgress, phaseStart)
-        };
-        agentsVM.updateAnimations[agentId] = anim;
-    }
-
-    const phaseEnd = getPhaseEndPercent(status);
-    const phaseDuration = getPhaseDuration(status);
-
-    // For downloading, use actual progress from agent (scaled to 5-55% range)
-    if (status === 'downloading') {
-        const rawProgress = updateState.progress || 0;
-        const targetProgress = rawProgress;
-        // Smooth towards target
-        const progressDiff = targetProgress - anim.displayProgress;
-        anim.displayProgress += progressDiff * 0.3; // Ease towards target
-        return Math.min(anim.displayProgress, phaseEnd);
-    }
-
-    // For other phases, animate time-based towards phase end
-    const phaseElapsed = now - anim.startTime;
-    const phaseProgress = Math.min(phaseElapsed / phaseDuration, 1);
-    // Ease out cubic for smooth deceleration at phase end
-    const easedProgress = 1 - Math.pow(1 - phaseProgress, 3);
-    const targetProgress = anim.startProgress + (phaseEnd - anim.startProgress) * easedProgress * 0.95; // Don't quite reach end
-
-    // Smooth update
-    const diff = targetProgress - anim.displayProgress;
-    anim.displayProgress += diff * 0.2;
-
-    return Math.min(Math.max(anim.displayProgress, 0), 99);
-}
-
-function getPhaseStartPercent(status) {
-    switch (status) {
-        case 'checking': return 0;
-        case 'downloading': return 5;
-        case 'ready': return 55;
-        case 'restarting': return 85;
-        case 'verifying': return 95;
-        default: return 0;
-    }
-}
-
-function getPhaseEndPercent(status) {
-    switch (status) {
-        case 'checking': return 5;
-        case 'downloading': return 55;
-        case 'ready': return 85;
-        case 'restarting': return 95;
-        case 'verifying': return 99;
-        default: return 100;
-    }
-}
-
-function getPhaseDuration(status) {
-    switch (status) {
-        case 'checking': return 3000; // 3s for checking
-        case 'downloading': return 30000; // 30s typical download
-        case 'ready': return 10000; // 10s for install/staging
-        case 'restarting': return 15000; // 15s for restart
-        case 'verifying': return 5000; // 5s for verification
-        default: return 10000;
-    }
 }
 
 function renderAgentsTableHeader() {
@@ -10976,7 +10895,7 @@ function updateAgentHeartbeat(agentId, status, lastSeen) {
 // Fetch a single agent's data and update the list
 async function fetchSingleAgent(agentId) {
     try {
-        const response = await fetch(`/api/v1/agents/${agentId}`);
+        const response = await fetch(`/api/v1/agents/${agentId}`, { signal: AbortSignal.timeout(15000) });
         if (!response.ok) {
             window.__pm_shared.warn('Failed to fetch single agent:', response.status);
             return null;
@@ -11343,7 +11262,7 @@ function renderAgentDetailsModal(agent) {
             </div>
             <div class="agent-update-feedback">
                 <div id="agent_update_hint" class="agent-update-hint${commandEnabled ? '' : ' error'}">${escapeHtml(commandHint)}</div>
-                <div id="agent_update_status" class="agent-update-status" role="status" aria-live="polite"></div>
+                <div id="agent_update_status" data-agent-id="${agent.agent_id}" class="agent-update-status" role="status" aria-live="polite"></div>
             </div>
         </div>
         <div class="agent-details-grid">
@@ -11631,129 +11550,17 @@ function _attachAgentDetailsNameEditor(agent) {
 }
 
 function _attachAgentUpdateHandler(agent) {
-    try {
-        const canSendCommands = (agent.connection_type || '').toLowerCase() === 'ws';
-        const statusEl = document.getElementById('agent_update_status');
-        const requireWsMessage = 'Requires active WebSocket connection';
-
-        const setStatus = (message, tone = 'info') => {
-            if (!statusEl) return;
-            statusEl.textContent = message || '';
-            statusEl.classList.remove('status-info', 'status-success', 'status-error');
-            if (!message) {
-                return;
-            }
-            const cls = tone === 'success' ? 'status-success' : tone === 'error' ? 'status-error' : 'status-info';
-            statusEl.classList.add(cls);
-        };
-
-        const checkBtn = document.getElementById('agent_check_update_btn');
-        if (checkBtn) {
-            const resetCheckButton = () => {
-                checkBtn.disabled = !canSendCommands;
-                checkBtn.textContent = 'Check for Update';
-                if (!canSendCommands) {
-                    checkBtn.title = requireWsMessage;
-                } else {
-                    checkBtn.removeAttribute('title');
-                }
-            };
-            resetCheckButton();
-            checkBtn.addEventListener('click', async () => {
-                if (!canSendCommands) {
-                    setStatus('Connect via WebSocket to send update commands.', 'error');
-                    return;
-                }
-                checkBtn.disabled = true;
-                checkBtn.textContent = 'Checking...';
-                setStatus('Contacting agent…', 'info');
-                try {
-                    const res = await fetch(`/api/v1/agents/command/${encodeURIComponent(agent.agent_id)}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ command: 'check_update' })
-                    });
-                    if (!res.ok) {
-                        const txt = await res.text();
-                        throw new Error(txt || 'Request failed');
-                    }
-                    const data = await res.json();
-                    if (data.success) {
-                        const summary = data.message || 'Update check triggered';
-                        window.__pm_shared.showToast(summary, 'success');
-                        setStatus(`${summary} at ${new Date().toLocaleTimeString()}`, 'success');
-                    } else {
-                        const msg = data.error || 'Failed to trigger update check';
-                        window.__pm_shared.showToast(msg, 'error');
-                        setStatus(msg, 'error');
-                    }
-                } catch (err) {
-                    window.__pm_shared.showToast('Failed to send command: ' + (err.message || err), 'error');
-                    setStatus('Failed to send command: ' + (err.message || err), 'error');
-                } finally {
-                    resetCheckButton();
-                }
-            });
+    const canSendCommands = (agent.connection_type || '').toLowerCase() === 'ws';
+    document.getElementById('agent_check_update_btn')?.addEventListener('click', () => {
+        if (canSendCommands) void updateAgent(agent.agent_id);
+    });
+    document.getElementById('agent_force_update_btn')?.addEventListener('click', () => {
+        if (canSendCommands && window.confirm('Force reinstall this agent? The service will restart and may temporarily disconnect.')) {
+            void updateAgent(agent.agent_id, { forceFleet: true });
         }
-
-        const forceBtn = document.getElementById('agent_force_update_btn');
-        if (forceBtn) {
-            const resetForceButton = (label) => {
-                forceBtn.disabled = !canSendCommands;
-                forceBtn.textContent = label || 'Force Reinstall';
-                if (!canSendCommands) {
-                    forceBtn.title = requireWsMessage;
-                } else {
-                    forceBtn.removeAttribute('title');
-                }
-            };
-            resetForceButton();
-            forceBtn.addEventListener('click', async () => {
-                if (!window.confirm('Force reinstall this agent? The service will restart and may temporarily disconnect.')) {
-                    return;
-                }
-                if (!canSendCommands) {
-                    setStatus('Connect via WebSocket to send update commands.', 'error');
-                    return;
-                }
-                forceBtn.disabled = true;
-                const previousLabel = forceBtn.textContent;
-                forceBtn.textContent = 'Forcing...';
-                setStatus('Contacting agent…', 'info');
-                try {
-                    const res = await fetch(`/api/v1/agents/command/${encodeURIComponent(agent.agent_id)}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            command: 'force_update',
-                            data: { reason: 'server_ui_force_reinstall' }
-                        })
-                    });
-                    if (!res.ok) {
-                        const txt = await res.text();
-                        throw new Error(txt || 'Request failed');
-                    }
-                    const data = await res.json();
-                    if (data.success) {
-                        const summary = data.message || 'Forced reinstall triggered';
-                        window.__pm_shared.showToast(summary, 'success');
-                        setStatus(`${summary} at ${new Date().toLocaleTimeString()}`, 'success');
-                    } else {
-                        const msg = data.error || 'Failed to force reinstall';
-                        window.__pm_shared.showToast(msg, 'error');
-                        setStatus(msg, 'error');
-                    }
-                } catch (err) {
-                    window.__pm_shared.showToast('Failed to send force reinstall: ' + (err.message || err), 'error');
-                    setStatus('Failed to send force reinstall: ' + (err.message || err), 'error');
-                } finally {
-                    resetForceButton(previousLabel);
-                }
-            });
-        }
-    } catch (e) {
-        window.__pm_shared.warn('Failed to attach agent update handler', e);
-    }
+    });
+    if (agent.update_progress) handleAgentUpdateProgress({ ...agent.update_progress, agent_id: agent.agent_id }, { silent: true });
+    refreshAgentVersionCell(agent.agent_id);
 }
 
 // ====== Update Agent (from agent list/cards) ======
@@ -11781,27 +11588,8 @@ function handleAgentUpdateProgress(data, { silent = false } = {}) {
         if (!silent) window.__pm_shared.showToast(message, level);
     };
 
-    // Normalize status values emitted by agent auto-update pipeline
-    const rawStatus = (data.status || 'unknown').toLowerCase();
-    const status = (() => {
-        switch (rawStatus) {
-            case 'pending':
-                return 'checking';
-            case 'staging':
-            case 'applying':
-                return 'ready'; // installing phase
-            case 'succeeded':
-                return 'complete';
-            case 'rolled_back':
-                return 'failed';
-            case 'skipped':
-                return 'skipped';
-            default:
-                return rawStatus;
-        }
-    })();
-
-    const progress = data.progress || 0;
+    const status = data.status || 'unknown';
+    const progress = data.progress ?? -1;
     const message = data.message || '';
     const targetVersion = data.target_version || '';
     const errorMsg = data.error || '';
@@ -11811,6 +11599,7 @@ function handleAgentUpdateProgress(data, { silent = false } = {}) {
     const agent = agentsVM.items.find(a => a.agent_id === agentId);
     const previousVersion = existingState.previousVersion || agent?.version || '';
     const shownToasts = existingState.runId === data.run_id ? (existingState._shownToasts || {}) : {};
+    clearTimeout(existingState.observationTimer);
 
     agentsVM.updateState[agentId] = {
         status,
@@ -11822,14 +11611,10 @@ function handleAgentUpdateProgress(data, { silent = false } = {}) {
         previousVersion,
         error: errorMsg,
         timestamp: Date.now(),
+        snapshot: data,
         _shownToasts: shownToasts  // Preserve toast tracking across updates
     };
-
-    // Start animation loop if an update is active
-    if (status === 'checking' || status === 'downloading' || status === 'ready' ||
-        status === 'restarting' || status === 'verifying') {
-        startUpdateProgressAnimation();
-    }
+    scheduleAgentUpdateObservation(agentId, agentsVM.updateState[agentId]);
 
     // Show toast notifications for key events
     const agentName = agent?.name || agent?.hostname || agentId;
@@ -11845,10 +11630,16 @@ function handleAgentUpdateProgress(data, { silent = false } = {}) {
                 shownToasts.downloading = true;
             }
             break;
-        case 'ready':
-            if (!shownToasts.ready) {
+        case 'staging':
+            if (!shownToasts.staging) {
                 notify(`${agentName}: Update downloaded, preparing to install...`, 'info');
-                shownToasts.ready = true;
+                shownToasts.staging = true;
+            }
+            break;
+        case 'applying':
+            if (!shownToasts.applying) {
+                notify(`${agentName}: Installing update...`, 'info');
+                shownToasts.applying = true;
             }
             break;
         case 'restarting':
@@ -11860,50 +11651,16 @@ function handleAgentUpdateProgress(data, { silent = false } = {}) {
             if (agent?.version && !agentsVM.updateState[agentId].previousVersion) {
                 agentsVM.updateState[agentId].previousVersion = agent.version;
             }
-            // Fallback: if we never hear back after restart, clear the state and refresh
-            if (!shownToasts.restartTimeout) {
-                shownToasts.restartTimeout = true;
-                setTimeout(() => {
-                    const st = agentsVM.updateState[agentId];
-                    if (st && st.runId === data.run_id && st.status === 'restarting') {
-                        st.message = 'Awaiting agent validation; update outcome is not yet known';
-                        notify(`${agentName}: Still awaiting update validation`, 'warning');
-                        refreshAgentVersionCell(agentId);
-                        // Fetch just this agent's data instead of all agents
-                        fetchSingleAgent(agentId);
-                    }
-                }, 30000); // Increased to 30s to allow for slower restarts
+            break;
+        case 'succeeded':
+            if (data.run_id) {
+                notify(`${agentName}: Update complete!`, 'success');
+                fetchSingleAgent(agentId);
             }
             break;
-        case 'complete':
-            notify(`${agentName}: Update complete!`, 'success');
-            // Clear state after a delay to let UI update
-            setTimeout(() => {
-                if (agentsVM.updateState[agentId]?.runId !== data.run_id ||
-                    agentsVM.updateState[agentId]?.sequence !== data.sequence) return;
-                delete agentsVM.updateState[agentId];
-                if (agentsVM.updateAnimations) delete agentsVM.updateAnimations[agentId];
-                refreshAgentVersionCell(agentId);
-            }, 3000);
-            // Reload agents to get new version
-            setTimeout(() => loadAgents(), 2000);
-            break;
         case 'failed':
+        case 'rolled_back':
             notify(`${agentName}: Update failed - ${errorMsg || message}`, 'error');
-            // Clear state after showing error
-            setTimeout(() => {
-                if (agentsVM.updateState[agentId]?.runId !== data.run_id ||
-                    agentsVM.updateState[agentId]?.sequence !== data.sequence) return;
-                delete agentsVM.updateState[agentId];
-                if (agentsVM.updateAnimations) delete agentsVM.updateAnimations[agentId];
-                refreshAgentVersionCell(agentId);
-            }, 5000);
-            break;
-        case 'idle':
-        case 'cancelled':
-            // Agent returned to idle, clear any pending state
-            delete agentsVM.updateState[agentId];
-            if (agentsVM.updateAnimations) delete agentsVM.updateAnimations[agentId];
             break;
     }
 
@@ -11915,6 +11672,17 @@ function handleAgentUpdateProgress(data, { silent = false } = {}) {
 function refreshAgentVersionCell(agentId) {
     const agent = agentsVM.items.find(a => a.agent_id === agentId);
     if (!agent) return;
+    const statusEl = document.getElementById('agent_update_status');
+    const state = agentsVM.updateState[agentId];
+    if (statusEl?.dataset.agentId === agentId && state) {
+        const view = window.__pm_shared.updateProgressView(state.snapshot || state, state.timestamp);
+        statusEl.textContent = `${view.label}: ${view.message}`;
+        statusEl.className = 'agent-update-status ' + (view.failed ? 'status-error' : view.succeeded ? 'status-success' : 'status-info');
+        ['agent_check_update_btn', 'agent_force_update_btn'].forEach(id => {
+            const button = document.getElementById(id);
+            if (button) button.disabled = view.busy || (agent.connection_type || '').toLowerCase() !== 'ws';
+        });
+    }
 
     // Update in table view
     const tableRow = document.querySelector(`tr[data-agent-id="${agentId}"]`);
@@ -11943,65 +11711,14 @@ function refreshAgentVersionCell(agentId) {
     }
 }
 
-// Animation loop for smooth progress updates
-let updateProgressAnimationFrame = null;
-function startUpdateProgressAnimation() {
-    if (updateProgressAnimationFrame) return; // Already running
-
-    function animate() {
-        // Check if any updates are in progress
-        const activeUpdates = Object.keys(agentsVM.updateState || {}).filter(id => {
-            const state = agentsVM.updateState[id];
-            const status = state?.status;
-            return status === 'checking' || status === 'downloading' || status === 'ready' ||
-                status === 'restarting' || status === 'verifying' ||
-                status === 'pending' || status === 'staging' || status === 'applying';
-        });
-
-        if (activeUpdates.length === 0) {
-            // No active updates, stop animation
-            updateProgressAnimationFrame = null;
-            // Clean up animation state
-            if (agentsVM.updateAnimations) {
-                agentsVM.updateAnimations = {};
-            }
-            return;
-        }
-
-        // Update progress for each active update
-        activeUpdates.forEach(agentId => {
-            // Update the progress button directly without full re-render
-            const progressBtn = document.querySelector(`.update-btn.progress-btn[data-agent-id="${agentId}"]`);
-            if (progressBtn) {
-                const updateState = agentsVM.updateState[agentId];
-                const rawStatus = updateState?.status || '';
-                const status = (() => {
-                    switch (rawStatus) {
-                        case 'pending': return 'checking';
-                        case 'staging':
-                        case 'applying': return 'ready';
-                        default: return rawStatus;
-                    }
-                })();
-                const smoothProgress = getSmoothedUpdateProgress(agentId, status, updateState);
-                progressBtn.style.setProperty('--progress', `${smoothProgress}%`);
-                progressBtn.textContent = `${Math.round(smoothProgress)}%`;
-            }
-        });
-
-        // Continue animation
-        updateProgressAnimationFrame = requestAnimationFrame(animate);
-    }
-
-    updateProgressAnimationFrame = requestAnimationFrame(animate);
-}
-
-// Stop animation when no updates are active
-function stopUpdateProgressAnimation() {
-    if (updateProgressAnimationFrame) {
-        cancelAnimationFrame(updateProgressAnimationFrame);
-        updateProgressAnimationFrame = null;
-    }
+function scheduleAgentUpdateObservation(agentId, state) {
+    const view = window.__pm_shared.updateProgressView(state.snapshot || state, state.timestamp);
+    if (!view.busy || view.waitMs === 0) return;
+    state.observationTimer = setTimeout(() => {
+        if (agentsVM.updateState[agentId] !== state) return;
+        refreshAgentVersionCell(agentId);
+        fetchSingleAgent(agentId);
+    }, view.waitMs);
 }
 
 // Cancel an in-progress update
@@ -12009,7 +11726,7 @@ async function cancelAgentUpdate(agentId) {
     if (!agentId) return;
 
     const state = agentsVM.updateState[agentId];
-    if (!state || state.status === 'restarting') {
+    if (!state || !window.__pm_shared.updateProgressView(state.snapshot || state, state.timestamp).canCancel) {
         window.__pm_shared.showToast('Cannot cancel update at this stage', 'warning');
         return;
     }
@@ -12017,6 +11734,7 @@ async function cancelAgentUpdate(agentId) {
     try {
         const response = await fetch(`/api/v1/agents/command/${agentId}`, {
             method: 'POST',
+            signal: AbortSignal.timeout(15000),
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ command: 'cancel_update' })
         });
@@ -12033,35 +11751,45 @@ async function cancelAgentUpdate(agentId) {
     }
 }
 
-async function updateAgent(agentId, { chooseChannel = false } = {}) {
+async function updateAgent(agentId, { chooseChannel = false, forceFleet = false } = {}) {
     if (!agentId) {
         window.__pm_shared.showToast('No agent ID provided', 'error');
         return;
     }
 
-    const channel = chooseChannel ? await showAgentUpdateChannelConfirm() : '';
+    const isBusy = () => {
+        const state = agentsVM.updateState[agentId];
+        return state && window.__pm_shared.updateProgressView(state.snapshot || state, state.timestamp).busy;
+    };
+    if (isBusy()) {
+        window.__pm_shared.showToast('An update is unresolved; refresh status before starting another installation.', 'warning');
+        return;
+    }
+    const channel = chooseChannel ? await showAgentUpdateChannelConfirm() : forceFleet ? 'fleet' : '';
     if (channel === null) return;
+    if (isBusy()) return;
 
     // Set initial updating state
-    agentsVM.updateState[agentId] = {
-        status: 'checking',
-        progress: 0,
+    const dispatched = {
+        status: 'dispatched',
+        progress: -1,
         message: 'Sending update command...',
         targetVersion: channel ? '' : (agentsVM.latestVersion || ''),
         error: '',
         timestamp: Date.now()
     };
+    agentsVM.updateState[agentId] = dispatched;
     refreshAgentVersionCell(agentId);
-    // Start smooth animation loop
-    startUpdateProgressAnimation();
+    scheduleAgentUpdateObservation(agentId, dispatched);
 
     try {
         const response = await fetch(`/api/v1/agents/command/${agentId}`, {
             method: 'POST',
+            signal: AbortSignal.timeout(15000),
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(channel === 'fleet' ? {
                 command: 'force_update',
-                data: { reason: 'server_ui_force_fleet_channel' }
+                data: { reason: forceFleet ? 'server_ui_force_reinstall' : 'server_ui_force_fleet_channel' }
             } : channel ? {
                 command: 'install_channel',
                 data: { channel, reason: 'server_ui_channel_install' }
@@ -12074,40 +11802,25 @@ async function updateAgent(agentId, { chooseChannel = false } = {}) {
         }
 
         const result = await response.json();
+        // Progress may arrive before the command response; never overwrite it.
+        if (agentsVM.updateState[agentId] !== dispatched) return;
         if (result.success) {
-            // Update state to show we're waiting for agent response
-            agentsVM.updateState[agentId] = {
-                ...agentsVM.updateState[agentId],
-                message: 'Waiting for agent...',
-            };
+            dispatched.message = 'Command accepted; waiting for Agent progress. Installation is not yet confirmed.';
             refreshAgentVersionCell(agentId);
         } else {
-            // Command failed
-            agentsVM.updateState[agentId] = {
-                ...agentsVM.updateState[agentId],
-                status: 'failed',
-                error: result.message || 'Unknown error',
-            };
+            clearTimeout(dispatched.observationTimer);
+            dispatched.status = 'failed';
+            dispatched.error = result.error || result.message || 'Update command rejected';
             refreshAgentVersionCell(agentId);
-            window.__pm_shared.showToast('Update command failed: ' + (result.message || 'unknown'), 'warning');
-            setTimeout(() => {
-                delete agentsVM.updateState[agentId];
-                refreshAgentVersionCell(agentId);
-            }, 5000);
+            window.__pm_shared.showToast('Update command failed: ' + dispatched.error, 'warning');
         }
     } catch (error) {
         window.__pm_shared.error('Failed to send update command:', error);
-        agentsVM.updateState[agentId] = {
-            ...agentsVM.updateState[agentId],
-            status: 'failed',
-            error: error.message || String(error),
-        };
-        refreshAgentVersionCell(agentId);
-        window.__pm_shared.showToast('Failed to send update command: ' + (error.message || error), 'error');
-        setTimeout(() => {
-            delete agentsVM.updateState[agentId];
+        if (agentsVM.updateState[agentId] === dispatched) {
+            dispatched.error = 'Command delivery could not be confirmed: ' + (error.message || error);
             refreshAgentVersionCell(agentId);
-        }, 5000);
+        }
+        window.__pm_shared.showToast('Command delivery could not be confirmed; refresh Agent status before retrying.', 'warning');
     }
 }
 

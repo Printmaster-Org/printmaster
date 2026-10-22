@@ -219,9 +219,10 @@ const updateProgressState = {
     timestamp: 0
 };
 let updateProgressSnapshot = null;
+let updateProgressTimer = null;
 
 // Handle real-time update progress events from SSE
-function handleUpdateProgress(data, { silent = false } = {}) {
+function handleUpdateProgress(data, { silent = false, local = false } = {}) {
     if (data.run_id) {
         if (updateProgressSnapshot) {
             if (data.run_id === updateProgressSnapshot.run_id) {
@@ -232,11 +233,11 @@ function handleUpdateProgress(data, { silent = false } = {}) {
             }
         }
         updateProgressSnapshot = data;
-    } else if (updateProgressSnapshot) {
+    } else if (updateProgressSnapshot && !local) {
         return;
     }
-    const status = ({ succeeded: 'complete', staging: 'ready', applying: 'ready', verifying: 'restarting' })[data.status] || data.status || 'unknown';
-    const progress = data.progress || 0;
+    const status = data.status || 'unknown';
+    const progress = data.progress ?? -1;
     const message = data.message || '';
     const targetVersion = data.target_version || '';
     const errorMsg = data.error || '';
@@ -250,9 +251,18 @@ function handleUpdateProgress(data, { silent = false } = {}) {
     updateProgressState.timestamp = Date.now();
     const eventState = { runId: data.run_id, sequence: data.sequence };
     updateProgressState.event = eventState;
+    updateProgressState.snapshot = data;
+    clearTimeout(updateProgressTimer);
     
     // Update UI elements
     updateAutoUpdateButtonsFromProgress(status, progress, message, targetVersion, errorMsg);
+    const view = window.__pm_shared.updateProgressView(data, updateProgressState.timestamp);
+    if (view.busy && view.waitMs > 0) {
+        updateProgressTimer = setTimeout(() => {
+            if (updateProgressState.event !== eventState) return;
+            updateAutoUpdateButtonsFromProgress(status, progress, message, targetVersion, errorMsg);
+        }, view.waitMs);
+    }
     
     // Show toast for key events
     if (silent) return;
@@ -262,36 +272,28 @@ function handleUpdateProgress(data, { silent = false } = {}) {
                 window.__pm_shared.showToast('Downloading update...', 'info');
             }
             break;
-        case 'ready':
+        case 'staging':
             window.__pm_shared.showToast('Update downloaded, preparing to install...', 'info');
+            break;
+        case 'applying':
+            window.__pm_shared.showToast('Installing update...', 'info');
             break;
         case 'restarting':
             window.__pm_shared.showToast('Restarting agent to apply update...', 'info');
             break;
-        case 'complete':
+        case 'verifying':
+            window.__pm_shared.showToast('Awaiting independent update confirmation...', 'info');
+            break;
+        case 'succeeded':
+            if (!view.succeeded) break;
             window.__pm_shared.showToast('Update complete!', 'success');
-            // Reset state after delay
-            setTimeout(() => {
-                if (updateProgressState.event !== eventState) return;
-                updateProgressState.status = 'idle';
-                updateProgressState.progress = 0;
-                resetAutoUpdateButtons();
-                refreshAutoUpdateStatus();
-            }, 2000);
             break;
         case 'failed':
+        case 'rolled_back':
             window.__pm_shared.showToast('Update failed: ' + (errorMsg || message), 'error');
-            setTimeout(() => {
-                if (updateProgressState.event !== eventState) return;
-                updateProgressState.status = 'idle';
-                resetAutoUpdateButtons();
-                refreshAutoUpdateStatus();
-            }, 3000);
             break;
         case 'cancelled':
             window.__pm_shared.showToast('Update cancelled', 'warning');
-            updateProgressState.status = 'idle';
-            resetAutoUpdateButtons();
             break;
     }
 }
@@ -303,63 +305,37 @@ function updateAutoUpdateButtonsFromProgress(status, progress, message, targetVe
     const badge = document.getElementById('autoupdate_status_badge');
     const copy = document.getElementById('autoupdate_status_copy');
     
-    const isBusy = ['checking', 'pending', 'downloading', 'ready', 'restarting'].includes(status);
-    const canCancel = ['checking', 'downloading'].includes(status);
-    
+    const view = window.__pm_shared.updateProgressView(updateProgressState.snapshot, updateProgressState.timestamp);
+    resetAutoUpdateButtons();
     if (checkBtn) {
-        if (status === 'checking') {
-            checkBtn.textContent = 'Checking...';
-            checkBtn.disabled = true;
-            checkBtn.classList.add('updating');
-        } else if (isBusy) {
-            checkBtn.textContent = 'Update in Progress';
+        if (view.busy) {
+            checkBtn.textContent = view.uncertain ? 'Awaiting Confirmation' : 'Update in Progress';
             checkBtn.disabled = true;
             checkBtn.classList.add('updating');
         }
     }
     
     if (forceBtn) {
-        if (status === 'downloading') {
-            const pctText = progress > 0 ? ' ' + progress + '%' : '...';
-            forceBtn.textContent = 'Downloading' + pctText;
-            forceBtn.disabled = !canCancel;
+        if (view.busy) {
+            forceBtn.textContent = view.canCancel ? 'Cancel Update' : view.label;
+            forceBtn.disabled = !view.canCancel;
             forceBtn.classList.add('updating');
-            if (canCancel) {
+            forceBtn.title = view.message;
+            if (view.canCancel) {
                 forceBtn.dataset.action = 'cancel';
-                forceBtn.title = 'Click to cancel';
             }
-        } else if (status === 'ready') {
-            forceBtn.textContent = 'Installing...';
-            forceBtn.disabled = true;
-            forceBtn.classList.add('updating');
-            delete forceBtn.dataset.action;
-        } else if (status === 'restarting') {
-            forceBtn.textContent = 'Restarting...';
-            forceBtn.disabled = true;
-            forceBtn.classList.add('updating');
-            delete forceBtn.dataset.action;
-        } else if (status === 'failed') {
-            forceBtn.textContent = '✕ Failed';
-            forceBtn.disabled = true;
-            forceBtn.classList.add('error');
-            forceBtn.title = errorMsg || message || 'Update failed';
-            delete forceBtn.dataset.action;
-        } else if (status === 'complete') {
-            forceBtn.textContent = '✓ Updated';
-            forceBtn.disabled = true;
-            forceBtn.classList.add('success');
-            delete forceBtn.dataset.action;
         }
     }
     
     // Update the status badge with real-time progress
-    if (badge && isBusy) {
-        badge.textContent = formatAutoUpdateStatusLabel(status);
-        badge.className = 'autoupdate-status-pill ' + statusClassForAutoUpdate(status);
+    if (badge) {
+        badge.textContent = view.label;
+        badge.className = 'autoupdate-status-pill ' + (view.uncertain ? 'status-warning' : statusClassForAutoUpdate(status));
     }
     
-    if (copy && message) {
-        copy.textContent = message;
+    if (copy) {
+        const percent = status === 'downloading' && !view.uncertain && view.progress !== null ? ` (${view.progress}%)` : '';
+        copy.textContent = view.message + percent;
     }
 }
 
@@ -492,7 +468,7 @@ async function refreshAutoUpdateStatus(triggeredByButton = false) {
     }
 
     try {
-        const resp = await fetch('/api/autoupdate/status', { headers: { 'Accept': 'application/json' } });
+        const resp = await fetch('/api/autoupdate/status', { headers: { 'Accept': 'application/json' }, signal: AbortSignal.timeout(15000) });
         if (!resp.ok) {
             throw new Error('Status ' + resp.status);
         }
@@ -506,6 +482,14 @@ async function refreshAutoUpdateStatus(triggeredByButton = false) {
         }
         if (copy) {
             copy.textContent = 'Failed to load status: ' + (err && err.message ? err.message : err);
+        }
+        if (updateProgressState.snapshot) {
+            const view = window.__pm_shared.updateProgressView(updateProgressState.snapshot, updateProgressState.timestamp);
+            if (view.busy) {
+                updateAutoUpdateButtonsFromProgress(updateProgressState.status, updateProgressState.progress,
+                    updateProgressState.message, updateProgressState.targetVersion, updateProgressState.error);
+                if (copy) copy.textContent += ' Status connection unavailable; installation outcome is not confirmed.';
+            }
         }
         try {
             if (window.__pm_shared && typeof window.__pm_shared.error === 'function') {
@@ -552,6 +536,10 @@ function applyAutoUpdateStatusToUI(data) {
     }
 
     setAutoUpdateButtonsDisabled(!isEnabled || isBusy, !isEnabled ? disabledReason : (isBusy ? 'Update already running' : ''));
+    if (isEnabled && updateProgressState.snapshot) {
+        updateAutoUpdateButtonsFromProgress(updateProgressState.status, updateProgressState.progress,
+            updateProgressState.message, updateProgressState.targetVersion, updateProgressState.error);
+    }
 
     setAutoUpdateMeta('autoupdate_current_version', data && data.current_version);
     setAutoUpdateMeta('autoupdate_latest_version', data && data.latest_version);
@@ -593,34 +581,7 @@ function applyAutoUpdateStatusToUI(data) {
 async function handleAutoUpdateCheck(evt) {
     const btn = evt && evt.currentTarget ? evt.currentTarget : null;
     if (!btn) return;
-
-    const previous = btn.textContent;
-    btn.disabled = true;
-    btn.dataset.loading = 'true';
-    btn.textContent = 'Checking...';
-
-    try {
-        const resp = await fetch('/api/autoupdate/check', { method: 'POST' });
-        const payload = await resp.json().catch(() => ({}));
-        if (!resp.ok) {
-            // Prefer detailed message over error field, fall back to status text
-            const errMsg = (payload && payload.message) || (payload && payload.error) || resp.statusText;
-            throw new Error(errMsg);
-        }
-        if (window.__pm_shared && typeof window.__pm_shared.showToast === 'function') {
-            window.__pm_shared.showToast('Update check scheduled', 'success');
-        }
-    } catch (err) {
-        console.error('Update check failed:', err);
-        if (window.__pm_shared && typeof window.__pm_shared.showToast === 'function') {
-            window.__pm_shared.showToast('Update check failed: ' + (err && err.message ? err.message : err), 'error');
-        }
-    } finally {
-        btn.disabled = false;
-        btn.textContent = previous;
-        delete btn.dataset.loading;
-        await refreshAutoUpdateStatus();
-    }
+    await requestAutoUpdate('/api/autoupdate/check');
 }
 
 async function handleAutoUpdateForce(evt) {
@@ -630,7 +591,7 @@ async function handleAutoUpdateForce(evt) {
     // Check if this is a cancel action (during download)
     if (btn.dataset.action === 'cancel') {
         try {
-            const resp = await fetch('/api/autoupdate/cancel', { method: 'POST' });
+            const resp = await fetch('/api/autoupdate/cancel', { method: 'POST', signal: AbortSignal.timeout(15000) });
             if (!resp.ok) {
                 const payload = await resp.json().catch(() => ({}));
                 const errMsg = (payload && payload.message) || (payload && payload.error) || resp.statusText;
@@ -647,37 +608,43 @@ async function handleAutoUpdateForce(evt) {
     const confirmed = await window.__pm_shared.showConfirm('Download and install the latest agent update? This restarts the service and may briefly disconnect uploads.', 'Update Now', true);
     if (!confirmed) return;
 
-    const previous = btn.textContent;
-    btn.disabled = true;
-    btn.dataset.loading = 'true';
-    btn.textContent = 'Requesting...';
+    await requestAutoUpdate('/api/autoupdate/force', { reason: 'agent_ui_force_reinstall' });
+}
 
+async function requestAutoUpdate(url, body) {
+    if (updateProgressState.snapshot &&
+        window.__pm_shared.updateProgressView(updateProgressState.snapshot, updateProgressState.timestamp).busy) {
+        window.__pm_shared.showToast('An update is unresolved; refresh status before starting another installation.', 'warning');
+        return;
+    }
+    const dispatched = { status: 'dispatched', progress: -1, message: 'Sending update request; installation is not confirmed.' };
+    handleUpdateProgress(dispatched, { silent: true, local: true });
     try {
-        const resp = await fetch('/api/autoupdate/force', {
+        const resp = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ reason: 'agent_ui_force_reinstall' })
+            signal: AbortSignal.timeout(15000),
+            body: body ? JSON.stringify(body) : undefined,
         });
-        const payload = await resp.json().catch(() => ({}));
+        const payload = await resp.json();
         if (!resp.ok) {
             const errMsg = (payload && payload.message) || (payload && payload.error) || resp.statusText;
-            throw new Error(errMsg);
+            if (updateProgressState.snapshot === dispatched) {
+                handleUpdateProgress({ status: 'failed', message: 'Update request rejected', error: errMsg }, { local: true });
+            }
+            return;
         }
-        // Don't reset button here - let SSE progress events update the UI
-        if (window.__pm_shared && typeof window.__pm_shared.showToast === 'function') {
-            window.__pm_shared.showToast('Update started – progress will be shown in real-time.', 'success');
-        }
+        window.__pm_shared.showToast('Update request accepted; waiting for Agent progress.', 'info');
     } catch (err) {
-        console.error('Force reinstall failed:', err);
-        if (window.__pm_shared && typeof window.__pm_shared.showToast === 'function') {
-            window.__pm_shared.showToast('Update failed: ' + (err && err.message ? err.message : err), 'error');
+        window.__pm_shared.error('Update request could not be confirmed', err);
+        if (updateProgressState.snapshot === dispatched) {
+            dispatched.error = 'Request delivery could not be confirmed: ' + (err.message || err);
+            updateAutoUpdateButtonsFromProgress(dispatched.status, -1, dispatched.message, '', dispatched.error);
         }
-        // Only reset on error
-        btn.disabled = false;
-        btn.textContent = previous;
-        delete btn.dataset.loading;
+        window.__pm_shared.showToast('Request delivery could not be confirmed; refresh status before retrying.', 'warning');
+    } finally {
+        await refreshAutoUpdateStatus();
     }
-    // Note: Don't reset button in finally - let SSE events control the UI state
 }
 
 async function handleAutoUpdateRefresh(evt) {
