@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -75,7 +76,21 @@ func TestLiveLegacyLinuxMigration(t *testing.T) {
 	baseline := filepath.Join(work, "baseline."+format)
 	candidate := filepath.Join(work, "candidate."+format)
 	install(baseline)
-	command("/usr/bin/chown", "root:printmaster", configPath)
+	account, err := user.Lookup("printmaster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uid, err := strconv.Atoi(account.Uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid, err := strconv.Atoi(account.Gid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(configPath, 0, gid); err != nil {
+		t.Fatal(err)
+	}
 	command("/usr/bin/systemctl", "daemon-reload")
 	command("/usr/bin/systemctl", "restart", "printmaster-agent.service")
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -115,10 +130,6 @@ func TestLiveLegacyLinuxMigration(t *testing.T) {
 		t.Fatalf("service did not become ready at version %s: %v", want, last)
 	}
 	waitVersion(version)
-	account, err := user.Lookup("printmaster")
-	if err != nil {
-		t.Fatal(err)
-	}
 	command("/usr/bin/systemctl", "stop", "printmaster-agent.service")
 	dbPath := filepath.Join(dataDir, "devices.db")
 	db, err := sql.Open("sqlite", dbPath)
@@ -143,7 +154,9 @@ func TestLiveLegacyLinuxMigration(t *testing.T) {
 	for path, data := range preserved {
 		if path != configPath {
 			write(path, data, 0o600)
-			command("/usr/bin/chown", "printmaster:printmaster", path)
+			if err := os.Chown(path, uid, gid); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	checkPreserved := func() {
