@@ -91,6 +91,7 @@ jobs:
   playwright:
     name: Playwright (${{ matrix.shard }}/6)
     runs-on: ubuntu-26.04
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -114,9 +115,16 @@ jobs:
           key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-playwright-
-      - name: Ensure Playwright browsers and system dependencies
-        run: npx playwright install --with-deps chromium firefox webkit
+      - name: Install Playwright system dependencies
+        timeout-minutes: 5
+        run: npx playwright install-deps chromium firefox webkit
+      - name: Ensure Playwright browsers
+        timeout-minutes: 5
+        env:
+          PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: '60000'
+        run: npx playwright install chromium firefox webkit
       - name: Playwright shard
+        timeout-minutes: 10
         env:
           TEST_SHARD: ${{ matrix.shard }}
         run: bash tests.sh --suite playwright --shard "$TEST_SHARD/6"

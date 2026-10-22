@@ -234,7 +234,17 @@ test('Playwright caches its default browser directory and installs system depend
     expect(javascript).not.toContain('PLAYWRIGHT_BROWSERS_PATH:');
     expect(javascript).toContain('path: ~/.cache/ms-playwright');
     expect(javascript).toContain("key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}");
-    expect(javascript).toMatch(/- name: Ensure Playwright browsers and system dependencies\n\s+run: npx playwright install --with-deps chromium firefox webkit/);
+    const job = yaml.load(ci).jobs.playwright;
+    expect(job['timeout-minutes']).toBe(25);
+    const dependencies = job.steps.find(step => step.name === 'Install Playwright system dependencies');
+    expect(dependencies.run).toBe('npx playwright install-deps chromium firefox webkit');
+    expect(dependencies['timeout-minutes']).toBe(5);
+    const browsers = job.steps.find(step => step.name === 'Ensure Playwright browsers');
+    expect(browsers.run).toBe('npx playwright install chromium firefox webkit');
+    expect(browsers['timeout-minutes']).toBe(5);
+    expect(browsers.env.PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT).toBe('60000');
+    expect(job.steps.find(step => step.name === 'Playwright shard')['timeout-minutes']).toBe(10);
+    for (const step of job.steps) expect(step['continue-on-error']).toBeUndefined();
 });
 
 test.each(['agent', 'server'])('%s CD reuses successful CI for the exact SHA and rejects untested commits', component => {
