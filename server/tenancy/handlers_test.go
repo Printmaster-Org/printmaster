@@ -148,6 +148,128 @@ Write-Output (ConvertTo-Json -Compress -Depth 4 -InputObject @{
 	}
 }
 
+func TestWindowsBootstrapFreshInstallOnly(t *testing.T) {
+	script, _ := buildBootstrapScript("windows", "https://example.invalid", "disposable-test-token")
+	guardStart := strings.Index(script, "function Assert-FreshAgentInstall")
+	mainStart := strings.Index(script, "# ========== MAIN INSTALLATION ==========")
+	if guardStart < 0 || mainStart <= guardStart {
+		t.Fatal("fresh-install guard boundary missing")
+	}
+	main := script[mainStart:]
+	guardCall := strings.Index(main, "\n\tAssert-FreshAgentInstall\n")
+	if guardCall < 0 || !strings.Contains(main[:strings.Index(main, "# Step 2:")], "exit 1") {
+		t.Fatal("bootstrap must exit nonzero when the fresh-install guard fails")
+	}
+	for _, mutation := range []string{"New-Item", "Set-Content", "Download-WithFallback", "Copy-Item", "Start-Process"} {
+		if index := strings.Index(main, mutation); index < 0 || index <= guardCall {
+			t.Fatalf("fresh-install check must precede %s", mutation)
+		}
+	}
+	for _, removed := range []string{"Remove-ExistingInstallation", "Stop-Service", "Stop-Process", "msiexec.exe", "sc.exe delete", "Removing old binaries"} {
+		if strings.Contains(script, removed) {
+			t.Fatalf("bootstrap retains destructive existing-install behavior: %s", removed)
+		}
+	}
+	harness := script[guardStart:mainStart] + `
+$env:ProgramFiles = Join-Path $PSScriptRoot 'programfiles'
+${env:ProgramFiles(x86)} = Join-Path $PSScriptRoot 'programfiles-x86'
+$configDir = Join-Path $PSScriptRoot 'agent-data'
+$installDir = Join-Path $PSScriptRoot 'agent-bin'
+$ErrorActionPreference = 'Stop'
+function Get-Service {
+    if ($script:scenario -eq 'service query failure') { throw 'service inspection failed' }
+    if ($script:scenario -in @('running service', 'stopped service')) {
+        [pscustomobject]@{ Name = 'PrintMasterAgent'; Status = $script:scenario }
+    }
+}
+function Get-Process {
+    if ($script:scenario -eq 'process query failure') { throw 'process inspection failed' }
+    if ($script:scenario -eq 'running process') { [pscustomobject]@{ ProcessName = 'printmaster-agent' } }
+	if ($script:scenario -eq 'versioned process') { [pscustomobject]@{ ProcessName = 'printmaster-agent-v0.31.1-windows-amd64' } }
+}
+function Test-Path {
+    param([string]$LiteralPath)
+    if ($script:scenario -eq 'path query failure') { throw 'path inspection failed' }
+    if ($LiteralPath -eq $configDir) { return $script:scenario -eq 'retained data' }
+    if ($LiteralPath -eq $installDir) { return $script:scenario -eq 'legacy bin' }
+    if ($LiteralPath -like 'HKLM:*ServicesracPrintMasterAgent'.Replace('rac', 'rac')) { return $false }
+    if ($LiteralPath -eq 'HKLM:\SYSTEM\CurrentControlSet\Services\PrintMasterAgent') { return $script:scenario -eq 'service registry' }
+    if ($LiteralPath -like 'HKLM:*\Uninstall\PrintMasterAgent') { return $script:scenario -eq 'raw uninstall registry' }
+    if ($LiteralPath -like 'HKLM:*\Uninstall') {
+        if ($script:scenario -eq 'msi wow') { return $LiteralPath.Contains('WOW6432Node') }
+        return $script:scenario -in @('msi native', 'registry query failure', 'server only')
+    }
+    if ($LiteralPath -eq (Join-Path $env:ProgramFiles 'PrintMaster\Agent')) { return $script:scenario -eq 'protected directory' }
+    if ($LiteralPath -eq (Join-Path ${env:ProgramFiles(x86)} 'PrintMaster\Agent')) { return $script:scenario -eq 'x86 protected directory' }
+    if ($LiteralPath -eq (Join-Path $env:ProgramFiles 'PrintMaster')) { return $script:scenario -in @('legacy executable', 'server only') }
+    return $false
+}
+function Get-ItemProperty {
+    param([string]$Path)
+    if ($script:scenario -eq 'registry query failure') { throw 'registry inspection failed' }
+    if ($script:scenario -in @('msi native', 'msi wow')) { [pscustomobject]@{ DisplayName = 'PrintMaster Agent'; PSChildName = '{TEST-PRODUCT}' } }
+    if ($script:scenario -eq 'server only') { [pscustomobject]@{ DisplayName = 'PrintMaster Server' } }
+}
+function Get-ChildItem {
+    if ($script:scenario -eq 'legacy executable') { [pscustomobject]@{ Name = 'printmaster-agent-v0.31.1.exe' } }
+}
+foreach ($command in @('Stop-Service', 'Stop-Process', 'Remove-Item', 'New-Item', 'Set-Content', 'Copy-Item', 'Start-Process', 'Invoke-WebRequest')) {
+    Set-Item -Path "function:$command" -Value { throw 'MUTATION ATTEMPTED' }
+}
+$results = @()
+foreach ($script:scenario in @('fresh', 'server only', 'running service', 'stopped service', 'service query failure',
+	'process query failure', 'running process', 'versioned process', 'service registry', 'raw uninstall registry', 'msi native', 'msi wow',
+    'registry query failure', 'path query failure', 'retained data', 'legacy bin', 'protected directory', 'x86 protected directory', 'legacy executable')) {
+    $refused = $false
+    $reason = ''
+    try { Assert-FreshAgentInstall }
+    catch { $refused = $true; $reason = $_.Exception.Message }
+    $results += @{ scenario = $script:scenario; refused = $refused; reason = $reason }
+}
+Write-Output (ConvertTo-Json -Compress -Depth 4 -InputObject $results)
+`
+	available := false
+	for _, name := range []string{"pwsh", "powershell"} {
+		powershell, err := exec.LookPath(name)
+		if err != nil {
+			continue
+		}
+		available = true
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "fresh-install-test.ps1")
+			if err := os.WriteFile(path, append([]byte{0xef, 0xbb, 0xbf}, []byte(harness)...), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			output, err := exec.CommandContext(ctx, powershell, "-NoProfile", "-NonInteractive", "-File", path).CombinedOutput()
+			if err != nil {
+				t.Fatalf("guard helpers failed: %v\n%s", err, output)
+			}
+			var results []struct {
+				Scenario string `json:"scenario"`
+				Refused  bool   `json:"refused"`
+				Reason   string `json:"reason"`
+			}
+			if err := json.Unmarshal(bytes.TrimPrefix(output, []byte{0xef, 0xbb, 0xbf}), &results); err != nil {
+				t.Fatalf("invalid guard result: %v\n%s", err, output)
+			}
+			if len(results) != 19 {
+				t.Fatalf("missing scenarios: %+v", results)
+			}
+			for _, result := range results {
+				wantRefused := result.Scenario != "fresh" && result.Scenario != "server only"
+				if result.Refused != wantRefused || strings.Contains(result.Reason, "MUTATION ATTEMPTED") {
+					t.Errorf("scenario %q: refused=%t want=%t reason=%s", result.Scenario, result.Refused, wantRefused, result.Reason)
+				}
+			}
+		})
+	}
+	if !available {
+		t.Skip("PowerShell required for existing-install guard runtime tests")
+	}
+}
+
 func setupEnrollmentSecurity(t *testing.T, role storage.Role) (*storage.SQLiteStore, *http.ServeMux, string) {
 	t.Helper()
 	db, err := storage.NewSQLiteStore(":memory:")

@@ -2156,103 +2156,52 @@ function Download-WithFallback {
 	return $false
 }
 
-function Remove-ExistingInstallation {
-	$svc = Get-Service -Name "PrintMasterAgent" -ErrorAction SilentlyContinue
-	if ($svc) {
-		Show-Warning "Found existing installation. Removing..."
-		
-		if ($svc.Status -eq 'Running') {
-			Show-Info "Stopping service..."
-			Stop-Service -Name "PrintMasterAgent" -Force -ErrorAction SilentlyContinue
-			Start-Sleep -Seconds 2
-			Show-Success "Service stopped"
+function Assert-FreshAgentInstall {
+	if (Get-Service -ErrorAction Stop | Where-Object { $_.Name -eq "PrintMasterAgent" }) {
+		throw "PrintMaster Agent service already exists (running or stopped). Use the existing Agent's update path; bootstrap does not upgrade or repair installations."
+	}
+	if (Get-Process -ErrorAction Stop | Where-Object { $_.ProcessName -like "printmaster-agent*" }) {
+		throw "PrintMaster Agent is already running. Bootstrap installs new Agents only."
+	}
+	$uninstallRoots = @(
+		"HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+		"HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+	)
+	if (Test-Path -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\PrintMasterAgent" -ErrorAction Stop) {
+		throw "PrintMaster Agent service registration already exists. Preserve it for owner review."
+	}
+	foreach ($root in $uninstallRoots) {
+		if (Test-Path -LiteralPath "$root\PrintMasterAgent" -ErrorAction Stop) {
+			throw "PrintMaster Agent uninstall registration already exists. Use its existing installation owner."
 		}
-		
-		# Check for MSI-based installation first
-		$uninstallKeys = @(
-			"HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
-			"HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
-		)
-		
-		$productCode = $null
-		foreach ($keyPath in $uninstallKeys) {
-			$items = Get-ItemProperty $keyPath -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like "*PrintMaster*Agent*" }
-			if ($items) {
-				foreach ($item in $items) {
-					if ($item.PSChildName -match '^\{[A-F0-9-]+\}$') {
-						$productCode = $item.PSChildName
-						break
-					}
-				}
+		if (Test-Path -LiteralPath $root -ErrorAction Stop) {
+			$registered = Get-ItemProperty -Path "$root\*" -ErrorAction Stop |
+				Where-Object { $_.DisplayName -like "*PrintMaster*Agent*" }
+			if ($registered) {
+				throw "A PrintMaster Agent package is already registered. Bootstrap does not replace MSI or other installed Agents."
 			}
-			if ($productCode) { break }
-		}
-		
-		if ($productCode) {
-			Show-Info "Uninstalling previous MSI version..."
-			$uninstallProc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/x",$productCode,"/qn","/norestart" -Wait -PassThru
-			if ($uninstallProc.ExitCode -eq 0 -or $uninstallProc.ExitCode -eq 1605) {
-				Show-Success "Previous MSI installation removed"
-			} else {
-				Show-Warning "MSI uninstall returned code $($uninstallProc.ExitCode). Continuing..."
-			}
-			Start-Sleep -Seconds 2
-		} else {
-			# No MSI found - try to uninstall service via exe or sc.exe
-			$programData = ${env:ProgramData}
-			if ([string]::IsNullOrWhiteSpace($programData)) { $programData = "C:\\ProgramData" }
-			$existingExe = Join-Path $programData "PrintMaster\bin\printmaster-agent.exe"
-			
-			if (Test-Path $existingExe) {
-				Show-Info "Uninstalling existing service..."
-				$uninstallProc = Start-Process -FilePath $existingExe -ArgumentList "--service","uninstall","--silent" -Wait -PassThru -NoNewWindow
-				if ($uninstallProc.ExitCode -eq 0) {
-					Show-Success "Service uninstalled"
-				} else {
-					Show-Warning "Service uninstall returned code $($uninstallProc.ExitCode)"
-				}
-			} else {
-				Show-Info "Removing service entry directly..."
-				& sc.exe delete "PrintMasterAgent" 2>$null
-				Show-Success "Service entry removed"
-			}
-			Start-Sleep -Seconds 1
 		}
 	}
-	
-	# Stop any running processes
-	$procs = Get-Process -Name "printmaster-agent" -ErrorAction SilentlyContinue
-	if ($procs) {
-		Show-Info "Stopping running processes..."
-		$procs | Stop-Process -Force -ErrorAction SilentlyContinue
-		Start-Sleep -Seconds 1
-		Show-Success "Processes stopped"
+	foreach ($path in @($configDir, $installDir)) {
+		if (Test-Path -LiteralPath $path -ErrorAction Stop) {
+			throw "Existing Agent files or data found at $path. Bootstrap will not overwrite them; review incomplete or previous installations manually."
+		}
 	}
-	
-	# Clean up old installation directories
-	$programData = ${env:ProgramData}
-	if ([string]::IsNullOrWhiteSpace($programData)) { $programData = "C:\\ProgramData" }
-	$oldBinDir = Join-Path $programData "PrintMaster\bin"
-	if (Test-Path $oldBinDir) {
-		Show-Info "Removing old binaries..."
-		Remove-Item -Path $oldBinDir -Recurse -Force -ErrorAction SilentlyContinue
-		Show-Success "Old binaries removed"
-	}
-	
-	# Also clean up Program Files location (from old MSI installs)
 	$programFiles = ${env:ProgramFiles}
-	if ([string]::IsNullOrWhiteSpace($programFiles)) { $programFiles = "C:\\Program Files" }
-	$oldMsiDir = Join-Path $programFiles "PrintMaster"
-	if (Test-Path $oldMsiDir) {
-		Show-Info "Removing old MSI installation directory..."
-		Remove-Item -Path $oldMsiDir -Recurse -Force -ErrorAction SilentlyContinue
-		Show-Success "Old MSI directory removed"
-	}
-	
-	# Clean up our own uninstall registry entry if present
-	$uninstallKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PrintMasterAgent"
-	if (Test-Path $uninstallKey) {
-		Remove-Item -Path $uninstallKey -Force -ErrorAction SilentlyContinue
+	if ([string]::IsNullOrWhiteSpace($programFiles)) { $programFiles = "C:\Program Files" }
+	foreach ($base in @($programFiles, ${env:ProgramFiles(x86)})) {
+		if ([string]::IsNullOrWhiteSpace($base)) { continue }
+		$legacyRoot = Join-Path $base "PrintMaster"
+		$agentRoot = Join-Path $legacyRoot "Agent"
+		if (Test-Path -LiteralPath $agentRoot -ErrorAction Stop) {
+			throw "Existing protected Agent installation found. Bootstrap installs new Agents only."
+		}
+		if (Test-Path -LiteralPath $legacyRoot -ErrorAction Stop) {
+			$legacyAgent = Get-ChildItem -LiteralPath $legacyRoot -Filter "printmaster-agent*.exe" -ErrorAction Stop
+			if ($legacyAgent) {
+				throw "Existing legacy Agent executable found. Preserve it and use an owner-controlled migration."
+			}
+		}
 	}
 }
 
@@ -2274,10 +2223,15 @@ $exePath = Join-Path $installDir "printmaster-agent.exe"
 $tempDir = Join-Path $env:TEMP "PrintMaster-Install"
 $tempExePath = Join-Path $tempDir "printmaster-agent.exe"
 
-# Step 1: Remove existing installation
+# Step 1: Refuse existing or incomplete Agent installations
 Show-Progress -Percent 5 -Message "Checking for existing installation..."
-Start-Sleep -Milliseconds 300
-Remove-ExistingInstallation
+try {
+	Assert-FreshAgentInstall
+} catch {
+	Show-Error "Bootstrap refused: $($_.Exception.Message)"
+	Show-CompletionBox -Success $false -Message "Fresh Installation Required"
+	exit 1
+}
 
 # Step 2: Prepare directories
 Show-Progress -Percent 15 -Message "Preparing directories..."
