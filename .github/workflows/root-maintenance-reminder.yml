@@ -1,0 +1,28 @@
+name: Root maintenance reminder
+
+on:
+  schedule:
+    - cron: '0 9 * * *'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: root-maintenance-reminder
+  cancel-in-progress: false
+
+jobs:
+  reminder:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 3
+    steps:
+      - name: Checkout public root metadata
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Open owner root-maintenance issue when due
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/root-maintenance-reminder.js agent/update_publisher_root.json

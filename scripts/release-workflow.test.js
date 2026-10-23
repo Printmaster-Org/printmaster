@@ -4,9 +4,30 @@ const os = require('os');
 const { spawnSync } = require('child_process');
 const yaml = require('js-yaml');
 const picomatch = require('picomatch');
+const { getReminderDate, isReminderDue } = require('./root-maintenance-reminder');
 
 const root = path.resolve(__dirname, '..');
 const workflow = fs.readFileSync(path.join(root, '.github/workflows/cd-agent.yml'), 'utf8');
+
+test('root maintenance reminder follows the embedded expiry with issue-only permissions', () => {
+    const reminder = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/root-maintenance-reminder.yml'), 'utf8'));
+    expect(reminder.on.schedule).toEqual([{ cron: '0 9 * * *' }]);
+    expect(reminder.permissions).toEqual({ contents: 'read', issues: 'write' });
+    expect(reminder.jobs.reminder.if).toBe("github.ref == 'refs/heads/main'");
+    expect(reminder.jobs.reminder.steps[0].with['persist-credentials']).toBe(false);
+    expect(reminder.jobs.reminder.steps[1].env).toEqual({ GH_TOKEN: '${{ github.token }}' });
+    expect(reminder.jobs.reminder.steps[1].run).toBe('node scripts/root-maintenance-reminder.js agent/update_publisher_root.json');
+    for (const step of reminder.jobs.reminder.steps.filter(item => item.uses)) {
+        expect(step.uses).toMatch(/@[a-f0-9]{40}$/);
+    }
+
+    const expiry = '2029-10-22T22:17:21Z';
+    expect(getReminderDate(expiry).toISOString()).toBe('2029-04-22T22:17:21.000Z');
+    expect(getReminderDate('2028-08-31T12:00:00Z').toISOString()).toBe('2028-02-29T12:00:00.000Z');
+    expect(isReminderDue(expiry, new Date('2029-04-21T23:59:59Z'))).toBe(false);
+    expect(isReminderDue(expiry, new Date('2029-04-22T00:00:00Z'))).toBe(true);
+    expect(fs.readFileSync(path.join(root, 'scripts/root-maintenance-reminder.js'), 'utf8')).not.toMatch(/secrets\.|root\.pem|targets\.pem|timestamp\.pem/);
+});
 
 test('Agent MSI includes old-product removal in rollback and native service control for repair', () => {
     const source = fs.readFileSync(path.join(root, 'build/windows/msi/printmaster-agent.wxs'), 'utf8');
