@@ -1873,75 +1873,37 @@ $ColorWhite   = "$ESC[37m"
 $ColorBold    = "$ESC[1m"
 $ColorDim     = "$ESC[2m"
 
-# Enable virtual terminal processing for ANSI colors on Windows
-$null = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$script:interactiveProgress = $false
 try {
-	$mode = 0
-	$handle = [Console]::OutputHandle
-	$null = [Console]::TreatControlCAsInput = $false
-	# Enable ENABLE_VIRTUAL_TERMINAL_PROCESSING (0x0004)
-	Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public class ConsoleHelper {
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern IntPtr GetStdHandle(int nStdHandle);
-}
-"@
-	$stdout = [ConsoleHelper]::GetStdHandle(-11)
-	$mode = 0
-	$null = [ConsoleHelper]::GetConsoleMode($stdout, [ref]$mode)
-	$null = [ConsoleHelper]::SetConsoleMode($stdout, $mode -bor 0x0004)
+	$script:interactiveProgress = $Host.Name -eq 'ConsoleHost' -and
+		-not [Console]::IsOutputRedirected -and $Host.UI.SupportsVirtualTerminal -and
+		$ProgressPreference -eq 'Continue'
 } catch {
-	# ANSI might not work on older systems, but continue anyway
+	$script:interactiveProgress = $false
 }
-
-# Build ASCII art with backticks using char code to avoid escaping issues
-$BT = [char]96
-$asciiArt = @"
-
-  $ColorCyan+----------------------------------------------------------------------------------+
-  |                                                                                  |
-  |   ____________ _____ _   _ ________  ___  ___   _____ _____ ___________          |
-  |   | ___ \ ___ \_   _| \ | |_   _|  \/  | / _ \ /  ___|_   _|  ___| ___ \         |
-  |   | |_/ / |_/ / | | |  \| | | | | .  . |/ /_\ \\ $BT--.  | | | |__ | |_/ /         |
-  |   |  __/|    /  | | | . $BT | | | | |\/| ||  _  | $BT--. \ | | |  __||    /          |
-  |   | |   | |\ \ _| |_| |\  | | | | |  | || | | |/\__/ / | | | |___| |\ \          |
-  |   \_|   \_| \_|\___/\_| \_/ \_/ \_|  |_/\_| |_/\____/  \_/ \____/\_| \_|         |
-  |                                                                                  |
-  +----------------------------------------------------------------------------------+$ColorReset
-
-"@
+if (-not $script:interactiveProgress) {
+	$ColorReset = $ColorRed = $ColorGreen = $ColorYellow = $ColorCyan = ""
+	$ColorWhite = $ColorBold = $ColorDim = ""
+}
+$script:installPercent = 0
 
 function Show-Banner {
-	Clear-Host
-	Write-Host $asciiArt
-	$centerPad = "                         "
-	Write-Host "$centerPad${ColorBold}Fleet Management Agent Installer${ColorReset}"
-	Write-Host "$centerPad${ColorDim}Server: $server${ColorReset}"
-	Write-Host ""
-	Write-Host ""
+	Write-Host "PrintMaster Agent Installer"
 }
 
-# Track if we have an active progress line that needs to be cleared
-$script:progressLineActive = $false
-
 function Clear-ProgressLine {
-	if ($script:progressLineActive) {
-		# Clear current line and move to next line
-		Write-Host ""
-		$script:progressLineActive = $false
+	if ($script:interactiveProgress) {
+		Write-Progress -Id 1 -Activity "Installing PrintMaster Agent" -Completed
 	}
 }
 
 function Show-Success {
 	param([string]$Message)
-	Clear-ProgressLine
-	Write-Host "  ${ColorGreen}[OK]${ColorReset} $Message"
+	if ($script:interactiveProgress) {
+		Show-Progress -Percent $script:installPercent -Message $Message
+	} else {
+		Write-Host "  [OK] $Message"
+	}
 }
 
 function Show-Error {
@@ -1952,8 +1914,11 @@ function Show-Error {
 
 function Show-Info {
 	param([string]$Message)
-	Clear-ProgressLine
-	Write-Host "  ${ColorCyan}[*]${ColorReset} $Message"
+	if ($script:interactiveProgress) {
+		Show-Progress -Percent $script:installPercent -Message $Message
+	} else {
+		Write-Host "  [*] $Message"
+	}
 }
 
 function Show-Warning {
@@ -1964,50 +1929,22 @@ function Show-Warning {
 
 function Show-Progress {
 	param([int]$Percent, [string]$Message)
-	$barWidth = 40
-	$filled = [math]::Floor(($Percent * $barWidth) / 100)
-	$empty = $barWidth - $filled
-	$bar = ("$ColorGreen" + ([string][char]9608 * $filled) + "$ColorDim" + ([string][char]9617 * $empty) + "$ColorReset")
-	$pct = $Percent.ToString().PadLeft(3)
-	# Use carriage return to overwrite line in place (works in PS5 and PS7)
-	# Write without newline so we can overwrite on next call
-	$line = "  $ColorCyan[$bar$ColorCyan]$ColorReset $pct%% $ColorWhite$Message$ColorReset"
-	# Pad to clear any previous longer text
-	$padWidth = 90
-	$line = $line.PadRight($padWidth)
-	$CR = [char]13
-	Write-Host -NoNewline "$CR$line"
-	$script:progressLineActive = $true
+	$script:installPercent = [math]::Max(0, [math]::Min(100, $Percent))
+	if ($script:interactiveProgress) {
+		Write-Progress -Id 1 -Activity "Installing PrintMaster Agent" -Status $Message -PercentComplete $script:installPercent
+	} else {
+		Write-Host "  [$($script:installPercent)/100] $Message"
+	}
 }
 
 function Show-CompletionBox {
 	param([bool]$Success, [string]$Message)
 	Clear-ProgressLine
-	Write-Host ""
-	Write-Host ""
 	if ($Success) {
-		$color = $ColorGreen
-		$icon = "[OK]"
+		Write-Host "${ColorGreen}[OK] $Message${ColorReset}"
 	} else {
-		$color = $ColorRed
-		$icon = "[X]"
+		Write-Host "${ColorRed}[X] $Message${ColorReset}"
 	}
-	$boxWidth = 60
-	$topBottom = "=" * ($boxWidth - 2)
-	$emptyLine = " " * ($boxWidth - 2)
-	$contentWidth = $boxWidth - 4
-	$textWithIcon = "  $icon  $Message"
-	$paddingNeeded = $contentWidth - $textWithIcon.Length
-	$paddingLeft = [math]::Floor($paddingNeeded / 2)
-	$paddingRight = $paddingNeeded - $paddingLeft
-	$indent = "          "
-	
-	Write-Host "$indent$color+$topBottom+$ColorReset"
-	Write-Host "$indent$color|$emptyLine|$ColorReset"
-	Write-Host "$indent$color|$(" " * $paddingLeft)  $icon  ${ColorBold}$Message${ColorReset}$color$(" " * $paddingRight)|$ColorReset"
-	Write-Host "$indent$color|$emptyLine|$ColorReset"
-	Write-Host "$indent$color+$topBottom+$ColorReset"
-	Write-Host ""
 }
 
 function Assert-Administrator {
@@ -2483,10 +2420,10 @@ Show-Progress -Percent 100 -Message "Complete!"
 Show-CompletionBox -Success $true -Message "Installation Complete!"
 
 Write-Host ""
-Show-Info "Executable:    $exePath"
-Show-Info "Configuration: $configPath"
-Show-Info "Logs folder:   $(Join-Path $configDir 'logs')"
-Show-Info "Web UI:        https://localhost:8443"
+Write-Host "Executable:    $exePath"
+Write-Host "Configuration: $configPath"
+Write-Host "Logs folder:   $(Join-Path $configDir 'logs')"
+Write-Host "Web UI:        https://localhost:8443"
 Write-Host ""
 `
 

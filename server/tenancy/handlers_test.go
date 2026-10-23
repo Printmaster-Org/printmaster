@@ -10,6 +10,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +22,131 @@ import (
 )
 
 type enrollmentSubjectKey struct{}
+
+func TestWindowsBootstrapConsole(t *testing.T) {
+	available := false
+	for _, name := range []string{"pwsh", "powershell"} {
+		powershell, err := exec.LookPath(name)
+		if err != nil {
+			continue
+		}
+		available = true
+		t.Run(name, func(t *testing.T) {
+			testWindowsBootstrapConsole(t, powershell)
+		})
+	}
+	if !available {
+		t.Skip("PowerShell required for bootstrap display runtime tests")
+	}
+}
+
+func testWindowsBootstrapConsole(t *testing.T, powershell string) {
+	t.Helper()
+	script, _ := buildBootstrapScript("windows", "https://example.invalid", "disposable-test-token")
+	helperEnd := strings.Index(script, "function Assert-Administrator")
+	if helperEnd < 0 {
+		t.Fatal("display helper boundary missing")
+	}
+	if strings.Contains(script[:helperEnd], "Clear-Host") {
+		t.Fatal("bootstrap must not clear preexisting console output")
+	}
+	directory := t.TempDir()
+	generatedPath := filepath.Join(directory, "generated.ps1")
+	if err := os.WriteFile(generatedPath, append([]byte{0xef, 0xbb, 0xbf}, []byte(script)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, scenario := range []struct {
+		name        string
+		interactive bool
+		success     bool
+	}{
+		{"interactive success", true, true},
+		{"interactive failure", true, false},
+		{"redirected success", false, true},
+		{"redirected failure", false, false},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			harness := script[:helperEnd] + fmt.Sprintf(`
+$script:interactiveProgress = $%t
+$ColorReset = $ColorRed = $ColorGreen = $ColorYellow = $ColorCyan = ""
+$ColorWhite = $ColorBold = $ColorDim = ""
+$script:messages = [System.Collections.Generic.List[string]]::new()
+$script:updates = [System.Collections.Generic.List[int]]::new()
+$script:completions = 0
+function Write-Host {
+    param([object]$Object)
+    [void]$script:messages.Add([string]$Object)
+}
+function Write-Progress {
+    param([int]$Id, [string]$Activity, [string]$Status, [int]$PercentComplete, [switch]$Completed)
+    if ($Completed) { $script:completions++ }
+    else { [void]$script:updates.Add($PercentComplete) }
+}
+$parseTokens = $null
+$parseErrors = $null
+$null = [System.Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $PSScriptRoot 'generated.ps1'), [ref]$parseTokens, [ref]$parseErrors)
+if ($parseErrors.Count -ne 0) { throw 'Generated bootstrap does not parse' }
+Show-Banner
+Show-Progress -Percent -1 -Message 'Preparing'
+Show-Progress -Percent 35 -Message 'Downloading'
+Show-Info 'Download details'
+Show-Success 'Download complete'
+Show-Warning 'Warning remains visible'
+Show-Error 'Error remains visible'
+Show-Progress -Percent 101 -Message 'Finishing'
+Show-CompletionBox -Success $%t -Message 'Finished fixture'
+Write-Output (ConvertTo-Json -Compress -Depth 4 -InputObject @{
+    messages = @($script:messages.ToArray())
+    updates = @($script:updates.ToArray())
+    completions = $script:completions
+})
+`, scenario.interactive, scenario.success)
+			path := filepath.Join(directory, "display-test.ps1")
+			if err := os.WriteFile(path, append([]byte{0xef, 0xbb, 0xbf}, []byte(harness)...), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			output, err := exec.CommandContext(ctx, powershell, "-NoProfile", "-NonInteractive", "-File", path).CombinedOutput()
+			if err != nil {
+				t.Fatalf("display helpers failed: %v\n%s", err, output)
+			}
+			var result struct {
+				Messages    []string `json:"messages"`
+				Updates     []int    `json:"updates"`
+				Completions int      `json:"completions"`
+			}
+			if err := json.Unmarshal(bytes.TrimPrefix(output, []byte{0xef, 0xbb, 0xbf}), &result); err != nil {
+				t.Fatalf("invalid helper result: %v\n%s", err, output)
+			}
+			messages := strings.Join(result.Messages, "\n")
+			for _, diagnostic := range []string{"Warning remains visible", "Error remains visible"} {
+				if !strings.Contains(messages, diagnostic) {
+					t.Fatalf("lost diagnostic %q: %s", diagnostic, messages)
+				}
+			}
+			icon := "[X]"
+			if scenario.success {
+				icon = "[OK]"
+			}
+			if !strings.Contains(messages, icon+" Finished fixture") {
+				t.Fatalf("completion summary missing: %s", messages)
+			}
+			if scenario.interactive {
+				if strings.Contains(messages, "Download") || len(result.Updates) != 5 || result.Completions != 3 {
+					t.Fatalf("interactive progress accumulated or was not completed: %+v", result)
+				}
+				if result.Updates[0] != 0 || result.Updates[len(result.Updates)-1] != 100 {
+					t.Fatalf("progress not clamped: %+v", result.Updates)
+				}
+			} else if len(result.Updates) != 0 || result.Completions != 0 || !strings.Contains(messages, "[35/100] Downloading") ||
+				!strings.Contains(messages, "[OK] Download complete") || !strings.Contains(messages, "[*] Download details") {
+				t.Fatalf("redirected output lost readable status: %+v", result)
+			}
+		})
+	}
+}
 
 func setupEnrollmentSecurity(t *testing.T, role storage.Role) (*storage.SQLiteStore, *http.ServeMux, string) {
 	t.Helper()
