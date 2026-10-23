@@ -1,0 +1,60 @@
+name: Update Publisher Preflight
+run-name: "Update publisher preflight: ${{ inputs.lane }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      lane:
+        type: choice
+        options: [rehearsal, production]
+        default: rehearsal
+        description: Read-only credential and configuration checks
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-publisher-${{ inputs.lane }}
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    if: github.ref == 'refs/heads/main'
+    environment: update-publisher-${{ inputs.lane }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: common/go.mod
+          cache: false
+      - name: Build and test without credentials
+        working-directory: common
+        run: |
+          go test ./updatepublisher ./updatestate ./updatetrust ./updateb2 ./cmd/update-publisher
+          go build -o "$RUNNER_TEMP/update-publisher" ./cmd/update-publisher
+      - name: Inspect credentials and policies without mutation
+        env:
+          UPDATE_STATE_REPOSITORY: ${{ vars.UPDATE_STATE_REPOSITORY }}
+          UPDATE_PUBLIC_URL: ${{ vars.UPDATE_PUBLIC_URL }}
+          B2_METADATA_BUCKET: ${{ vars.B2_METADATA_BUCKET }}
+          B2_RECOVERY_BUCKET: ${{ vars.B2_RECOVERY_BUCKET }}
+          B2_S3_ENDPOINT: ${{ vars.B2_S3_ENDPOINT }}
+          UPDATE_STATE_TOKEN: ${{ secrets.UPDATE_STATE_TOKEN }}
+          UPDATE_ROOT_JSON: ${{ secrets.UPDATE_ROOT_JSON }}
+          B2_METADATA_DELIVERY_KEY_ID: ${{ secrets.B2_METADATA_DELIVERY_KEY_ID }}
+          B2_METADATA_DELIVERY_APPLICATION_KEY: ${{ secrets.B2_METADATA_DELIVERY_APPLICATION_KEY }}
+          B2_RECOVERY_DELIVERY_KEY_ID: ${{ secrets.B2_RECOVERY_DELIVERY_KEY_ID }}
+          B2_RECOVERY_DELIVERY_APPLICATION_KEY: ${{ secrets.B2_RECOVERY_DELIVERY_APPLICATION_KEY }}
+          B2_RECOVERY_RESTORE_KEY_ID: ${{ secrets.B2_RECOVERY_RESTORE_KEY_ID }}
+          B2_RECOVERY_RESTORE_APPLICATION_KEY: ${{ secrets.B2_RECOVERY_RESTORE_APPLICATION_KEY }}
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/update-publisher" -mode preflight \
+            -state-repository "$UPDATE_STATE_REPOSITORY" \
+            -public-url "$UPDATE_PUBLIC_URL" -externally-serialized

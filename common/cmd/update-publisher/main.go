@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -45,7 +46,7 @@ func (s interruptedPublic) Put(ctx context.Context, name string, data []byte) er
 
 func run(args []string, getenv func(string) string, output io.Writer) error {
 	flags := flag.NewFlagSet("update-publisher", flag.ContinueOnError)
-	mode := flags.String("mode", "check", "publish, check or mirror")
+	mode := flags.String("mode", "check", "publish, check, mirror or preflight (read-only credential/configuration checks)")
 	work := flags.String("work", "", "existing empty protected runner work directory")
 	mirror := flags.String("mirror", "", "existing protected public Server mirror directory")
 	rootPath := flags.String("root", "", "independently provisioned public root file; otherwise UPDATE_ROOT_JSON")
@@ -58,8 +59,8 @@ func run(args []string, getenv func(string) string, output io.Writer) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || (*mode != "publish" && *mode != "check" && *mode != "mirror") || *stateRepo == "" ||
-		*publicURL == "" || *mirror == "" || !*serialized || (*mode == "publish" && *work == "") ||
+	if flags.NArg() != 0 || (*mode != "publish" && *mode != "check" && *mode != "mirror" && *mode != "preflight") || *stateRepo == "" ||
+		*publicURL == "" || (*mode != "preflight" && *mirror == "") || !*serialized || (*mode == "publish" && *work == "") ||
 		(*mode != "publish" && (*bootstrap || *interrupt || *inventory != "")) {
 		return fmt.Errorf("explicit mode, state repository, public URL, mirror, serialization and publish work directory required")
 	}
@@ -76,6 +77,14 @@ func run(args []string, getenv func(string) string, output io.Writer) error {
 			return err
 		}
 	}
+	if *mode == "preflight" {
+		if err := updatetrust.ValidateBootstrapRoot(root, time.Now()); err != nil {
+			return err
+		}
+		if _, err := updatetrust.NewPublicReader(*publicURL); err != nil {
+			return err
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 	backend, err := updatestate.NewGitHub(ctx, *stateRepo, getenv("UPDATE_STATE_TOKEN"))
@@ -83,6 +92,39 @@ func run(args []string, getenv func(string) string, output io.Writer) error {
 		return err
 	}
 	journal := updatestate.Journal{Backend: backend}
+	if *mode == "preflight" {
+		state, _, err := journal.Read(ctx)
+		if err != nil {
+			return err
+		}
+		rootPin := fmt.Sprintf("%x", sha256.Sum256(root))
+		if (state.Latest != nil && state.Latest.RootSHA256 != rootPin) ||
+			(state.Pending != nil && state.Pending.Publication.RootSHA256 != rootPin) {
+			return fmt.Errorf("authority root fingerprint differs from supplied root; owner transition required")
+		}
+		for _, store := range []struct {
+			bucket, prefix     string
+			recovery, readOnly bool
+		}{
+			{getenv("B2_METADATA_BUCKET"), "B2_METADATA_DELIVERY", false, false},
+			{getenv("B2_RECOVERY_BUCKET"), "B2_RECOVERY_DELIVERY", true, false},
+			{getenv("B2_RECOVERY_BUCKET"), "B2_RECOVERY_RESTORE", true, true},
+		} {
+			opts := updateb2.StoreOptions{Bucket: store.bucket, S3Endpoint: getenv("B2_S3_ENDPOINT"),
+				KeyID: getenv(store.prefix + "_KEY_ID"), ApplicationKey: getenv(store.prefix + "_APPLICATION_KEY"), Recovery: store.recovery}
+			if store.readOnly {
+				_, err = updateb2.NewRecoveryReader(ctx, opts)
+			} else {
+				_, err = updateb2.NewStore(ctx, opts)
+			}
+			if err != nil {
+				return fmt.Errorf("%s preflight: %w", store.prefix, err)
+			}
+		}
+		_, err = fmt.Fprintf(output, "Read-only preflight verified root %s, authority generation %d (latest=%t, pending=%t), and all three B2 credential/bucket policies. No signing, remote writes or publication; write permissions and mirror delivery are not proven.\n",
+			rootPin, state.Generation, state.Latest != nil, state.Pending != nil)
+		return err
+	}
 	if *mode == "publish" {
 		var targets []updatetrust.PublishTarget
 		if *inventory != "" {
