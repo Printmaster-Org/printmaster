@@ -33,6 +33,34 @@ function setup(names, globals = {}) {
     return { context, document: dom.window.document };
 }
 
+describe('agent lifecycle status filters', () => {
+    test('deactivation and pending deployment take precedence over connection state', () => {
+        const { context } = setup(['enrichSingleAgent'], {
+            AGENT_STATUS_LABELS: { active: 'Active', degraded: 'Degraded', offline: 'Offline', deactivated: 'Deactivated', pending: 'Pending setup' },
+            normalizeAgentStatusFromConnection: () => 'active',
+            formatRelativeTime: () => 'just now',
+            tenantDisplayNameById: () => '',
+            getAgentPlatformLabel: () => 'Windows',
+            buildAgentSearchBlob: () => '',
+        });
+        const deactivated = context.enrichSingleAgent({ agent_id: 'old-agent', status: 'deactivated', connection_type: 'ws' });
+        const pending = context.enrichSingleAgent({ agent_id: 'pending-deployment:id', status: 'expired', pending_deployment: true, connection_type: 'none' });
+        expect(deactivated.__meta.statusKey).toBe('deactivated');
+        expect(pending.__meta.statusKey).toBe('pending');
+        expect(pending.__meta.statusLabel).toBe('Expired');
+    });
+
+    test('deactivated and pending rows can be independently filtered out', () => {
+        const { context } = setup(['matchesAgentFilters']);
+        const deactivated = { status: 'deactivated', __meta: { statusKey: 'deactivated', tenantId: '' } };
+        const pending = { status: 'expired', pending_deployment: true, __meta: { statusKey: 'pending', tenantId: '' } };
+        expect(context.matchesAgentFilters(deactivated, { statuses: new Set(['active', 'offline']) })).toBe(false);
+        expect(context.matchesAgentFilters(deactivated, { statuses: new Set(['deactivated']) })).toBe(true);
+        expect(context.matchesAgentFilters(pending, { statuses: new Set(['active', 'deactivated']) })).toBe(false);
+        expect(context.matchesAgentFilters(pending, { statuses: new Set(['pending']) })).toBe(true);
+    });
+});
+
 describe('bootstrap installation guidance', () => {
     function render(platform, clipboard) {
         const oneLiner = 'irm https://example.invalid/install/fixture | iex';

@@ -3511,6 +3511,11 @@ func setupRoutes(cfg *Config) {
 	tenancy.SetLogger(serverLogger)
 	tenancy.SetEnabled(featureEnabled)
 	tenancy.SetAgentEventSink(func(eventType string, data map[string]interface{}) {
+		if eventType == "agent_deactivated" {
+			if agentID, ok := data["agent_id"].(string); ok && agentID != "" {
+				closeAgentWebSocket(agentID)
+			}
+		}
 		sseHub.Broadcast(SSEEvent{Type: eventType, Data: data})
 	})
 	tenancy.SetAuditLogger(logRequestAudit)
@@ -4407,6 +4412,74 @@ func deriveAgentConnectionType(agent *storage.Agent) string {
 	return "none"
 }
 
+type agentListItem struct {
+	*storage.Agent
+	ConnectionType        string   `json:"connection_type"`
+	SiteIDs               []string `json:"site_ids,omitempty"`
+	PendingDeployment     bool     `json:"pending_deployment,omitempty"`
+	DeploymentID          string   `json:"deployment_id,omitempty"`
+	ReplacedByAgentID     string   `json:"replaced_by_agent_id,omitempty"`
+	ReplacementForAgentID string   `json:"replacement_for_agent_id,omitempty"`
+}
+
+func buildAgentListItems(ctx context.Context, agents []*storage.Agent, scope map[string]struct{}) ([]agentListItem, error) {
+	deployments := make([]*storage.AgentDeployment, 0)
+	if deploymentStore, ok := serverStore.(interface {
+		ListAgentDeployments(context.Context, []string) ([]*storage.AgentDeployment, error)
+	}); ok && (scope == nil || len(scope) > 0) {
+		tenantIDs := make([]string, 0, len(scope))
+		if scope != nil {
+			for tenantID := range scope {
+				tenantIDs = append(tenantIDs, tenantID)
+			}
+		}
+		var err error
+		deployments, err = deploymentStore.ListAgentDeployments(ctx, tenantIDs)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	replacedBy := make(map[string]string)
+	for _, deployment := range deployments {
+		if deployment != nil && deployment.Status == "joined" && deployment.ReplaceAgentID != "" && deployment.AgentID != "" {
+			replacedBy[deployment.ReplaceAgentID] = deployment.AgentID
+		}
+	}
+
+	items := make([]agentListItem, 0, len(agents)+len(deployments))
+	for _, agent := range agents {
+		if agent == nil {
+			continue
+		}
+		agent.Token = ""
+		siteIDs, _ := serverStore.GetAgentSiteIDs(ctx, agent.AgentID)
+		items = append(items, agentListItem{
+			Agent: agent, ConnectionType: deriveAgentConnectionType(agent),
+			SiteIDs: siteIDs, ReplacedByAgentID: replacedBy[agent.AgentID],
+		})
+	}
+	for _, deployment := range deployments {
+		if deployment == nil || (deployment.Status != "pending" && deployment.Status != "expired") {
+			continue
+		}
+		name := deployment.Name
+		if name == "" {
+			name = "Pending " + strings.ToUpper(deployment.Platform) + " Agent"
+		}
+		pendingAgent := &storage.Agent{
+			AgentID: "pending-deployment:" + deployment.ID,
+			Name:    name, Hostname: "Awaiting first connection", Platform: deployment.Platform,
+			TenantID: deployment.TenantID, RegisteredAt: deployment.CreatedAt, Status: deployment.Status,
+		}
+		items = append(items, agentListItem{
+			Agent: pendingAgent, ConnectionType: "none", PendingDeployment: true,
+			DeploymentID: deployment.ID, ReplacementForAgentID: deployment.ReplaceAgentID,
+		})
+	}
+	return items, nil
+}
+
 // List all agents - for UI display
 func handleAgentsList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -4522,24 +4595,11 @@ func handleAgentsList(w http.ResponseWriter, r *http.Request) {
 		agents = filtered
 	}
 
-	// Build response objects with a derived connection_type field
-	type agentView struct {
-		*storage.Agent
-		ConnectionType string   `json:"connection_type"`
-		SiteIDs        []string `json:"site_ids,omitempty"`
-	}
-
-	resp := make([]agentView, 0, len(agents))
-	// Determine connection type using live WS map and last_seen recency
-	for _, agent := range agents {
-		agent.Token = "" // Don't expose tokens to UI
-
-		connType := deriveAgentConnectionType(agent)
-
-		// Fetch site IDs for this agent
-		siteIDs, _ := serverStore.GetAgentSiteIDs(ctx, agent.AgentID)
-
-		resp = append(resp, agentView{Agent: agent, ConnectionType: connType, SiteIDs: siteIDs})
+	resp, err := buildAgentListItems(ctx, agents, scope)
+	if err != nil {
+		logError("Failed to list Agent deployments", "error", err)
+		http.Error(w, "Failed to list Agent deployments", http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -4827,6 +4887,64 @@ func handleAgentDetails(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(obj)
 			return
 		}
+
+	case http.MethodPatch:
+		var request struct {
+			Status string `json:"status"`
+		}
+		if err := decodeJSONBody(r, &request); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+		if request.Status != "active" && request.Status != "deactivated" {
+			http.Error(w, "status must be active or deactivated", http.StatusBadRequest)
+			return
+		}
+		agent, err := serverStore.GetAgent(ctx, agentID)
+		if err != nil || agent == nil {
+			http.Error(w, "Agent not found", http.StatusNotFound)
+			return
+		}
+		if !tenantAllowed(scope, agent.TenantID) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if !authorizeOrReject(w, r, authz.ActionAgentsWrite, authz.ResourceRef{TenantIDs: []string{agent.TenantID}}) {
+			return
+		}
+		statusStore, ok := serverStore.(interface {
+			SetAgentStatus(context.Context, string, string) error
+		})
+		if !ok {
+			http.Error(w, "Agent status management unavailable", http.StatusNotImplemented)
+			return
+		}
+		if err := statusStore.SetAgentStatus(ctx, agentID, request.Status); err != nil {
+			logError("Failed to update agent status", "agent_id", agentID, "status", request.Status, "error", err)
+			http.Error(w, "Failed to update agent status", http.StatusInternalServerError)
+			return
+		}
+		if request.Status == "deactivated" {
+			closeAgentWebSocket(agentID)
+		}
+		logRequestAudit(r, &storage.AuditEntry{
+			Action:     "agent." + request.Status,
+			TargetType: "agent",
+			TargetID:   agentID,
+			TenantID:   agent.TenantID,
+			Details:    "Agent lifecycle status changed to " + request.Status,
+		})
+		sseHub.Broadcast(SSEEvent{
+			Type:     "agent_status_changed",
+			TenantID: agent.TenantID,
+			Data: map[string]interface{}{
+				"agent_id": agentID,
+				"status":   request.Status,
+			},
+		})
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"agent_id": agentID, "status": request.Status})
+		return
 
 	case http.MethodDelete:
 		{

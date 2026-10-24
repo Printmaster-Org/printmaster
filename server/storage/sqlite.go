@@ -293,6 +293,23 @@ func (s *SQLiteStore) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_join_tokens_hash ON join_tokens(token_hash);
 	CREATE INDEX IF NOT EXISTS idx_join_tokens_tenant ON join_tokens(tenant_id);
 
+	-- Server-generated installs are correlated with join tokens by ID only.
+	CREATE TABLE IF NOT EXISTS agent_deployments (
+		id TEXT PRIMARY KEY,
+		join_token_id TEXT NOT NULL UNIQUE,
+		tenant_id TEXT NOT NULL,
+		name TEXT NOT NULL DEFAULT '',
+		platform TEXT NOT NULL,
+		replace_agent_id TEXT,
+		agent_id TEXT,
+		status TEXT NOT NULL DEFAULT 'pending',
+		expires_at DATETIME NOT NULL,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY(join_token_id) REFERENCES join_tokens(id) ON DELETE CASCADE
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_agent_deployments_tenant_status ON agent_deployments(tenant_id, status);
+
 	-- Pending agent registrations (for expired but known tokens)
 	CREATE TABLE IF NOT EXISTS pending_agent_registrations (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,

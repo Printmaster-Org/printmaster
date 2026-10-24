@@ -1396,6 +1396,47 @@ func TestAgentsListConnectionType(t *testing.T) {
 	}
 }
 
+func TestAgentLifecycleEndpointDeactivatesAndReactivatesCredentials(t *testing.T) {
+	server, store := setupTestServer(t)
+	ctx := context.Background()
+	agent := &storage.Agent{
+		AgentID: "lifecycle-agent", Name: "Lifecycle Agent", Hostname: "lifecycle-host",
+		IP: "192.0.2.40", Platform: "linux", Version: "1.0.0",
+		ProtocolVersion: "1", Token: "lifecycle-secret", TenantID: "tenant-a", Status: "active",
+	}
+	if err := store.RegisterAgent(ctx, agent); err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+	setStatus := func(status string) *http.Response {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"status": status})
+		req, _ := http.NewRequest(http.MethodPatch, server.URL+"/api/v1/agents/"+agent.AgentID, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req = InjectTestAdmin(req)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("PATCH status %s: %v", status, err)
+		}
+		return resp
+	}
+	response := setStatus("deactivated")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("deactivate returned %d", response.StatusCode)
+	}
+	response.Body.Close()
+	if _, err := store.GetAgentByToken(ctx, agent.Token); err == nil {
+		t.Fatal("deactivated Agent credential still authenticates")
+	}
+	response = setStatus("active")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("reactivate returned %d", response.StatusCode)
+	}
+	response.Body.Close()
+	if _, err := store.GetAgentByToken(ctx, agent.Token); err != nil {
+		t.Fatalf("reactivated Agent credential is not accepted: %v", err)
+	}
+}
+
 func TestBuildAgentUpdateAuditEntry(t *testing.T) {
 	agent := &storage.Agent{
 		AgentID:  "agent-123",

@@ -535,6 +535,21 @@ type JoinToken struct {
 	Revoked   bool      `json:"revoked"`
 }
 
+// AgentDeployment tracks an installation issued from the server UI without
+// retaining the raw join token.
+type AgentDeployment struct {
+	ID             string    `json:"id"`
+	JoinTokenID    string    `json:"join_token_id"`
+	TenantID       string    `json:"tenant_id"`
+	Name           string    `json:"name,omitempty"`
+	Platform       string    `json:"platform"`
+	ReplaceAgentID string    `json:"replace_agent_id,omitempty"`
+	AgentID        string    `json:"agent_id,omitempty"`
+	Status         string    `json:"status"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
 // User represents a local user account for the server UI/API
 type User struct {
 	ID           int64     `json:"id"`

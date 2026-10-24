@@ -589,6 +589,77 @@ func TestRegisterWithTokenRejectsExistingIdentity(t *testing.T) {
 	}
 }
 
+func TestTrackedReplacementDeactivatesOldAgentAfterRegistration(t *testing.T) {
+	db, mux, sessionToken := setupEnrollmentSecurity(t, storage.RoleAdmin)
+	ctx := context.Background()
+	oldAgent := &storage.Agent{
+		AgentID: "replace-old", Name: "Old Agent", Hostname: "old-host", IP: "192.0.2.10",
+		Platform: "windows", Version: "1.0.0", ProtocolVersion: "1", Token: "old-agent-secret",
+		TenantID: "tenant-a", Status: "active",
+	}
+	if err := db.RegisterAgent(ctx, oldAgent); err != nil {
+		t.Fatal(err)
+	}
+
+	requestBody, _ := json.Marshal(map[string]interface{}{
+		"tenant_id": "tenant-a", "deployment_name": "New Office Agent",
+		"platform": "windows", "replace_agent_id": oldAgent.AgentID,
+		"ttl_minutes": 60, "one_time": true,
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/join-token", bytes.NewReader(requestBody))
+	request.Header.Set("Authorization", sessionToken)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("create tracked token returned %d: %s", response.Code, response.Body.String())
+	}
+	var tokenResponse struct {
+		Token        string `json:"token"`
+		DeploymentID string `json:"deployment_id"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &tokenResponse); err != nil {
+		t.Fatal(err)
+	}
+	if tokenResponse.Token == "" || tokenResponse.DeploymentID == "" {
+		t.Fatalf("tracked token response missing token/deployment ID: %+v", tokenResponse)
+	}
+	if old, err := db.GetAgent(ctx, oldAgent.AgentID); err != nil || old.Status != "active" {
+		t.Fatalf("old Agent changed before successor joined: agent=%+v err=%v", old, err)
+	}
+
+	events := make([]string, 0, 2)
+	SetAgentEventSink(func(eventType string, _ map[string]interface{}) { events = append(events, eventType) })
+	t.Cleanup(func() { SetAgentEventSink(nil) })
+	registration, _ := json.Marshal(map[string]string{
+		"token": tokenResponse.Token, "agent_id": "replace-new", "name": "installer name",
+		"hostname": "new-host", "platform": "windows", "agent_version": "2.0.0",
+	})
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/agents/register-with-token", bytes.NewReader(registration)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("successor registration returned %d: %s", response.Code, response.Body.String())
+	}
+
+	registered, err := db.GetAgent(ctx, "replace-new")
+	if err != nil || registered.Name != "New Office Agent" {
+		t.Fatalf("successor record missing configured name: agent=%+v err=%v", registered, err)
+	}
+	retained, err := db.GetAgent(ctx, oldAgent.AgentID)
+	if err != nil || retained.Status != "deactivated" || retained.Token != oldAgent.Token {
+		t.Fatalf("old Agent should be retained and deactivated: agent=%+v err=%v", retained, err)
+	}
+	if _, err := db.GetAgentByToken(ctx, oldAgent.Token); err == nil {
+		t.Fatal("old Agent credential still authenticates")
+	}
+	deployments, err := db.ListAgentDeployments(ctx, []string{"tenant-a"})
+	if err != nil || len(deployments) != 1 || deployments[0].Status != "joined" || deployments[0].AgentID != "replace-new" {
+		t.Fatalf("deployment not completed: deployments=%+v err=%v", deployments, err)
+	}
+	if len(events) != 2 || events[0] != "agent_deactivated" || events[1] != "agent_registered" {
+		t.Fatalf("unexpected lifecycle event order: %v", events)
+	}
+}
+
 type enrollmentErrorStore struct {
 	storage.Store
 	lookupErr   error

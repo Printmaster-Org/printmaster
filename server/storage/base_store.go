@@ -21,6 +21,8 @@ import (
 // ErrOwnershipConflict means a machine write does not match the existing owner.
 // Callers must bind machine identifiers to authenticated credentials before writing.
 var ErrOwnershipConflict = errors.New("machine ownership conflict")
+var ErrAgentDeploymentNotFound = errors.New("agent deployment not found")
+var ErrAgentDeploymentConflict = errors.New("agent deployment is no longer pending")
 
 // BaseStore provides shared database operations that work across SQLite and PostgreSQL.
 // It embeds a *sql.DB connection and a Dialect for handling SQL syntax differences.
@@ -120,6 +122,14 @@ func (s *BaseStore) insertReturningID(ctx context.Context, query string, args ..
 // Note: On conflict, the 'name' field is only updated if the existing name is empty,
 // to preserve user-set display names.
 func (s *BaseStore) RegisterAgent(ctx context.Context, agent *Agent) error {
+	return s.registerAgent(ctx, s.db, agent)
+}
+
+type contextRowQueryer interface {
+	QueryRowContext(context.Context, string, ...interface{}) *sql.Row
+}
+
+func (s *BaseStore) registerAgent(ctx context.Context, queryer contextRowQueryer, agent *Agent) error {
 	if agent == nil || agent.AgentID == "" || agent.Token == "" {
 		return fmt.Errorf("%w: agent ID and token are required", ErrOwnershipConflict)
 	}
@@ -156,7 +166,7 @@ func (s *BaseStore) RegisterAgent(ctx context.Context, agent *Agent) error {
 	// RETURNING is supported by both backends and returns no row when the
 	// conflict guard rejects a write. LastInsertId cannot detect that case.
 	var id int64
-	err := s.queryRowContext(ctx, query,
+	err := queryer.QueryRowContext(ctx, s.query(query),
 		agent.AgentID, agent.Name, agent.Hostname, agent.IP, agent.Platform,
 		agent.Version, agent.ProtocolVersion, agent.Token, agent.TenantID, agent.RegisteredAt,
 		agent.LastSeen, agent.Status,
@@ -256,7 +266,7 @@ func (s *BaseStore) GetAgentByToken(ctx context.Context, token string) (*Agent, 
 		       build_type, git_commit, last_heartbeat, device_count,
 		       last_device_sync, last_metrics_sync
 		FROM agents
-		WHERE token = ?
+		WHERE token = ? AND status <> 'deactivated'
 	`
 
 	var agent Agent
@@ -475,7 +485,7 @@ func (s *BaseStore) scanAgent(rows *sql.Rows) (*Agent, error) {
 func (s *BaseStore) UpdateAgentHeartbeat(ctx context.Context, agentID string, status string) error {
 	now := time.Now().UTC()
 	_, err := s.execContext(ctx,
-		`UPDATE agents SET last_seen = ?, last_heartbeat = ?, status = ? WHERE agent_id = ?`,
+		`UPDATE agents SET last_seen = ?, last_heartbeat = ?, status = CASE WHEN status = 'deactivated' THEN status ELSE ? END WHERE agent_id = ?`,
 		now, now, status, agentID)
 	return err
 }
@@ -502,7 +512,7 @@ func (s *BaseStore) UpdateAgentInfo(ctx context.Context, agent *Agent) error {
 			device_count = ?,
 			last_seen = ?,
 			last_heartbeat = ?,
-			status = ?
+			status = CASE WHEN status = 'deactivated' THEN status ELSE ? END
 		WHERE agent_id = ?
 	`
 
@@ -521,6 +531,24 @@ func (s *BaseStore) UpdateAgentInfo(ctx context.Context, agent *Agent) error {
 func (s *BaseStore) UpdateAgentName(ctx context.Context, agentID string, name string) error {
 	_, err := s.execContext(ctx, `UPDATE agents SET name = ? WHERE agent_id = ?`, name, agentID)
 	return err
+}
+
+func (s *BaseStore) SetAgentStatus(ctx context.Context, agentID, status string) error {
+	if status != "active" && status != "deactivated" {
+		return fmt.Errorf("unsupported agent status %q", status)
+	}
+	result, err := s.execContext(ctx, `UPDATE agents SET status = ? WHERE agent_id = ?`, status, agentID)
+	if err != nil {
+		return err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if updated != 1 {
+		return fmt.Errorf("agent not found: %s", agentID)
+	}
+	return nil
 }
 
 // DeleteAgent removes an agent by its ID
@@ -2131,6 +2159,236 @@ func (s *BaseStore) GetAuditLogPaginated(ctx context.Context, actorID string, si
 // ============================================================================
 // Join Token Methods
 // ============================================================================
+
+func (s *BaseStore) CreateAgentDeployment(ctx context.Context, deployment *AgentDeployment) error {
+	if deployment == nil || deployment.JoinTokenID == "" || deployment.TenantID == "" || deployment.Platform == "" {
+		return fmt.Errorf("join token, tenant, and platform are required")
+	}
+	if deployment.ID == "" {
+		id, err := generateSecureToken(16)
+		if err != nil {
+			return fmt.Errorf("generate deployment ID: %w", err)
+		}
+		deployment.ID = id
+	}
+	if deployment.Status == "" {
+		deployment.Status = "pending"
+	}
+	if deployment.Status != "pending" {
+		return fmt.Errorf("new deployment status must be pending")
+	}
+	if deployment.CreatedAt.IsZero() {
+		deployment.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.execContext(ctx, `
+		INSERT INTO agent_deployments (
+			id, join_token_id, tenant_id, name, platform, replace_agent_id,
+			status, expires_at, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, deployment.ID, deployment.JoinTokenID, deployment.TenantID, deployment.Name,
+		deployment.Platform, deployment.ReplaceAgentID, deployment.Status,
+		deployment.ExpiresAt, deployment.CreatedAt)
+	return err
+}
+
+func (s *BaseStore) SetAgentDeploymentStatus(ctx context.Context, deploymentID, status string) error {
+	if status != "cancelled" {
+		return fmt.Errorf("unsupported deployment status %q", status)
+	}
+	result, err := s.execContext(ctx, `
+		UPDATE agent_deployments SET status = ?
+		WHERE id = ? AND status = 'pending'
+	`, status, deploymentID)
+	if err != nil {
+		return err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if updated != 1 {
+		return ErrAgentDeploymentConflict
+	}
+	return nil
+}
+
+func (s *BaseStore) GetAgentDeploymentByJoinTokenID(ctx context.Context, joinTokenID string) (*AgentDeployment, error) {
+	var deployment AgentDeployment
+	var replaceAgentID, agentID sql.NullString
+	err := s.queryRowContext(ctx, `
+		SELECT id, join_token_id, tenant_id, name, platform, replace_agent_id,
+		       agent_id, status, expires_at, created_at
+		FROM agent_deployments WHERE join_token_id = ?
+	`, joinTokenID).Scan(
+		&deployment.ID, &deployment.JoinTokenID, &deployment.TenantID, &deployment.Name,
+		&deployment.Platform, &replaceAgentID, &agentID, &deployment.Status,
+		&deployment.ExpiresAt, &deployment.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	deployment.ReplaceAgentID = replaceAgentID.String
+	deployment.AgentID = agentID.String
+	return &deployment, nil
+}
+
+func (s *BaseStore) ListAgentDeployments(ctx context.Context, tenantIDs []string) ([]*AgentDeployment, error) {
+	query := `
+		SELECT id, join_token_id, tenant_id, name, platform, replace_agent_id,
+		       agent_id, status, expires_at, created_at
+		FROM agent_deployments
+	`
+	args := make([]interface{}, 0, len(tenantIDs))
+	if len(tenantIDs) > 0 {
+		placeholders := make([]string, len(tenantIDs))
+		for i, tenantID := range tenantIDs {
+			placeholders[i] = "?"
+			args = append(args, tenantID)
+		}
+		query += ` WHERE tenant_id IN (` + strings.Join(placeholders, ",") + `)`
+	}
+	query += ` ORDER BY created_at DESC`
+	rows, err := s.queryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var deployments []*AgentDeployment
+	for rows.Next() {
+		var deployment AgentDeployment
+		var replaceAgentID, agentID sql.NullString
+		if err := rows.Scan(
+			&deployment.ID, &deployment.JoinTokenID, &deployment.TenantID, &deployment.Name,
+			&deployment.Platform, &replaceAgentID, &agentID, &deployment.Status,
+			&deployment.ExpiresAt, &deployment.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		deployment.ReplaceAgentID = replaceAgentID.String
+		deployment.AgentID = agentID.String
+		if deployment.Status == "pending" && !deployment.ExpiresAt.After(time.Now()) {
+			deployment.Status = "expired"
+		}
+		deployments = append(deployments, &deployment)
+	}
+	return deployments, rows.Err()
+}
+
+// CompleteAgentDeployment registers the successor and applies replacement
+// ownership changes in one transaction. The raw join token is never persisted.
+func (s *BaseStore) CompleteAgentDeployment(ctx context.Context, joinTokenID string, agent *Agent) (string, error) {
+	if agent == nil || agent.AgentID == "" || agent.Token == "" {
+		return "", fmt.Errorf("%w: agent ID and token are required", ErrOwnershipConflict)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+
+	var deployment AgentDeployment
+	var replaceAgentID sql.NullString
+	err = tx.QueryRowContext(ctx, s.query(`
+		SELECT id, tenant_id, name, replace_agent_id, status
+		FROM agent_deployments WHERE join_token_id = ?
+	`), joinTokenID).Scan(
+		&deployment.ID, &deployment.TenantID, &deployment.Name, &replaceAgentID, &deployment.Status,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrAgentDeploymentNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if deployment.Status != "pending" || deployment.TenantID != agent.TenantID {
+		return "", ErrAgentDeploymentConflict
+	}
+	deployment.ReplaceAgentID = replaceAgentID.String
+	if deployment.Name != "" {
+		agent.Name = deployment.Name
+	}
+	if err := s.registerAgent(ctx, tx, agent); err != nil {
+		return "", err
+	}
+
+	if deployment.ReplaceAgentID != "" {
+		if deployment.ReplaceAgentID == agent.AgentID {
+			return "", ErrAgentDeploymentConflict
+		}
+		result, err := tx.ExecContext(ctx, s.query(`
+			UPDATE agents SET status = 'deactivated'
+			WHERE agent_id = ? AND tenant_id = ?
+		`), deployment.ReplaceAgentID, deployment.TenantID)
+		if err != nil {
+			return "", err
+		}
+		updated, err := result.RowsAffected()
+		if err != nil {
+			return "", err
+		}
+		if updated != 1 {
+			return "", fmt.Errorf("replacement target not found in tenant")
+		}
+
+		rows, err := tx.QueryContext(ctx, s.query(`SELECT site_id FROM agent_sites WHERE agent_id = ?`), deployment.ReplaceAgentID)
+		if err != nil {
+			return "", err
+		}
+		var siteIDs []string
+		for rows.Next() {
+			var siteID string
+			if err := rows.Scan(&siteID); err != nil {
+				rows.Close()
+				return "", err
+			}
+			siteIDs = append(siteIDs, siteID)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return "", err
+		}
+		if err := rows.Close(); err != nil {
+			return "", err
+		}
+		for _, siteID := range siteIDs {
+			if _, err := tx.ExecContext(ctx, s.query(`
+				INSERT INTO agent_sites (agent_id, site_id, created_at) VALUES (?, ?, ?)
+				ON CONFLICT DO NOTHING
+			`), agent.AgentID, siteID, time.Now().UTC()); err != nil {
+				return "", err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, s.query(`UPDATE devices SET agent_id = ? WHERE agent_id = ?`), agent.AgentID, deployment.ReplaceAgentID); err != nil {
+			return "", err
+		}
+		if _, err := tx.ExecContext(ctx, s.query(`UPDATE agents SET device_count = 0 WHERE agent_id = ?`), deployment.ReplaceAgentID); err != nil {
+			return "", err
+		}
+		if _, err := tx.ExecContext(ctx, s.query(`UPDATE agents SET device_count = (SELECT COUNT(*) FROM devices WHERE agent_id = ?) WHERE agent_id = ?`), agent.AgentID, agent.AgentID); err != nil {
+			return "", err
+		}
+	}
+
+	result, err := tx.ExecContext(ctx, s.query(`
+		UPDATE agent_deployments SET status = 'joined', agent_id = ?
+		WHERE id = ? AND status = 'pending'
+	`), agent.AgentID, deployment.ID)
+	if err != nil {
+		return "", err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return "", err
+	}
+	if updated != 1 {
+		return "", ErrAgentDeploymentConflict
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return deployment.ReplaceAgentID, nil
+}
 
 // CreateJoinToken generates a join token for tenant agent onboarding.
 // Returns the JoinToken record, raw token string for sharing, and any error.

@@ -335,13 +335,15 @@ const DEVICES_DEFAULT_VIEW = getPersistedUIState(SERVER_UI_STATE_KEYS.DEVICES_VI
 const DEVICES_DEFAULT_SORT_KEY = getPersistedUIState(SERVER_UI_STATE_KEYS.DEVICES_SORT_KEY, 'last_seen', DEVICES_SORT_KEYS);
 const DEVICES_DEFAULT_SORT_DIR = getPersistedUIState(SERVER_UI_STATE_KEYS.DEVICES_SORT_DIR, 'desc', ['asc', 'desc']);
 
-const AGENT_STATUS_KEYS = ['active', 'degraded', 'offline'];
-const AGENT_STATUS_ORDER = { active: 0, degraded: 1, offline: 2 };
-const AGENT_STATUS_LABELS = { active: 'Active', degraded: 'Degraded', offline: 'Offline' };
+const AGENT_STATUS_KEYS = ['active', 'degraded', 'offline', 'deactivated', 'pending'];
+const AGENT_STATUS_ORDER = { active: 0, degraded: 1, offline: 2, pending: 3, deactivated: 4 };
+const AGENT_STATUS_LABELS = { active: 'Active', degraded: 'Degraded', offline: 'Offline', deactivated: 'Deactivated', pending: 'Pending setup' };
 const AGENT_STATUS_COLORS = {
     active: 'var(--success)',
     degraded: 'var(--warning)',
-    offline: 'var(--danger)'
+    offline: 'var(--danger)',
+    pending: 'var(--warning)',
+    deactivated: 'var(--muted)'
 };
 const AGENTS_SORT_KEYS = ['last_seen', 'name', 'tenant', 'status', 'version', 'platform'];
 const AGENTS_VIEW_OPTIONS = ['cards', 'table'];
@@ -1032,13 +1034,15 @@ function connectSSE() {
         try {
             const data = JSON.parse(e.data);
             window.__pm_shared.log('Agent registered (SSE):', data);
-            upsertAgentRecord(data);
-            // Show joined bubble when registration event received
-            try { setAgentJoined(data.agent_id, true); } catch (ex) { }
+            void loadAgents(true);
         } catch (err) {
             window.__pm_shared.warn('Failed to parse agent_registered event, falling back to full reload:', err);
             loadAgents();
         }
+    });
+
+    eventSource.addEventListener('agent_status_changed', () => {
+        void loadAgents(true);
     });
 
     eventSource.addEventListener('agent_connected', (e) => {
@@ -10403,6 +10407,8 @@ function renderAgentsInlineStats() {
             <span class="status-pill healthy">Active ${formatNumber(statuses.active || 0)}</span>
             <span class="status-pill warning">Degraded ${formatNumber(statuses.degraded || 0)}</span>
             <span class="status-pill error">Offline ${formatNumber(statuses.offline || 0)}</span>
+            <span class="status-pill warning">Pending setup ${formatNumber(statuses.pending || 0)}</span>
+            <span class="status-pill">Deactivated ${formatNumber(statuses.deactivated || 0)}</span>
         </div>
     `;
 }
@@ -10723,7 +10729,7 @@ function renderAgentTable(agents) {
         const rows = agents.map(agent => {
             const meta = agent.__meta || {};
             return `
-                <tr data-agent-id="${escapeHtml(agent.agent_id || '')}" class="agent-row-clickable" title="Click to view details, right-click for actions">
+                <tr data-agent-id="${escapeHtml(agent.agent_id || '')}" class="${agent.pending_deployment ? '' : 'agent-row-clickable'}" title="${agent.pending_deployment ? 'Waiting for the new Agent to connect' : 'Click to view details, right-click for actions'}">
                     ${agentsVM.tableCustomizer.renderRow(agent, meta)}
                 </tr>
             `;
@@ -10738,7 +10744,7 @@ function renderAgentTable(agents) {
         const meta = agent.__meta || {};
         const tenantLabel = formatTenantDisplay(agent.tenant_id || meta.tenantId || '');
         return `
-            <tr data-agent-id="${escapeHtml(agent.agent_id || '')}" class="agent-row-clickable" title="Click to view details, right-click for actions">
+            <tr data-agent-id="${escapeHtml(agent.agent_id || '')}" class="${agent.pending_deployment ? '' : 'agent-row-clickable'}" title="${agent.pending_deployment ? 'Waiting for the new Agent to connect' : 'Click to view details, right-click for actions'}">
                 <td>
                     <div class="table-primary">${escapeHtml(getAgentDisplayName(agent))}</div>
                     <div class="muted-text">${escapeHtml(agent.hostname || '')}</div>
@@ -10760,12 +10766,12 @@ function renderAgentCard(agent) {
     const statusColor = AGENT_STATUS_COLORS[meta.statusKey || 'offline'] || 'var(--muted)';
     const tenantLabel = formatTenantDisplay(agent.tenant_id || meta.tenantId || '');
     return `
-        <div class="device-card agent-card-clickable" data-agent-id="${escapeHtml(agent.agent_id || '')}" data-agent-name="${escapeHtml(getAgentDisplayName(agent))}" title="Click to view details, right-click for actions">
+        <div class="device-card ${agent.pending_deployment ? '' : 'agent-card-clickable'}" data-agent-id="${escapeHtml(agent.agent_id || '')}" data-agent-name="${escapeHtml(getAgentDisplayName(agent))}" title="${agent.pending_deployment ? 'Waiting for the new Agent to connect' : 'Click to view details, right-click for actions'}">
             <div class="device-card-header">
                 <div>
                     <div style="display:flex;align-items:center;gap:8px">
                         <div class="device-card-title">${window.__pm_shared.renderCopyableValue(getAgentDisplayName(agent), 'agent name')}</div>
-                        <span class="agent-joined-bubble" style="margin-left:8px;display:${registeredDate ? 'inline-flex' : 'none'};align-items:center;padding:2px 6px;border-radius:12px;background:var(--panel);font-size:12px;color:var(--muted);border:1px solid var(--border);">${registeredDate ? 'Joined' : ''}</span>
+                        <span class="agent-joined-bubble" style="margin-left:8px;display:${registeredDate ? 'inline-flex' : 'none'};align-items:center;padding:2px 6px;border-radius:12px;background:var(--panel);font-size:12px;color:var(--muted);border:1px solid var(--border);">${registeredDate ? (agent.pending_deployment ? 'Pending install' : 'Joined') : ''}</span>
                     </div>
                     <div class="device-card-subtitle">
                         ${window.__pm_shared.renderCopyableValue(agent.hostname, 'hostname', 'N/A')}
@@ -10805,7 +10811,7 @@ function renderAgentCard(agent) {
                 </div>` : ''}
             </div>
             <div class="device-card-hint muted-text" style="font-size:11px;padding:8px 12px;text-align:center;border-top:1px solid var(--border);">
-                Right-click for actions
+                ${agent.pending_deployment ? 'Waiting for the new Agent to connect' : 'Right-click for actions'}
             </div>
         </div>
     `;
@@ -10813,8 +10819,8 @@ function renderAgentCard(agent) {
 
 function renderAgentStatusBadge(meta) {
     const code = meta.statusKey || 'offline';
-    const label = AGENT_STATUS_LABELS[code] || meta.statusLabel || 'Unknown';
-    const tone = code === 'active' ? 'healthy' : code === 'offline' ? 'error' : 'warning';
+    const label = meta.statusLabel || AGENT_STATUS_LABELS[code] || 'Unknown';
+    const tone = code === 'active' ? 'healthy' : code === 'offline' ? 'error' : code === 'deactivated' ? 'muted' : 'warning';
     return `<span class="status-pill ${tone}">${escapeHtml(label)}</span>`;
 }
 
@@ -10938,8 +10944,16 @@ function enrichSingleAgent(agent) {
         return agent;
     }
     // Derive status from connection_type: ws=active, http=degraded, none/missing=offline
-    const statusKey = normalizeAgentStatusFromConnection(agent.connection_type);
-    const statusLabel = AGENT_STATUS_LABELS[statusKey] || statusKey;
+    const statusKey = agent.pending_deployment
+        ? 'pending'
+        : agent.status === 'deactivated'
+            ? 'deactivated'
+            : normalizeAgentStatusFromConnection(agent.connection_type);
+    const statusLabel = agent.pending_deployment && agent.status === 'expired'
+        ? 'Expired'
+        : agent.status === 'deactivated' && agent.replaced_by_agent_id
+            ? 'Replaced'
+            : (AGENT_STATUS_LABELS[statusKey] || statusKey);
     const lastSeenIso = agent.last_seen || agent.last_heartbeat || agent.updated_at;
     const lastSeenDate = lastSeenIso ? new Date(lastSeenIso) : null;
     const tenantId = agent.tenant_id || '';
@@ -11900,6 +11914,8 @@ try {
     // Also expose delete/open helpers if present so shared callers use server implementations
     window.__pm_shared.deleteAgent = window.__pm_shared.deleteAgent || deleteAgent;
     window.__pm_shared.openAgentUI = window.__pm_shared.openAgentUI || openAgentUI;
+    window.__pm_shared.replaceAgent = replaceAgent;
+    window.__pm_shared.setAgentLifecycleStatus = setAgentLifecycleStatus;
     window.__pm_shared.updateAgent = window.__pm_shared.updateAgent || updateAgent;
     window.__pm_shared.cancelAgentUpdate = window.__pm_shared.cancelAgentUpdate || cancelAgentUpdate;
     // Always override device helpers so cards and shared UI use the server proxy endpoint
@@ -11960,6 +11976,40 @@ async function deleteAgent(agentId, displayName) {
     } catch (error) {
         window.__pm_shared.error('Failed to delete agent:', error);
         window.__pm_shared.showToast(`Failed to delete agent: ${error.message}`, 'error');
+    }
+}
+
+function replaceAgent(context) {
+    openAddAgentModal({
+        tenantID: context.tenantID,
+        replaceAgentId: context.agentId,
+        deploymentName: context.agentName,
+        platform: context.platform,
+    });
+}
+
+async function setAgentLifecycleStatus(agentId, status, displayName) {
+    const deactivating = status === 'deactivated';
+    const confirmed = await window.__pm_shared.showConfirm(
+        deactivating
+            ? `Deactivate "${displayName || agentId}"? It will be disconnected and its credentials will stop authenticating. Its record and history will be retained; you can reactivate it later.`
+            : `Reactivate "${displayName || agentId}"? Its existing credential will be accepted again.`,
+        deactivating ? 'Deactivate Agent' : 'Reactivate Agent',
+        deactivating
+    );
+    if (!confirmed) return;
+
+    try {
+        const response = await fetch(`/api/v1/agents/${encodeURIComponent(agentId)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status }),
+        });
+        if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+        window.__pm_shared.showToast(deactivating ? 'Agent deactivated' : 'Agent reactivated', 'success');
+        await loadAgents(true);
+    } catch (error) {
+        window.__pm_shared.showToast(`Failed to ${deactivating ? 'deactivate' : 'reactivate'} Agent: ${error.message}`, 'error');
     }
 }
 
@@ -18705,21 +18755,26 @@ function initAddAgentUI() {
 }
 
 function openAddAgentModal(opts) {
-    // opts: { tenantID?: string }
+    // opts: { tenantID?: string, replaceAgentId?: string, deploymentName?: string, platform?: string }
+    const replaceAgentID = opts?.replaceAgentId || '';
     window._addAgentState = {
         step: 1,
         tenantID: opts && opts.tenantID ? opts.tenantID : null,
+        replaceAgentID,
+        deploymentName: opts?.deploymentName || '',
         ttl: 60,
         one_time: true,
         token: null,
-        mode: 'token',
+        mode: replaceAgentID ? 'script' : 'token',
         insecureSkipVerify: false,
-        platform: 'windows',
+        platform: opts?.platform || 'windows',
         format: 'zip',
         arch: 'amd64'
     };
     renderAddAgentStep(1);
     const modal = document.getElementById('add_agent_modal');
+    const title = document.getElementById('add_agent_title');
+    if (title) title.textContent = replaceAgentID ? 'Replace Agent' : 'Add Agent';
     if (modal) { modal.style.display = 'flex'; document.body.style.overflow = 'hidden'; }
 }
 
@@ -18742,6 +18797,8 @@ async function handleAddAgentPrimary() {
         const tenantID = tenantSel ? tenantSel.value : (st.tenantID || null);
         const ttl = ttlEl ? parseInt(ttlEl.value, 10) || 60 : 60;
         const one_time = oneTimeEl ? oneTimeEl.checked : true;
+        const deploymentNameEl = document.getElementById('add_agent_deployment_name');
+        const deploymentName = deploymentNameEl ? deploymentNameEl.value.trim() : (st.deploymentName || '');
         const platformSel = document.getElementById('add_agent_platform');
         const formatSel = document.getElementById('add_agent_format');
         const archSel = document.getElementById('add_agent_arch');
@@ -18752,6 +18809,7 @@ async function handleAddAgentPrimary() {
         st.tenantID = tenantID;
         st.ttl = ttl;
         st.one_time = one_time;
+        st.deploymentName = deploymentName;
         st.platform = platform;
         st.format = format;
         st.arch = arch;
@@ -18762,19 +18820,25 @@ async function handleAddAgentPrimary() {
         // Decide whether user wants a raw token or a generated bootstrap script
         const selectedActionEl = document.querySelector('input[name="add_agent_action"]:checked');
         const action = selectedActionEl ? selectedActionEl.value : 'token';
+        if (action === 'token' && st.replaceAgentID) {
+            window.__pm_shared.showAlert('Agent replacement requires a tracked bootstrap script or email so the old Agent is deactivated only after the new Agent connects.', 'Choose an install method', true, false);
+            return;
+        }
         if (action === 'token') {
             // Create join token
             try {
-                const payload = { tenant_id: tenantID, ttl_minutes: ttl, one_time: one_time };
+                const payload = { tenant_id: tenantID, ttl_minutes: ttl, one_time: one_time, deployment_name: st.deploymentName, platform: st.platform };
                 const r = await fetch('/api/v1/join-token', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
                 if (!r.ok) throw new Error(await r.text());
                 const data = await r.json();
                 st.token = data.token;
+                st.deploymentID = data.deployment_id || '';
                 st.script = null;
                 st.mode = 'token';
                 st.step = 3;
                 window._addAgentState = st;
                 renderAddAgentStep(3);
+                if (st.deploymentID && typeof loadAgents === 'function') await loadAgents(true);
             } catch (err) {
                 window.__pm_shared.showAlert('Failed to create join token: ' + (err && err.message ? err.message : err), 'Error', true, false);
             }
@@ -18805,7 +18869,7 @@ async function handleAddAgentPrimary() {
 
         if (st.mode === 'script') {
             try {
-                const payload = { tenant_id: st.tenantID, platform: st.platform, installer_type: 'script', ttl_minutes: st.ttl, insecure_skip_verify: st.insecureSkipVerify };
+                const payload = { tenant_id: st.tenantID, platform: st.platform, installer_type: 'script', ttl_minutes: st.ttl, insecure_skip_verify: st.insecureSkipVerify, deployment_name: st.deploymentName, replace_agent_id: st.replaceAgentID || undefined };
                 const r = await fetch('/api/v1/packages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
                 if (!r.ok) {
                     throw new Error(await r.text());
@@ -18815,23 +18879,27 @@ async function handleAddAgentPrimary() {
                 st.scriptFilename = data.filename || (st.platform === 'windows' ? 'bootstrap.ps1' : 'bootstrap.sh');
                 st.scriptDownloadURL = data.download_url || null;
                 st.oneLiner = data.one_liner || null;
+                st.deploymentID = data.deployment_id || '';
                 st.token = null;
                 st.step = 3;
                 window._addAgentState = st;
                 renderAddAgentStep(3);
+                if (typeof loadAgents === 'function') await loadAgents(true);
             } catch (err) {
                 window.__pm_shared.showAlert('Failed to generate bootstrap script: ' + (err && err.message ? err.message : err), 'Error', true, false);
             }
         } else if (st.mode === 'email') {
             try {
-                const payload = { tenant_id: st.tenantID, platform: st.platform, email: st.emailTo, ttl_minutes: st.ttl, insecure_skip_verify: st.insecureSkipVerify };
+                const payload = { tenant_id: st.tenantID, platform: st.platform, email: st.emailTo, ttl_minutes: st.ttl, insecure_skip_verify: st.insecureSkipVerify, deployment_name: st.deploymentName, replace_agent_id: st.replaceAgentID || undefined };
                 const r = await fetch('/api/v1/packages/send-email', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
                 if (!r.ok) throw new Error(await r.text());
-                await r.json();
+                const data = await r.json();
                 st.emailSent = true;
+                st.deploymentID = data.deployment_id || '';
                 st.step = 3;
                 window._addAgentState = st;
                 renderAddAgentStep(3);
+                if (typeof loadAgents === 'function') await loadAgents(true);
             } catch (err) {
                 window.__pm_shared.showAlert('Failed to send deployment email: ' + (err && err.message ? err.message : err), 'Error', true, false);
             }
@@ -18888,9 +18956,13 @@ function renderAddAgentStep(step) {
 
         content.innerHTML = `
             <div style="display:flex;flex-direction:column;gap:8px;">
+                ${state.replaceAgentID ? `<p style="margin:0 0 8px;padding:10px;border-left:3px solid var(--warning);color:var(--text);">The current Agent stays active until its replacement checks in. Its history is retained, and devices and site assignments transfer after the new Agent connects.</p>` : ''}
                 <label style="font-weight:600">Customer (tenant)</label>
                 <select id="add_agent_tenant" style="padding:8px;border-radius:4px;border:1px solid var(--border);">
                 </select>
+
+                <label style="font-weight:600">Agent name (optional)</label>
+                <input id="add_agent_deployment_name" type="text" value="${escapeHtml(state.deploymentName || '')}" maxlength="512" autocomplete="off" style="padding:8px;border-radius:4px;border:1px solid var(--border);" />
 
                 <label style="font-weight:600">Join token TTL (minutes)</label>
                 <input id="add_agent_ttl" type="number" value="${escapeHtml(String(ttlValue))}" min="1" style="padding:8px;border-radius:4px;border:1px solid var(--border);width:120px;" autocomplete="off" data-1p-ignore data-lpignore="true" />
@@ -18902,7 +18974,7 @@ function renderAddAgentStep(step) {
 
                 <div style="margin-top:8px;">
                     <div style="font-weight:600;margin-bottom:6px;">Onboarding method</div>
-                    <label style="display:flex;align-items:center;gap:8px;"><input type="radio" name="add_agent_action" value="token" ${state.mode === 'token' || !state.mode ? 'checked' : ''} /> Show raw token</label>
+                    ${state.replaceAgentID ? '' : `<label style="display:flex;align-items:center;gap:8px;"><input type="radio" name="add_agent_action" value="token" ${state.mode === 'token' || !state.mode ? 'checked' : ''} /> Show raw token</label>`}
                     <label style="display:flex;align-items:center;gap:8px;"><input type="radio" name="add_agent_action" value="script" ${state.mode === 'script' ? 'checked' : ''} /> Generate bootstrap script</label>
                     <label style="display:flex;align-items:center;gap:8px;"><input type="radio" name="add_agent_action" value="email" ${state.mode === 'email' ? 'checked' : ''} /> Send via email</label>
                     <div id="add_agent_platform_row" style="margin-top:8px;display:none;">
@@ -18930,12 +19002,18 @@ function renderAddAgentStep(step) {
                 selectedId: state.tenantID || '',
                 showAddOption: true
             });
+            tenantSelect.disabled = !!state.replaceAgentID;
             // Also track state change when tenant is selected (but not for "Add Tenant")
             tenantSelect.addEventListener('change', () => {
                 if (tenantSelect.value !== '__add_new_tenant__') {
                     state.tenantID = tenantSelect.value;
                 }
             });
+        }
+
+        const deploymentNameInput = content.querySelector('#add_agent_deployment_name');
+        if (deploymentNameInput) {
+            deploymentNameInput.addEventListener('input', () => { state.deploymentName = deploymentNameInput.value; });
         }
 
         const ttlInput = content.querySelector('#add_agent_ttl');
@@ -19027,6 +19105,7 @@ function renderAddAgentStep(step) {
                     <div style="font-family:monospace;padding:12px 24px;background:var(--panel);border-radius:6px;border:1px solid var(--border);font-weight:600;">${escapeHtml(emailTo)}</div>
                     ${skipTLS ? '<p role="alert" style="color:var(--warning);margin:0;">TLS certificate validation is disabled for this Agent. A network attacker could impersonate the Server.</p>' : ''}
                     <p style="color:var(--muted);font-size:13px;margin:0;">The email includes the installation command, trust notice, and a link to browser instructions. Keep the enrollment link private.</p>
+                    ${window._addAgentState?.replaceAgentID ? '<p style="color:var(--warning);font-size:13px;margin:0;">The current Agent remains active until its replacement checks in. Its record is retained and ownership transfers after successful registration.</p>' : ''}
                 </div>
             `;
         } else if (script && mode === 'script') {
@@ -19039,6 +19118,7 @@ function renderAddAgentStep(step) {
                         ${windowsInstall ? '<p style="margin:0 0 8px;">Use Administrator PowerShell on a machine without an existing Agent. This bootstrap will not update, repair or remove an existing Agent.</p>' : '<p style="margin:0 0 8px;">Run in a terminal. Installation uses sudo.</p>'}
                         <p style="margin:0;">Keep this enrollment link private. Do not forward it or include it in screenshots or logs.</p>
                         <p style="margin:8px 0 0;">Initial enrollment trusts this Server. Signed update verification is a separate step for later updates.</p>
+                        ${window._addAgentState?.replaceAgentID ? '<p style="margin:8px 0 0;color:var(--warning);">The current Agent remains active until its replacement checks in. Its record is retained and ownership transfers after successful registration.</p>' : ''}
                         ${skipTLS ? '<p role="alert" style="margin:8px 0 0;color:var(--warning);"><strong>TLS verification is disabled.</strong> A network attacker could impersonate the Server.</p>' : ''}
                         ${oneLiner?.includes('http://') ? '<p style="margin:8px 0 0;">This command uses unencrypted HTTP; network interception can replace the script. Use a trusted HTTPS installation path instead.</p>' : ''}
                     </div>

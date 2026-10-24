@@ -252,6 +252,8 @@ type tenantPayload struct {
 
 type packageRequest struct {
 	TenantID           string `json:"tenant_id"`
+	DeploymentName     string `json:"deployment_name,omitempty"`
+	ReplaceAgentID     string `json:"replace_agent_id,omitempty"`
 	Platform           string `json:"platform"`
 	InstallerType      string `json:"installer_type"`
 	TTLMinutes         int    `json:"ttl_minutes"`
@@ -260,6 +262,44 @@ type packageRequest struct {
 	Version            string `json:"version"`
 	Arch               string `json:"arch"`
 	InsecureSkipVerify bool   `json:"insecure_skip_verify"`
+}
+
+type agentDeploymentStore interface {
+	CreateAgentDeployment(context.Context, *storage.AgentDeployment) error
+	CompleteAgentDeployment(context.Context, string, *storage.Agent) (string, error)
+	SetAgentDeploymentStatus(context.Context, string, string) error
+}
+
+func validateReplacementTarget(ctx context.Context, tenantID, agentID string) error {
+	if agentID == "" {
+		return nil
+	}
+	if dbStore == nil {
+		return errors.New("agent replacement requires persistent storage")
+	}
+	agent, err := dbStore.GetAgent(ctx, agentID)
+	if err != nil || agent == nil {
+		return errors.New("replacement Agent not found")
+	}
+	if agent.TenantID != tenantID {
+		return errors.New("replacement Agent must belong to the selected tenant")
+	}
+	return nil
+}
+
+func authorizeReplacementTarget(w http.ResponseWriter, r *http.Request, tenantID, agentID string) bool {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return true
+	}
+	if !authorizeOrReject(w, r, authz.ActionAgentsWrite, authz.ResourceRef{TenantIDs: []string{tenantID}}) {
+		return false
+	}
+	if err := validateReplacementTarget(r.Context(), tenantID, agentID); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return false
+	}
+	return true
 }
 
 var installStore = struct {
@@ -709,9 +749,12 @@ func handleCreateJoinToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		TenantID   string `json:"tenant_id"`
-		TTLMinutes int    `json:"ttl_minutes"`
-		OneTime    bool   `json:"one_time"`
+		TenantID       string `json:"tenant_id"`
+		DeploymentName string `json:"deployment_name,omitempty"`
+		Platform       string `json:"platform,omitempty"`
+		ReplaceAgentID string `json:"replace_agent_id,omitempty"`
+		TTLMinutes     int    `json:"ttl_minutes"`
+		OneTime        bool   `json:"one_time"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		pkgLogger.Warn("create-join-token: invalid JSON", "remote_addr", r.RemoteAddr, "error", err)
@@ -732,6 +775,9 @@ func handleCreateJoinToken(w http.ResponseWriter, r *http.Request) {
 	if !authorizeOrReject(w, r, authz.ActionJoinTokensWrite, resource) {
 		return
 	}
+	if !authorizeReplacementTarget(w, r, in.TenantID, in.ReplaceAgentID) {
+		return
+	}
 	if dbStore != nil {
 		jt, raw, err := dbStore.CreateJoinToken(r.Context(), in.TenantID, in.TTLMinutes, in.OneTime)
 		if err != nil {
@@ -740,11 +786,29 @@ func handleCreateJoinToken(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(`{"error":"failed to create token"}`))
 			return
 		}
+		deploymentID := ""
+		if in.OneTime {
+			if deployments, ok := dbStore.(agentDeploymentStore); ok {
+				deployment := &storage.AgentDeployment{
+					JoinTokenID: jt.ID, TenantID: jt.TenantID,
+					Name: strings.TrimSpace(in.DeploymentName), Platform: normalizePlatform(in.Platform),
+					ReplaceAgentID: strings.TrimSpace(in.ReplaceAgentID),
+					Status:         "pending", ExpiresAt: jt.ExpiresAt,
+				}
+				if err := deployments.CreateAgentDeployment(r.Context(), deployment); err != nil {
+					_ = dbStore.RevokeJoinToken(r.Context(), jt.ID)
+					writeJSONError(w, http.StatusInternalServerError, "failed to record Agent deployment")
+					return
+				}
+				deploymentID = deployment.ID
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"token":      raw,
-			"tenant_id":  jt.TenantID,
-			"expires_at": jt.ExpiresAt.Format(time.RFC3339),
+			"token":         raw,
+			"tenant_id":     jt.TenantID,
+			"expires_at":    jt.ExpiresAt.Format(time.RFC3339),
+			"deployment_id": deploymentID,
 		})
 		recordAudit(r, &storage.AuditEntry{
 			Action:     "join_token.create",
@@ -1299,17 +1363,47 @@ func handleRegisterWithToken(w http.ResponseWriter, r *http.Request) {
 			ProtocolVersion: in.ProtocolVersion,
 			TenantID:        jt.TenantID,
 		}
-		if err := dbStore.RegisterAgent(r.Context(), ag); err != nil {
-			if errors.Is(err, storage.ErrOwnershipConflict) {
+		replacedAgentID := ""
+		var registerErr error
+		if deployments, ok := dbStore.(agentDeploymentStore); ok {
+			replacedAgentID, registerErr = deployments.CompleteAgentDeployment(r.Context(), jt.ID, ag)
+			if errors.Is(registerErr, storage.ErrAgentDeploymentNotFound) {
+				registerErr = dbStore.RegisterAgent(r.Context(), ag)
+			}
+		} else {
+			registerErr = dbStore.RegisterAgent(r.Context(), ag)
+		}
+		if registerErr != nil {
+			if errors.Is(registerErr, storage.ErrOwnershipConflict) || errors.Is(registerErr, storage.ErrAgentDeploymentConflict) {
 				writeJSONError(w, http.StatusConflict, "agent already registered")
 				return
 			}
 			if pkgLogger != nil {
-				pkgLogger.Error("register-with-token: failed to register agent", "agent_id", in.AgentID, "error", err)
+				pkgLogger.Error("register-with-token: failed to register agent", "agent_id", in.AgentID, "error", registerErr)
 			}
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(`{"error":"failed to register agent"}`))
 			return
+		}
+		if replacedAgentID != "" {
+			recordAudit(r, &storage.AuditEntry{
+				ActorType:  storage.AuditActorAgent,
+				ActorID:    ag.AgentID,
+				ActorName:  ag.Name,
+				TenantID:   jt.TenantID,
+				Action:     "agent.replace.complete",
+				TargetType: "agent",
+				TargetID:   replacedAgentID,
+				Details:    "Agent deactivated after replacement registered",
+				Metadata:   map[string]interface{}{"replaced_by_agent_id": ag.AgentID},
+			})
+			if agentEventSink != nil {
+				agentEventSink("agent_deactivated", map[string]interface{}{
+					"agent_id":             replacedAgentID,
+					"replaced_by_agent_id": ag.AgentID,
+					"tenant_id":            jt.TenantID,
+				})
+			}
 		}
 
 		if pkgLogger != nil {
@@ -1520,6 +1614,9 @@ func handleGeneratePackage(w http.ResponseWriter, r *http.Request) {
 	if !authorizeOrReject(w, r, authz.ActionPackagesGenerate, authz.ResourceRef{TenantIDs: []string{in.TenantID}}) {
 		return
 	}
+	if !authorizeReplacementTarget(w, r, in.TenantID, in.ReplaceAgentID) {
+		return
+	}
 
 	// Validate tenant exists
 	if dbStore != nil {
@@ -1540,15 +1637,16 @@ func handleGeneratePackage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var rawToken string
+	var rawToken, joinTokenID string
 	if dbStore != nil {
-		_, rt, err := dbStore.CreateJoinToken(r.Context(), in.TenantID, in.TTLMinutes, true)
+		jt, rt, err := dbStore.CreateJoinToken(r.Context(), in.TenantID, in.TTLMinutes, true)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(`{"error":"failed to create token"}`))
 			return
 		}
 		rawToken = rt
+		joinTokenID = jt.ID
 	} else {
 		jt, err := store.CreateJoinToken(in.TenantID, in.TTLMinutes, true)
 		if err != nil {
@@ -1593,6 +1691,23 @@ func handleGeneratePackage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		expiresAt := time.Now().UTC().Add(time.Duration(in.TTLMinutes) * time.Minute)
+		deploymentID := ""
+		if joinTokenID != "" {
+			if deployments, ok := dbStore.(agentDeploymentStore); ok {
+				deployment := &storage.AgentDeployment{
+					JoinTokenID: joinTokenID, TenantID: in.TenantID,
+					Name: strings.TrimSpace(in.DeploymentName), Platform: platform,
+					ReplaceAgentID: strings.TrimSpace(in.ReplaceAgentID),
+					ExpiresAt:      expiresAt, Status: "pending",
+				}
+				if err := deployments.CreateAgentDeployment(r.Context(), deployment); err != nil {
+					_ = dbStore.RevokeJoinToken(r.Context(), joinTokenID)
+					writeJSONError(w, http.StatusInternalServerError, "failed to record Agent deployment")
+					return
+				}
+				deploymentID = deployment.ID
+			}
+		}
 		downloadURL := fmt.Sprintf("%s/install/%s", serverURL, code)
 		w.Header().Set("Content-Type", "application/json")
 		oneLiner := fmt.Sprintf("curl -fsSL %q | sudo sh", downloadURL)
@@ -1607,10 +1722,11 @@ func handleGeneratePackage(w http.ResponseWriter, r *http.Request) {
 			OneLiner: oneLiner, ServerURL: serverURL, Platform: platform, InsecureSkipVerify: in.InsecureSkipVerify}
 		installStore.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"script":       script,
-			"filename":     filename,
-			"download_url": downloadURL,
-			"one_liner":    oneLiner,
+			"script":        script,
+			"filename":      filename,
+			"download_url":  downloadURL,
+			"one_liner":     oneLiner,
+			"deployment_id": deploymentID,
 		})
 		return
 	default:
@@ -1638,6 +1754,8 @@ func handleSendDeploymentEmail(w http.ResponseWriter, r *http.Request) {
 
 	var in struct {
 		TenantID           string `json:"tenant_id"`
+		DeploymentName     string `json:"deployment_name,omitempty"`
+		ReplaceAgentID     string `json:"replace_agent_id,omitempty"`
 		Platform           string `json:"platform"`
 		Email              string `json:"email"`
 		TTLMinutes         int    `json:"ttl_minutes"`
@@ -1668,6 +1786,9 @@ func handleSendDeploymentEmail(w http.ResponseWriter, r *http.Request) {
 	if !authorizeOrReject(w, r, authz.ActionPackagesGenerate, authz.ResourceRef{TenantIDs: []string{in.TenantID}}) {
 		return
 	}
+	if !authorizeReplacementTarget(w, r, in.TenantID, in.ReplaceAgentID) {
+		return
+	}
 
 	// Fetch tenant info for email context
 	ctx := r.Context()
@@ -1695,15 +1816,16 @@ func handleSendDeploymentEmail(w http.ResponseWriter, r *http.Request) {
 	serverURL := scheme + "://" + r.Host
 
 	// Create a join token
-	var rawToken string
+	var rawToken, joinTokenID string
 	if dbStore != nil {
-		_, rt, err := dbStore.CreateJoinToken(ctx, in.TenantID, in.TTLMinutes, true)
+		jt, rt, err := dbStore.CreateJoinToken(ctx, in.TenantID, in.TTLMinutes, true)
 		if err != nil {
 			logError("failed to create join token for email send", "error", err, "tenant_id", in.TenantID)
 			writeJSONError(w, http.StatusInternalServerError, "failed to create join token: "+err.Error())
 			return
 		}
 		rawToken = rt
+		joinTokenID = jt.ID
 	} else {
 		jt, err := store.CreateJoinToken(in.TenantID, in.TTLMinutes, true)
 		if err != nil {
@@ -1744,6 +1866,24 @@ func handleSendDeploymentEmail(w http.ResponseWriter, r *http.Request) {
 			senderName = user.Username
 		}
 	}
+	deploymentID := ""
+	if joinTokenID != "" {
+		if deployments, ok := dbStore.(agentDeploymentStore); ok {
+			deployment := &storage.AgentDeployment{
+				JoinTokenID: joinTokenID, TenantID: in.TenantID,
+				Name: strings.TrimSpace(in.DeploymentName), Platform: platform,
+				ReplaceAgentID: strings.TrimSpace(in.ReplaceAgentID),
+				ExpiresAt:      time.Now().UTC().Add(time.Duration(in.TTLMinutes) * time.Minute),
+				Status:         "pending",
+			}
+			if err := deployments.CreateAgentDeployment(ctx, deployment); err != nil {
+				_ = dbStore.RevokeJoinToken(ctx, joinTokenID)
+				writeJSONError(w, http.StatusInternalServerError, "failed to record Agent deployment")
+				return
+			}
+			deploymentID = deployment.ID
+		}
+	}
 
 	// Generate email content
 	expiresIn := fmt.Sprintf("%d minutes", in.TTLMinutes)
@@ -1777,6 +1917,12 @@ func handleSendDeploymentEmail(w http.ResponseWriter, r *http.Request) {
 		subject = fmt.Sprintf("PrintMaster Agent Installation - %s", tenantName)
 	}
 	if err := emailSender(in.Email, subject, htmlBody, textBody); err != nil {
+		if deploymentID != "" {
+			if deployments, ok := dbStore.(agentDeploymentStore); ok {
+				_ = deployments.SetAgentDeploymentStatus(ctx, deploymentID, "cancelled")
+			}
+			_ = dbStore.RevokeJoinToken(ctx, joinTokenID)
+		}
 		logError("failed to send deployment email", "error", err, "email", in.Email)
 		writeJSONError(w, http.StatusInternalServerError, "failed to send email: "+err.Error())
 		return
@@ -1801,8 +1947,9 @@ func handleSendDeploymentEmail(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"message": fmt.Sprintf("Deployment instructions sent to %s", in.Email),
+		"success":       true,
+		"message":       fmt.Sprintf("Deployment instructions sent to %s", in.Email),
+		"deployment_id": deploymentID,
 	})
 }
 

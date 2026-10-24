@@ -5189,6 +5189,11 @@ select:focus {
   color: var(--danger);
 }
 
+.status-pill.muted {
+  border-color: var(--border);
+  color: var(--muted);
+}
+
 .consumable-pill {
   display: inline-flex;
   align-items: center;

@@ -391,7 +391,7 @@
             resizable: true,
             filterable: true,
             filterType: 'select',
-            filterOptions: ['active', 'degraded', 'offline'],
+            filterOptions: ['active', 'degraded', 'offline', 'pending', 'deactivated'],
             render: (agent, meta) => {
                 return window.renderAgentStatusBadge?.(meta) || 
                     `<span class="status-pill ${meta.statusKey || 'offline'}">${escapeHtml(meta.statusLabel || 'Unknown')}</span>`;

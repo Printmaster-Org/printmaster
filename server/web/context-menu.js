@@ -63,6 +63,27 @@
             requiresWs: true
         },
         {
+            id: 'replace',
+            label: 'Replace Agent…',
+            icon: '↻',
+            action: 'replace-agent'
+        },
+        {
+            id: 'deactivate',
+            label: 'Deactivate Agent',
+            icon: '⏸',
+            action: 'deactivate-agent',
+            requiresActive: true,
+            danger: true
+        },
+        {
+            id: 'reactivate',
+            label: 'Reactivate Agent',
+            icon: '▶',
+            action: 'reactivate-agent',
+            requiresDeactivated: true
+        },
+        {
             id: 'snmp-walks',
             label: 'SNMP Walks (Admin)…',
             icon: '🧪',
@@ -195,6 +216,8 @@
             if (item.requiresSerial && !context.serial) return;
             if (item.requiresAdmin && !isAdminUser()) return;
             if (item.requiresAgentIp && !(context.agentId && context.ip)) return;
+            if (item.requiresActive && context.isDeactivated) return;
+            if (item.requiresDeactivated && !context.isDeactivated) return;
 
             // Situational unavailability (e.g. agent not connected via
             // WebSocket) keeps the item visible but disabled, matching the
@@ -340,6 +363,19 @@
             case 'restart-agent':
                 if (shared.restartAgent) {
                     shared.restartAgent(context.agentId, context.agentName);
+                }
+                break;
+
+            case 'replace-agent':
+                if (shared.replaceAgent) {
+                    shared.replaceAgent(context);
+                }
+                break;
+
+            case 'deactivate-agent':
+            case 'reactivate-agent':
+                if (shared.setAgentLifecycleStatus) {
+                    shared.setAgentLifecycleStatus(context.agentId, action === 'deactivate-agent' ? 'deactivated' : 'active', context.agentName);
                 }
                 break;
 
@@ -624,6 +660,10 @@
             // Get agent data from the VM if available
             const agent = getAgentById(agentId);
             const meta = agent?.__meta || {};
+            if (agent?.pending_deployment) {
+                event.preventDefault();
+                return;
+            }
 
             // Check for multi-selection
             const selection = getAgentsVM()?.selection;
@@ -640,6 +680,9 @@
                            (agent && getAgentDisplayName(agent)) || 
                            agentId,
                 ip: agent?.ip || '',
+                platform: agent?.platform || 'windows',
+                tenantID: agent?.tenant_id || '',
+                isDeactivated: agent?.status === 'deactivated',
                 hasWsConnection: hasWs,
                 hasUpdate: hasAgentUpdate(agentId),
                 isMultiSelect: isMultiSelect,

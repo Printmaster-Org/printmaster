@@ -124,6 +124,112 @@ func TestAgentLifecycle(t *testing.T) {
 	}
 }
 
+func TestAgentDeploymentReplacementAndReactivation(t *testing.T) {
+	t.Parallel()
+	store, err := NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	if err := store.CreateTenant(ctx, &Tenant{ID: "tenant-deploy", Name: "Deployment Tenant"}); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	if err := store.CreateSite(ctx, &Site{ID: "site-deploy", TenantID: "tenant-deploy", Name: "Deployment Site"}); err != nil {
+		t.Fatalf("CreateSite: %v", err)
+	}
+	oldAgent := &Agent{
+		AgentID: "old-agent", Name: "Old Agent", Hostname: "host", IP: "192.0.2.1",
+		Platform: "windows", Version: "1.0.0", ProtocolVersion: "1", Token: "old-secret",
+		TenantID: "tenant-deploy", Status: "active",
+	}
+	if err := store.RegisterAgent(ctx, oldAgent); err != nil {
+		t.Fatalf("RegisterAgent old: %v", err)
+	}
+	if err := store.AssignAgentToSite(ctx, oldAgent.AgentID, "site-deploy"); err != nil {
+		t.Fatalf("AssignAgentToSite: %v", err)
+	}
+	device := &Device{AgentID: oldAgent.AgentID}
+	device.Serial = "printer-deploy"
+	device.IP = "192.0.2.2"
+	if err := store.UpsertDevice(ctx, device); err != nil {
+		t.Fatalf("UpsertDevice: %v", err)
+	}
+
+	joinToken, _, err := store.CreateJoinToken(ctx, "tenant-deploy", 60, true)
+	if err != nil {
+		t.Fatalf("CreateJoinToken: %v", err)
+	}
+	deployment := &AgentDeployment{
+		JoinTokenID: joinToken.ID, TenantID: "tenant-deploy", Platform: "windows",
+		Name: "Replacement Agent", ReplaceAgentID: oldAgent.AgentID,
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}
+	if err := store.CreateAgentDeployment(ctx, deployment); err != nil {
+		t.Fatalf("CreateAgentDeployment: %v", err)
+	}
+
+	newAgent := &Agent{
+		AgentID: "new-agent", Name: "Installer Name", Hostname: "new-host", IP: "192.0.2.3",
+		Platform: "windows", Version: "2.0.0", ProtocolVersion: "1", Token: "new-secret",
+		TenantID: "tenant-deploy", Status: "active",
+	}
+	replacedID, err := store.CompleteAgentDeployment(ctx, joinToken.ID, newAgent)
+	if err != nil {
+		t.Fatalf("CompleteAgentDeployment: %v", err)
+	}
+	if replacedID != oldAgent.AgentID {
+		t.Fatalf("replacement target = %q, want %q", replacedID, oldAgent.AgentID)
+	}
+	if newAgent.Name != deployment.Name {
+		t.Fatalf("successor name = %q, want deployment name %q", newAgent.Name, deployment.Name)
+	}
+
+	retainedOld, err := store.GetAgent(ctx, oldAgent.AgentID)
+	if err != nil || retainedOld.Status != "deactivated" {
+		t.Fatalf("old agent must remain deactivated: agent=%+v err=%v", retainedOld, err)
+	}
+	if _, err := store.GetAgentByToken(ctx, oldAgent.Token); err == nil {
+		t.Fatal("deactivated Agent token still authenticates")
+	}
+	if err := store.UpdateAgentHeartbeat(ctx, oldAgent.AgentID, "offline"); err != nil {
+		t.Fatalf("late heartbeat update: %v", err)
+	}
+	if err := store.UpdateAgentInfo(ctx, &Agent{AgentID: oldAgent.AgentID, Status: "active", LastSeen: time.Now().UTC()}); err != nil {
+		t.Fatalf("late metadata update: %v", err)
+	}
+	retainedOld, err = store.GetAgent(ctx, oldAgent.AgentID)
+	if err != nil || retainedOld.Status != "deactivated" {
+		t.Fatalf("late Agent updates reactivated the old record: agent=%+v err=%v", retainedOld, err)
+	}
+	if _, err := store.GetAgentByToken(ctx, oldAgent.Token); err == nil {
+		t.Fatal("late Agent updates re-enabled the old token")
+	}
+	if _, err := store.GetAgentByToken(ctx, newAgent.Token); err != nil {
+		t.Fatalf("successor token should authenticate: %v", err)
+	}
+	transferredDevice, err := store.GetDevice(ctx, device.Serial)
+	if err != nil || transferredDevice.AgentID != newAgent.AgentID {
+		t.Fatalf("device owner = %q, err=%v; want %q", transferredDevice.AgentID, err, newAgent.AgentID)
+	}
+	siteIDs, err := store.GetAgentSiteIDs(ctx, newAgent.AgentID)
+	if err != nil || len(siteIDs) != 1 || siteIDs[0] != "site-deploy" {
+		t.Fatalf("successor site assignments = %v, err=%v", siteIDs, err)
+	}
+	completed, err := store.GetAgentDeploymentByJoinTokenID(ctx, joinToken.ID)
+	if err != nil || completed.Status != "joined" || completed.AgentID != newAgent.AgentID {
+		t.Fatalf("deployment completion = %+v, err=%v", completed, err)
+	}
+
+	if err := store.SetAgentStatus(ctx, oldAgent.AgentID, "active"); err != nil {
+		t.Fatalf("reactivate old agent: %v", err)
+	}
+	if _, err := store.GetAgentByToken(ctx, oldAgent.Token); err != nil {
+		t.Fatalf("reactivated Agent token should authenticate: %v", err)
+	}
+}
+
 func TestAgentHeartbeatPreservesOmittedMetadata(t *testing.T) {
 	t.Parallel()
 	s, err := NewSQLiteStore(":memory:")
