@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"html"
+	htmltemplate "html/template"
 	"strings"
 	"text/template"
 )
@@ -90,15 +91,16 @@ type PasswordResetEmailData struct {
 
 // AgentDeploymentEmailData holds data for the agent deployment script email
 type AgentDeploymentEmailData struct {
-	RecipientEmail string // The email address receiving this
-	Platform       string // linux, windows, darwin
-	OneLiner       string // The one-liner command to run
-	Script         string // The full bootstrap script
-	DownloadURL    string // The hosted URL for the script
-	ExpiresIn      string // Human-readable TTL
-	TenantName     string // Tenant/customer name
-	ServerURL      string // Server base URL
-	SentBy         string // Name of the user who sent this
+	RecipientEmail  string // The email address receiving this
+	Platform        string // linux, windows, darwin
+	OneLiner        string // The one-liner command to run
+	Script          string // The full bootstrap script
+	DownloadURL     string // The hosted URL for the script
+	InstructionsURL string // Browser instructions using the same expiring install link
+	ExpiresIn       string // Human-readable TTL
+	TenantName      string // Tenant/customer name
+	ServerURL       string // Server base URL
+	SentBy          string // Name of the user who sent this
 }
 
 // GenerateInviteEmail generates a themed HTML invitation email
@@ -169,7 +171,7 @@ func GeneratePasswordResetEmail(theme Theme, data PasswordResetEmailData) (htmlB
 func GenerateAgentDeploymentEmail(theme Theme, data AgentDeploymentEmailData) (htmlBody, textBody string, err error) {
 	colors := getThemeColors(theme)
 
-	htmlTmpl := template.Must(template.New("deploy").Parse(agentDeployHTMLTemplate))
+	htmlTmpl := htmltemplate.Must(htmltemplate.New("deploy").Parse(agentDeployHTMLTemplate))
 	textTmpl := template.Must(template.New("deployText").Parse(agentDeployTextTemplate))
 
 	tmplData := struct {
@@ -178,12 +180,14 @@ func GenerateAgentDeploymentEmail(theme Theme, data AgentDeploymentEmailData) (h
 		Theme       Theme
 		DarkColors  themeColors
 		LightColors themeColors
+		UsesHTTP    bool
 	}{
 		AgentDeploymentEmailData: data,
 		themeColors:              colors,
 		Theme:                    theme,
 		DarkColors:               darkColors,
 		LightColors:              lightColors,
+		UsesHTTP:                 strings.Contains(data.OneLiner, "http://"),
 	}
 
 	var htmlBuf, textBuf bytes.Buffer
@@ -268,6 +272,21 @@ const agentDeployTextTemplate = `Hello,
 {{if .SentBy}}{{.SentBy}} has sent{{else}}You have been sent{{end}} PrintMaster agent installation instructions{{if .TenantName}} for {{.TenantName}}{{end}}.
 
 Platform: {{.Platform}}
+{{if .ServerURL}}Server: {{.ServerURL}}
+{{end}}Expires in: {{.ExpiresIn}}
+
+Only run this command if you trust the Server and expected these instructions.
+It downloads and executes a script with administrator privileges.
+Keep this enrollment link private. Do not forward it or include it in screenshots or logs.
+{{if eq .Platform "windows"}}Windows: use Administrator PowerShell on a machine without an existing Agent.
+This bootstrap will not update, repair or remove an existing Agent.
+{{else}}Run the command in a terminal; it uses sudo for installation.
+{{end}}{{if .UsesHTTP}}Warning: this command uses unencrypted HTTP. Network interception can replace the script.
+Use a trusted HTTPS installation path instead.
+{{end}}{{if .InstructionsURL}}
+=== INSTALLATION INSTRUCTIONS ===
+{{.InstructionsURL}}
+{{end}}
 
 === QUICK INSTALL (one-liner) ===
 {{.OneLiner}}
@@ -1071,6 +1090,26 @@ const agentDeployHTMLTemplate = `<!DOCTYPE html>
                                         </table>
                                         
                                         <!-- Quick Install Section -->
+                                        <p class="email-text" style="margin: 0 0 16px 0; font-size: 14px; line-height: 1.6;">
+                                            Only run this command if you trust the Server and expected these instructions.
+                                            It downloads and executes a script with administrator privileges.
+                                            Keep this enrollment link private; do not forward it or include it in screenshots or logs.
+                                        </p>
+                                        {{if eq .Platform "windows"}}<p class="email-text" style="margin: 0 0 16px 0; font-size: 14px; line-height: 1.6;">
+                                            Use Administrator PowerShell on a machine without an existing Agent.
+                                            This bootstrap will not update, repair or remove an existing Agent.
+                                        </p>{{end}}
+                                        <p class="email-text" style="margin: 0 0 16px 0; font-size: 14px; line-height: 1.6;">
+                                            {{if .ServerURL}}Server: {{.ServerURL}}<br>{{end}}
+                                            Link expires in {{.ExpiresIn}}.
+                                        </p>
+                                        {{if .UsesHTTP}}<p class="email-text" style="margin: 0 0 16px 0; font-size: 14px; line-height: 1.6;">
+                                            <strong>This command uses unencrypted HTTP.</strong> Network interception can replace the script.
+                                            Use a trusted HTTPS installation path instead.
+                                        </p>{{end}}
+                                        {{if .InstructionsURL}}<p style="margin: 0 0 20px 0;">
+                                            <a href="{{.InstructionsURL}}" class="email-button" style="display:inline-block;padding:12px 20px;border-radius:6px;font-weight:600;text-decoration:none;">View installation instructions</a>
+                                        </p>{{end}}
                                         <h3 class="email-text" style="margin: 0 0 12px 0; font-size: 18px; font-weight: 600;">
                                             ⚡ Quick Install (One-liner)
                                         </h3>
@@ -1105,9 +1144,8 @@ const agentDeployHTMLTemplate = `<!DOCTYPE html>
                                         {{end}}
                                         
                                         <!-- Full Script Section -->
-                                        <h3 class="email-text" style="margin: 0 0 12px 0; font-size: 18px; font-weight: 600;">
-                                            📜 Full Script
-                                        </h3>
+                                        <details style="margin: 0 0 20px 0;">
+                                        <summary class="email-text" style="font-size: 16px; font-weight: 600; cursor: pointer;">View full installation script</summary>
                                         <p class="email-muted" style="margin: 0 0 12px 0; font-size: 14px; line-height: 1.6;">
                                             If you prefer, save this script to a file and run it manually:
                                         </p>
@@ -1118,6 +1156,7 @@ const agentDeployHTMLTemplate = `<!DOCTYPE html>
                                                 </td>
                                             </tr>
                                         </table>
+                                        </details>
                                         
                                         <p class="email-muted" style="margin: 0; font-size: 14px; line-height: 1.6;">
                                             ⏱️ This installation script expires in <strong>{{.ExpiresIn}}</strong>.

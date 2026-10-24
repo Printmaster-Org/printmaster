@@ -23,6 +23,84 @@ import (
 
 type enrollmentSubjectKey struct{}
 
+func TestInstallInstructionsPreserveDownloadAndEscapeContent(t *testing.T) {
+	code := "instructions-test-fixture"
+	entry := installEntry{Script: "<script>alert('fixture')</script>", Filename: "install.ps1",
+		ExpiresAt: time.Now().UTC().Add(time.Hour), OneTime: true,
+		OneLiner: "irm https://example.invalid/install/fixture | iex", Platform: "windows",
+		ServerURL: "https://example.invalid/<img src=x onerror=alert(1)>"}
+	installStore.mu.Lock()
+	installStore.m[code] = entry
+	installStore.mu.Unlock()
+	t.Cleanup(func() {
+		installStore.mu.Lock()
+		delete(installStore.m, code)
+		installStore.mu.Unlock()
+	})
+	for _, request := range []struct{ method, suffix string }{
+		{http.MethodGet, "/instructions"}, {http.MethodGet, "/instructions"},
+		{http.MethodHead, "/instructions"}, {http.MethodHead, ""},
+		{http.MethodPost, "/instructions"}, {http.MethodGet, "/unknown"},
+	} {
+		response := httptest.NewRecorder()
+		handleInstall(response, httptest.NewRequest(request.method, "/install/"+code+request.suffix, nil))
+		want := http.StatusOK
+		if request.method == http.MethodPost {
+			want = http.StatusMethodNotAllowed
+		} else if request.suffix == "/unknown" {
+			want = http.StatusNotFound
+		}
+		if response.Code != want {
+			t.Fatalf("%s %s: status %d want %d", request.method, request.suffix, response.Code, want)
+		}
+		if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Referrer-Policy") != "no-referrer" {
+			t.Fatal("install response permits caching or referrer disclosure")
+		}
+		if request.method == http.MethodHead && response.Body.Len() != 0 {
+			t.Fatal("HEAD wrote a response body")
+		}
+		if request.method == http.MethodGet && request.suffix == "/instructions" {
+			body := response.Body.String()
+			for _, text := range []string{"&lt;script&gt;", "&lt;img", "Copy one-liner", "<details>", "Administrator PowerShell", "Keep this enrollment link private"} {
+				if !strings.Contains(body, text) {
+					t.Fatalf("instructions missing %q", text)
+				}
+			}
+			if strings.Contains(body, entry.Script) || strings.Contains(body, "<img src=x") {
+				t.Fatal("instructions contains unescaped payload")
+			}
+			if !strings.Contains(response.Header().Get("Content-Security-Policy"), "default-src 'none'") {
+				t.Fatal("instructions missing restrictive CSP")
+			}
+		}
+		installStore.mu.Lock()
+		_, exists := installStore.m[code]
+		installStore.mu.Unlock()
+		if !exists {
+			t.Fatal("preview, HEAD or invalid request consumed a one-time script")
+		}
+	}
+	response := httptest.NewRecorder()
+	handleInstall(response, httptest.NewRequest(http.MethodGet, "/install/"+code, nil))
+	if response.Body.String() != entry.Script || !strings.Contains(response.Header().Get("Content-Disposition"), "attachment") {
+		t.Fatal("script download changed")
+	}
+	response = httptest.NewRecorder()
+	handleInstall(response, httptest.NewRequest(http.MethodGet, "/install/"+code+"/instructions", nil))
+	if response.Code != http.StatusNotFound {
+		t.Fatal("used one-time link still exposes instructions")
+	}
+	entry.ExpiresAt = time.Now().UTC().Add(-time.Second)
+	installStore.mu.Lock()
+	installStore.m[code] = entry
+	installStore.mu.Unlock()
+	response = httptest.NewRecorder()
+	handleInstall(response, httptest.NewRequest(http.MethodGet, "/install/"+code+"/instructions", nil))
+	if response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), entry.OneLiner) {
+		t.Fatal("expired link exposes installation data")
+	}
+}
+
 func TestWindowsBootstrapConsole(t *testing.T) {
 	available := false
 	for _, name := range []string{"pwsh", "powershell"} {

@@ -33,6 +33,53 @@ function setup(names, globals = {}) {
     return { context, document: dom.window.document };
 }
 
+describe('bootstrap installation guidance', () => {
+    function render(platform, clipboard) {
+        const oneLiner = 'irm https://example.invalid/install/fixture | iex';
+        const { context, document } = setup(['renderAddAgentStep'], {
+            navigator: { clipboard },
+            escapeHtml: value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;'),
+            window: { _addAgentState: { mode: 'script', platform, script: '<script>fixture</script>', oneLiner, scriptDownloadURL: 'https://example.invalid/install/fixture' } },
+        });
+        const selection = { removeAllRanges: jest.fn(), addRange: jest.fn(), toString: jest.fn(() => oneLiner) };
+        const range = { selectNodeContents: jest.fn() };
+        context.window.getSelection = jest.fn(() => selection);
+        document.createRange = jest.fn(() => range);
+        context.renderAddAgentStep(2);
+        return { context, document, oneLiner, selection, range };
+    }
+
+    test('Windows notice, escaped disclosure and exact command copy', async () => {
+        const writeText = jest.fn().mockResolvedValue(undefined);
+        const { document, oneLiner } = render('windows', { writeText });
+        expect(document.getElementById('add_agent_content').textContent).toContain('trust the Server');
+        expect(document.getElementById('add_agent_content').textContent).toContain('without an existing Agent');
+        const details = document.querySelector('details#add_agent_full_script');
+        expect(details.open).toBe(false);
+        expect(details.querySelector('script')).toBeNull();
+        expect(details.querySelector('pre').textContent).toBe('<script>fixture</script>');
+        const instructions = document.querySelector('#add_agent_content a[href="https://example.invalid/install/fixture/instructions"]');
+        expect(instructions.textContent).toBe('View instructions');
+        expect(instructions.getAttribute('rel')).toBe('noopener noreferrer');
+        document.getElementById('add_agent_copy').click();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(writeText).toHaveBeenCalledWith(oneLiner);
+        expect(document.getElementById('add_agent_copy_status').textContent).toBe('Copied to clipboard.');
+    });
+
+    test.each([undefined, { writeText: () => Promise.reject(new Error('denied')) }])('clipboard failure selects the command without exposing errors', async clipboard => {
+        const { context, document, oneLiner } = render('linux', clipboard);
+        expect(document.getElementById('add_agent_content').textContent).toContain('uses sudo');
+        expect(document.getElementById('add_agent_content').textContent).not.toContain('Administrator PowerShell');
+        document.getElementById('add_agent_copy').click();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(context.document.createRange).toHaveBeenCalledTimes(1);
+        expect(context.window.getSelection).toHaveBeenCalledTimes(1);
+        expect(document.getElementById('add_agent_copy_status').textContent).toContain('manual copying');
+        expect(context.window.getSelection().toString()).toBe(oneLiner);
+    });
+});
+
 describe('ordered agent update lifecycle', () => {
     let context, agentsVM, toast;
     const event = (sequence, status, progress, run = 'one', started = '2026-10-16T18:00:00.000Z') => ({

@@ -19012,89 +19012,52 @@ function renderAddAgentStep(step) {
                     <h3 style="margin:0;color:var(--text);">Email Sent Successfully</h3>
                     <p style="color:var(--muted);margin:0;">Agent deployment instructions have been sent to:</p>
                     <div style="font-family:monospace;padding:12px 24px;background:var(--panel);border-radius:6px;border:1px solid var(--border);font-weight:600;">${escapeHtml(emailTo)}</div>
-                    <p style="color:var(--muted);font-size:13px;margin:0;">The email contains the one-liner command and full bootstrap script for the selected platform. The recipient can follow the instructions to install and register the agent.</p>
+                    <p style="color:var(--muted);font-size:13px;margin:0;">The email includes the installation command, trust notice, and a link to browser instructions. Keep the enrollment link private.</p>
                 </div>
             `;
         } else if (script && mode === 'script') {
             const oneLiner = (window._addAgentState && window._addAgentState.oneLiner) ? window._addAgentState.oneLiner : null;
+            const windowsInstall = window._addAgentState?.platform === 'windows';
             content.innerHTML = `
                 <div style="display:flex;flex-direction:column;gap:12px;">
-                    ${oneLiner ? `<div style="font-family:monospace;padding:12px;background:var(--panel);border-radius:6px;border:1px dashed var(--border);word-break:break-all;">${escapeHtml(oneLiner)}</div>` : `<div style="font-family:monospace;white-space:pre-wrap;padding:12px;background:var(--panel);border-radius:6px;border:1px dashed var(--border);">${escapeHtml(script)}</div>`}
-                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                        <button id="add_agent_copy" class="modal-button" style="flex:1;min-width:200px;font-weight:600;">${oneLiner ? 'Copy one-liner' : 'Copy script'}</button>
-                        ${oneLiner ? `<button id="add_agent_more_options" class="modal-button modal-button-secondary" style="padding:8px 12px;">More options ▾</button>` : `<button id="add_agent_download" class="modal-button modal-button-secondary">Download script</button>`}
+                    <div role="note" style="border-left:3px solid var(--accent);padding:0 12px;font-size:13px;line-height:1.5;">
+                        <p style="margin:0 0 8px;">This command downloads and runs an installation script with administrator privileges. Run it only if you trust the Server.</p>
+                        ${windowsInstall ? '<p style="margin:0 0 8px;">Use Administrator PowerShell on a machine without an existing Agent. This bootstrap will not update, repair or remove an existing Agent.</p>' : '<p style="margin:0 0 8px;">Run in a terminal. Installation uses sudo.</p>'}
+                        <p style="margin:0;">Keep this enrollment link private. Do not forward it or include it in screenshots or logs.</p>
+                        ${oneLiner?.includes('http://') ? '<p style="margin:8px 0 0;">This command uses unencrypted HTTP; network interception can replace the script. Use a trusted HTTPS installation path instead.</p>' : ''}
                     </div>
-                    <div style="color:var(--muted);font-size:13px">This script was generated for the selected platform. Download or copy it and execute it on the target machine to install and register the agent.</div>
-                    ${oneLiner ? `<div id="add_agent_full_script" style="display:none;margin-top:8px;font-family:monospace;white-space:pre-wrap;padding:12px;background:var(--panel);border-radius:6px;border:1px dashed var(--border);">${escapeHtml(script)}</div>` : ''}
+                    <div id="add_agent_command" style="font-family:monospace;white-space:pre-wrap;padding:12px;background:var(--panel);border-radius:6px;border:1px solid var(--border);overflow-wrap:anywhere;">${escapeHtml(oneLiner || script)}</div>
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                        <button id="add_agent_copy" type="button" class="modal-button">${oneLiner ? 'Copy one-liner' : 'Copy script'}</button>
+                        <button id="add_agent_download" type="button" class="modal-button modal-button-secondary">Download script</button>
+                        ${oneLiner && window._addAgentState.scriptDownloadURL ? `<a class="modal-button modal-button-secondary" href="${escapeHtml(window._addAgentState.scriptDownloadURL + '/instructions')}" target="_blank" rel="noopener noreferrer">View instructions</a>` : ''}
+                    </div>
+                    <p id="add_agent_copy_status" role="status" aria-live="polite" style="margin:0;min-height:20px;color:var(--muted);font-size:13px;"></p>
+                    ${oneLiner ? `<details id="add_agent_full_script"><summary style="cursor:pointer;">View full installation script</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;font-size:12px;">${escapeHtml(script)}</pre></details>` : ''}
                 </div>
             `;
-            // Create floating dropdown for more options (appended to body to escape modal overflow)
-            let existingDropdown = document.getElementById('add_agent_options_dropdown');
-            if (existingDropdown) existingDropdown.remove();
-            if (oneLiner) {
-                const dropdown = document.createElement('div');
-                dropdown.id = 'add_agent_options_dropdown';
-                dropdown.style.cssText = 'display:none;position:fixed;background:var(--bg);border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.5);z-index:100000;min-width:180px;';
-                dropdown.innerHTML = `
-                    <button id="add_agent_download" style="display:block;width:100%;text-align:left;padding:10px 14px;background:none;border:none;color:var(--text);cursor:pointer;font-size:14px;">Download script</button>
-                    ${(window._addAgentState && window._addAgentState.scriptDownloadURL) ? `<a id="add_agent_download_url" href="${escapeHtml(window._addAgentState.scriptDownloadURL)}" target="_blank" style="display:block;width:100%;text-align:left;padding:10px 14px;background:none;border:none;color:var(--text);cursor:pointer;font-size:14px;text-decoration:none;border-top:1px solid var(--border);">Open hosted URL</a>` : ''}
-                    <button id="add_agent_show_full" style="display:block;width:100%;text-align:left;padding:10px 14px;background:none;border:none;color:var(--text);cursor:pointer;font-size:14px;border-top:1px solid var(--border);">Show full script</button>
-                `;
-                document.body.appendChild(dropdown);
-            }
             const copyBtn = document.getElementById('add_agent_copy');
-            if (copyBtn) copyBtn.addEventListener('click', () => {
-                const textToCopy = oneLiner ? oneLiner : script;
-                navigator.clipboard?.writeText(textToCopy).then(() => { window.__pm_shared.showToast((oneLiner ? 'One-liner' : 'Script') + ' copied to clipboard', 'success'); }).catch(err => { window.__pm_shared.showAlert('Failed to copy: ' + (err && err.message ? err.message : err), 'Error', true, false); });
+            if (copyBtn) copyBtn.addEventListener('click', async () => {
+                const status = document.getElementById('add_agent_copy_status');
+                try {
+                    if (!navigator.clipboard) throw new Error('Clipboard unavailable');
+                    await navigator.clipboard.writeText(oneLiner || script);
+                    status.textContent = 'Copied to clipboard.';
+                } catch {
+                    const range = document.createRange();
+                    range.selectNodeContents(document.getElementById('add_agent_command'));
+                    const selection = window.getSelection();
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                    status.textContent = 'Clipboard unavailable. The command is selected for manual copying.';
+                }
             });
-            // Wire up dropdown toggle for more options
-            const moreOptionsBtn = document.getElementById('add_agent_more_options');
-            const dropdown = document.getElementById('add_agent_options_dropdown');
-            if (moreOptionsBtn && dropdown) {
-                const positionDropdown = () => {
-                    const rect = moreOptionsBtn.getBoundingClientRect();
-                    dropdown.style.top = (rect.bottom + 4) + 'px';
-                    dropdown.style.left = rect.left + 'px';
-                };
-                moreOptionsBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    if (dropdown.style.display === 'none') {
-                        positionDropdown();
-                        dropdown.style.display = 'block';
-                    } else {
-                        dropdown.style.display = 'none';
-                    }
-                });
-                // Close dropdown when clicking outside
-                document.addEventListener('click', (e) => {
-                    if (!moreOptionsBtn.contains(e.target) && !dropdown.contains(e.target)) {
-                        dropdown.style.display = 'none';
-                    }
-                });
-                // Add hover effect to dropdown items
-                dropdown.querySelectorAll('button, a').forEach(item => {
-                    item.addEventListener('mouseenter', () => { item.style.background = 'var(--panel)'; });
-                    item.addEventListener('mouseleave', () => { item.style.background = 'none'; });
-                });
-            }
             const dlBtn = document.getElementById('add_agent_download');
             if (dlBtn) dlBtn.addEventListener('click', () => {
                 const blob = new Blob([script], { type: 'application/octet-stream' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-                if (dropdown) dropdown.style.display = 'none';
             });
-            const showFull = document.getElementById('add_agent_show_full');
-            if (showFull) {
-                showFull.addEventListener('click', () => {
-                    const full = document.getElementById('add_agent_full_script');
-                    if (!full) return;
-                    if (full.style.display === 'none') {
-                        full.style.display = 'block'; showFull.textContent = 'Hide full script';
-                    } else { full.style.display = 'none'; showFull.textContent = 'Show full script'; }
-                    if (dropdown) dropdown.style.display = 'none';
-                });
-            }
         } else {
             content.innerHTML = `
                 <div style="display:flex;flex-direction:column;gap:12px;">

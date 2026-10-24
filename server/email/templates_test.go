@@ -324,6 +324,38 @@ func TestGenerateAgentDeploymentEmail(t *testing.T) {
 }
 
 // TestGenerateAgentDeploymentEmailPlatforms tests different platforms
+func TestDeploymentEmailTrustNoticeAndEscaping(t *testing.T) {
+	t.Parallel()
+	for _, theme := range []Theme{ThemeDark, ThemeLight, ThemeAuto} {
+		data := AgentDeploymentEmailData{Platform: "windows", OneLiner: "irm https://example.invalid/install/fixture?a=1&b=2 | iex",
+			Script: "<script>alert('fixture')</script>", DownloadURL: "https://example.invalid/install/fixture",
+			InstructionsURL: "https://example.invalid/install/fixture/instructions", ExpiresIn: "60 minutes",
+			TenantName: "<img src=x onerror=alert(1)>", SentBy: "<b>untrusted sender</b>"}
+		htmlBody, textBody, err := GenerateAgentDeploymentEmail(theme, data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, text := range []string{data.InstructionsURL, "trust the Server", "Keep this enrollment link private", "Administrator PowerShell"} {
+			if !strings.Contains(htmlBody, text) || !strings.Contains(textBody, text) {
+				t.Fatalf("deployment message missing guidance %q", text)
+			}
+		}
+		if !strings.Contains(htmlBody, "<details") || !strings.Contains(htmlBody, "&lt;script&gt;") ||
+			strings.Contains(htmlBody, "<img src=x") || strings.Contains(htmlBody, data.SentBy) || strings.Contains(htmlBody, "<script>") {
+			t.Fatal("deployment HTML contains unescaped content or lacks script disclosure")
+		}
+		instructionsLink := `href="` + data.InstructionsURL + `"`
+		downloadLink := `href="` + data.DownloadURL + `"`
+		if !strings.Contains(htmlBody, instructionsLink) || !strings.Contains(htmlBody, downloadLink) ||
+			strings.Index(htmlBody, instructionsLink) > strings.Index(htmlBody, downloadLink) {
+			t.Fatal("instructions must be the primary email link and raw download a fallback")
+		}
+		if !strings.Contains(textBody, data.OneLiner) || !strings.Contains(textBody, data.Script) {
+			t.Fatal("plain-text fallback changed command/script bytes")
+		}
+	}
+}
+
 func TestGenerateAgentDeploymentEmailPlatforms(t *testing.T) {
 	t.Parallel()
 

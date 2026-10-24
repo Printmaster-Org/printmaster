@@ -161,15 +161,16 @@ func SetTenantCreatedCallback(cb func(ctx context.Context, tenantID string)) {
 // generateDeploymentEmail generates HTML and text versions of the deployment email.
 func generateDeploymentEmail(theme, recipientEmail, platform, oneLiner, script, downloadURL, expiresIn, tenantName, serverURL, senderName string) (string, string, error) {
 	data := email.AgentDeploymentEmailData{
-		RecipientEmail: recipientEmail,
-		Platform:       platform,
-		OneLiner:       oneLiner,
-		Script:         script,
-		DownloadURL:    downloadURL,
-		ExpiresIn:      expiresIn,
-		TenantName:     tenantName,
-		ServerURL:      serverURL,
-		SentBy:         senderName,
+		RecipientEmail:  recipientEmail,
+		Platform:        platform,
+		OneLiner:        oneLiner,
+		Script:          script,
+		DownloadURL:     downloadURL,
+		InstructionsURL: strings.TrimRight(downloadURL, "/") + "/instructions",
+		ExpiresIn:       expiresIn,
+		TenantName:      tenantName,
+		ServerURL:       serverURL,
+		SentBy:          senderName,
 	}
 	return email.GenerateAgentDeploymentEmail(email.NormalizeTheme(theme), data)
 }
@@ -229,6 +230,9 @@ type installEntry struct {
 	Filename  string
 	ExpiresAt time.Time
 	OneTime   bool
+	OneLiner  string
+	ServerURL string
+	Platform  string
 }
 
 type tenantPayload struct {
@@ -1585,10 +1589,6 @@ func handleGeneratePackage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		expiresAt := time.Now().UTC().Add(time.Duration(in.TTLMinutes) * time.Minute)
-		installStore.mu.Lock()
-		installStore.m[code] = installEntry{Script: script, Filename: filename, ExpiresAt: expiresAt, OneTime: oneTimeDownload}
-		installStore.mu.Unlock()
-
 		downloadURL := fmt.Sprintf("%s/install/%s", serverURL, code)
 		w.Header().Set("Content-Type", "application/json")
 		oneLiner := fmt.Sprintf("curl -fsSL %q | sudo sh", downloadURL)
@@ -1598,6 +1598,10 @@ func handleGeneratePackage(w http.ResponseWriter, r *http.Request) {
 			httpURL := strings.Replace(downloadURL, "https://", "http://", 1)
 			oneLiner = fmt.Sprintf("irm %s | iex", httpURL)
 		}
+		installStore.mu.Lock()
+		installStore.m[code] = installEntry{Script: script, Filename: filename, ExpiresAt: expiresAt, OneTime: oneTimeDownload,
+			OneLiner: oneLiner, ServerURL: serverURL, Platform: platform}
+		installStore.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"script":       script,
 			"filename":     filename,
@@ -1715,10 +1719,6 @@ func handleSendDeploymentEmail(w http.ResponseWriter, r *http.Request) {
 	// Store for download URL (not one-time since email may be opened multiple times)
 	code := randomHex(12)
 	expiresAt := time.Now().UTC().Add(time.Duration(in.TTLMinutes) * time.Minute)
-	installStore.mu.Lock()
-	installStore.m[code] = installEntry{Script: script, Filename: filename, ExpiresAt: expiresAt, OneTime: false}
-	installStore.mu.Unlock()
-
 	downloadURL := fmt.Sprintf("%s/install/%s", serverURL, code)
 	oneLiner := fmt.Sprintf("curl -fsSL %q | sudo sh", downloadURL)
 	if platform == "windows" {
@@ -1727,6 +1727,10 @@ func handleSendDeploymentEmail(w http.ResponseWriter, r *http.Request) {
 		httpURL := strings.Replace(downloadURL, "https://", "http://", 1)
 		oneLiner = fmt.Sprintf("irm %s | iex", httpURL)
 	}
+	installStore.mu.Lock()
+	installStore.m[code] = installEntry{Script: script, Filename: filename, ExpiresAt: expiresAt, OneTime: false,
+		OneLiner: oneLiner, ServerURL: serverURL, Platform: platform}
+	installStore.mu.Unlock()
 
 	// Get the sender name from the request context (user who initiated)
 	senderName := ""
@@ -1799,6 +1803,17 @@ func handleSendDeploymentEmail(w http.ResponseWriter, r *http.Request) {
 
 // handleInstall serves hosted install scripts by short code. URL: /install/{code}/{filename}
 func handleInstall(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
 	// expect path /install/{code}/{filename}
 	p := strings.TrimPrefix(r.URL.Path, "/install/")
 	parts := strings.SplitN(p, "/", 2)
@@ -1810,13 +1825,19 @@ func handleInstall(w http.ResponseWriter, r *http.Request) {
 
 	installStore.mu.Lock()
 	entry, ok := installStore.m[code]
-	// If one-time, remove immediately (we'll serve below)
-	if ok && entry.OneTime {
+	instructions := len(parts) == 2 && parts[1] == "instructions"
+	if !ok || time.Now().UTC().After(entry.ExpiresAt) ||
+		(len(parts) == 2 && parts[1] != "" && parts[1] != entry.Filename && !instructions) {
+		installStore.mu.Unlock()
+		http.NotFound(w, r)
+		return
+	}
+	if entry.OneTime && !instructions && r.Method == http.MethodGet {
 		delete(installStore.m, code)
 	}
 	installStore.mu.Unlock()
-	if !ok || time.Now().UTC().After(entry.ExpiresAt) {
-		http.NotFound(w, r)
+	if instructions {
+		serveInstallInstructions(w, r, entry, "/install/"+code)
 		return
 	}
 
@@ -1829,6 +1850,9 @@ func handleInstall(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", "attachment; filename=\""+entry.Filename+"\"")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
+	if r.Method == http.MethodHead {
+		return
+	}
 	_, _ = w.Write([]byte(entry.Script))
 }
 
