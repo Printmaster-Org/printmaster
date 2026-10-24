@@ -18747,10 +18747,18 @@ function initAddAgentUI() {
     // Wire modal chrome
     const closeX = document.getElementById('add_agent_close_x');
     const cancelBtn = document.getElementById('add_agent_cancel');
+    const backBtn = document.getElementById('add_agent_back');
     const primaryBtn = document.getElementById('add_agent_primary');
 
     if (closeX) closeX.addEventListener('click', closeAddAgentModal);
     if (cancelBtn) cancelBtn.addEventListener('click', closeAddAgentModal);
+    if (backBtn) backBtn.addEventListener('click', () => {
+        const state = window._addAgentState;
+        if (!state || state.step !== 2) return;
+        state.step = 1;
+        window._addAgentState = state;
+        renderAddAgentStep(1);
+    });
     if (primaryBtn) primaryBtn.addEventListener('click', handleAddAgentPrimary);
 }
 
@@ -18765,7 +18773,7 @@ function openAddAgentModal(opts) {
         ttl: 60,
         one_time: true,
         token: null,
-        mode: replaceAgentID ? 'script' : 'token',
+        mode: 'script',
         insecureSkipVerify: false,
         platform: opts?.platform || 'windows',
         format: 'zip',
@@ -18819,7 +18827,7 @@ async function handleAddAgentPrimary() {
 
         // Decide whether user wants a raw token or a generated bootstrap script
         const selectedActionEl = document.querySelector('input[name="add_agent_action"]:checked');
-        const action = selectedActionEl ? selectedActionEl.value : 'token';
+        const action = selectedActionEl ? selectedActionEl.value : (st.mode || 'script');
         if (action === 'token' && st.replaceAgentID) {
             window.__pm_shared.showAlert('Agent replacement requires a tracked bootstrap script or email so the old Agent is deactivated only after the new Agent connects.', 'Choose an install method', true, false);
             return;
@@ -18879,6 +18887,7 @@ async function handleAddAgentPrimary() {
                 st.scriptFilename = data.filename || (st.platform === 'windows' ? 'bootstrap.ps1' : 'bootstrap.sh');
                 st.scriptDownloadURL = data.download_url || null;
                 st.oneLiner = data.one_liner || null;
+                st.instructionsURL = data.instructions_url || (st.scriptDownloadURL ? st.scriptDownloadURL + '/instructions' : '');
                 st.deploymentID = data.deployment_id || '';
                 st.token = null;
                 st.step = 3;
@@ -18896,6 +18905,7 @@ async function handleAddAgentPrimary() {
                 const data = await r.json();
                 st.emailSent = true;
                 st.deploymentID = data.deployment_id || '';
+                st.instructionsURL = data.instructions_url || '';
                 st.step = 3;
                 window._addAgentState = st;
                 renderAddAgentStep(3);
@@ -18917,8 +18927,16 @@ async function handleAddAgentPrimary() {
 function renderAddAgentStep(step) {
     const indicator = document.getElementById('add_agent_step_indicator');
     const content = document.getElementById('add_agent_content');
+    const backBtn = document.getElementById('add_agent_back');
+    const cancelBtn = document.getElementById('add_agent_cancel');
     const primaryBtn = document.getElementById('add_agent_primary');
     if (!content) return;
+    if (backBtn) backBtn.style.display = step === 2 ? '' : 'none';
+    if (cancelBtn) cancelBtn.textContent = step === 3 ? 'Close' : 'Cancel';
+    if (primaryBtn) {
+        primaryBtn.classList.toggle('modal-button-primary', step !== 3);
+        primaryBtn.classList.toggle('modal-button-secondary', step === 3);
+    }
     if (indicator) {
         if (step === 1) {
             const mode = window._addAgentState?.mode || 'token';
@@ -19047,7 +19065,8 @@ function renderAddAgentStep(step) {
         const updatePrimaryLabel = () => {
             const sel = content.querySelector('input[name="add_agent_action"]:checked');
             if (!sel || !primaryBtn) return;
-            if (sel.value === 'script' || sel.value === 'email') primaryBtn.textContent = 'Continue';
+            if (sel.value === 'script') primaryBtn.textContent = 'Review install';
+            else if (sel.value === 'email') primaryBtn.textContent = 'Review email';
             else primaryBtn.textContent = 'Create Token';
         };
         const updateFieldVisibility = () => {
@@ -19068,24 +19087,40 @@ function renderAddAgentStep(step) {
     } else if (step === 2) {
         const state = window._addAgentState || {};
         const isEmail = state.mode === 'email';
+        const tenant = typeof tenantDirectory !== 'undefined' ? tenantDirectory.byId?.get(state.tenantID) : null;
+        const tenantName = tenant?.name || state.tenantID || 'Not selected';
+        const delivery = isEmail ? `Email to ${state.emailTo || 'recipient'}` : 'Bootstrap script';
+        const installPolicy = state.replaceAgentID
+            ? 'New identity; old Agent remains active until this one checks in'
+            : 'Fresh install only; existing Agent installations are not changed';
         content.innerHTML = `
-            <div style="display:flex;flex-direction:column;gap:14px;">
-                <h3 style="margin:0;font-size:18px;">Verify the Server connection</h3>
-                <p style="margin:0;color:var(--text);line-height:1.5;">By default, the Agent checks the Server's TLS certificate on every connection. Keep verification on when the Server has a trusted certificate.</p>
-                <label style="display:flex;align-items:flex-start;gap:10px;padding:14px;border:1px solid var(--border);border-radius:6px;cursor:pointer;">
+            <div style="display:flex;flex-direction:column;gap:16px;">
+                <div>
+                    <h3 style="margin:0 0 5px;font-size:18px;">Review installation</h3>
+                    <p style="margin:0;color:var(--muted);line-height:1.45;">Check the target and connection policy before creating the enrollment link.</p>
+                </div>
+                <dl class="add-agent-review-grid">
+                    <div><dt>Customer</dt><dd>${escapeHtml(tenantName)}</dd></div>
+                    <div><dt>Agent name</dt><dd>${escapeHtml(state.deploymentName || 'Use device hostname')}</dd></div>
+                    <div><dt>Platform</dt><dd>${escapeHtml(state.platform || 'windows')}</dd></div>
+                    <div><dt>Delivery</dt><dd>${escapeHtml(delivery)}</dd></div>
+                    <div><dt>Enrollment expires</dt><dd>${escapeHtml(String(state.ttl || 60))} minutes</dd></div>
+                    <div><dt>Install policy</dt><dd>${escapeHtml(installPolicy)}</dd></div>
+                </dl>
+                <div>
+                    <div style="font-weight:600;margin-bottom:8px;">Server certificate</div>
+                    <p style="margin:0 0 10px;color:var(--text);line-height:1.45;">The Agent verifies the Server certificate on every connection. Keep verification on for a trusted certificate.</p>
+                    <label style="display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid var(--border);border-radius:6px;cursor:pointer;">
                     <input id="add_agent_skip_tls" type="checkbox" ${state.insecureSkipVerify ? 'checked' : ''} style="margin-top:4px;" />
-                    <span><strong>Skip TLS certificate validation</strong><br><span style="color:var(--muted);font-size:13px;">Only for a self-signed Server certificate. This allows a network attacker to impersonate your Server and is not recommended.</span></span>
-                </label>
-                <p style="margin:0;color:var(--muted);font-size:13px;">This controls the Agent's future Server connections. It does not make the initial bootstrap download safer; use a trusted HTTPS installation link.</p>
-                ${isEmail ? `<p style="margin:0;color:var(--muted);font-size:13px;">Instructions will be emailed to <strong>${escapeHtml(state.emailTo || '')}</strong>.</p>` : ''}
-                <button id="add_agent_back" type="button" class="modal-button modal-button-secondary" style="align-self:flex-start;">Back</button>
+                        <span><strong>Skip TLS certificate validation</strong><br><span style="color:var(--muted);font-size:13px;">Only for a self-signed Server certificate. A network attacker could impersonate your Server.</span></span>
+                    </label>
+                    <p style="margin:8px 0 0;color:var(--muted);font-size:13px;">This controls future Agent-to-Server connections, not the initial download. Use a trusted HTTPS installation link.</p>
+                </div>
             </div>
         `;
         const skipTLS = content.querySelector('#add_agent_skip_tls');
         if (primaryBtn) primaryBtn.textContent = isEmail ? 'Send email' : 'Generate script';
         if (skipTLS) skipTLS.addEventListener('change', () => { state.insecureSkipVerify = skipTLS.checked; });
-        const backBtn = content.querySelector('#add_agent_back');
-        if (backBtn) backBtn.addEventListener('click', () => renderAddAgentStep(1));
     } else {
         // Step 2: show token, script, or email confirmation
         const token = (window._addAgentState && window._addAgentState.token) ? window._addAgentState.token : '';
@@ -19106,11 +19141,20 @@ function renderAddAgentStep(step) {
                     ${skipTLS ? '<p role="alert" style="color:var(--warning);margin:0;">TLS certificate validation is disabled for this Agent. A network attacker could impersonate the Server.</p>' : ''}
                     <p style="color:var(--muted);font-size:13px;margin:0;">The email includes the installation command, trust notice, and a link to browser instructions. Keep the enrollment link private.</p>
                     ${window._addAgentState?.replaceAgentID ? '<p style="color:var(--warning);font-size:13px;margin:0;">The current Agent remains active until its replacement checks in. Its record is retained and ownership transfers after successful registration.</p>' : ''}
+                    <div class="add-agent-result-actions" style="justify-content:center;">
+                        <button id="add_agent_copy_instructions" type="button" class="modal-button modal-button-secondary">Copy instructions link</button>
+                        ${window._addAgentState?.instructionsURL ? `<a class="modal-button" href="${escapeHtml(window._addAgentState.instructionsURL)}" target="_blank" rel="noopener noreferrer">Open instructions</a>` : ''}
+                    </div>
+                    <div id="add_agent_instructions_url" style="max-width:100%;overflow-wrap:anywhere;font-family:monospace;font-size:12px;color:var(--muted);">${escapeHtml(window._addAgentState?.instructionsURL || '')}</div>
+                    <p id="add_agent_copy_status" role="status" aria-live="polite" style="margin:0;min-height:20px;color:var(--muted);font-size:13px;"></p>
                 </div>
             `;
+            const copyInstructions = document.getElementById('add_agent_copy_instructions');
+            if (copyInstructions) copyInstructions.addEventListener('click', () => copyAddAgentInstructionsLink());
         } else if (script && mode === 'script') {
             const oneLiner = (window._addAgentState && window._addAgentState.oneLiner) ? window._addAgentState.oneLiner : null;
             const windowsInstall = window._addAgentState?.platform === 'windows';
+            const instructionsURL = window._addAgentState?.instructionsURL || (window._addAgentState?.scriptDownloadURL ? window._addAgentState.scriptDownloadURL + '/instructions' : '');
             content.innerHTML = `
                 <div style="display:flex;flex-direction:column;gap:12px;">
                     <div role="note" style="border-left:3px solid var(--accent);padding:0 12px;font-size:13px;line-height:1.5;">
@@ -19123,11 +19167,13 @@ function renderAddAgentStep(step) {
                         ${oneLiner?.includes('http://') ? '<p style="margin:8px 0 0;">This command uses unencrypted HTTP; network interception can replace the script. Use a trusted HTTPS installation path instead.</p>' : ''}
                     </div>
                     <div id="add_agent_command" style="font-family:monospace;white-space:pre-wrap;padding:12px;background:var(--panel);border-radius:6px;border:1px solid var(--border);overflow-wrap:anywhere;">${escapeHtml(oneLiner || script)}</div>
-                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                        <button id="add_agent_copy" type="button" class="modal-button">${oneLiner ? 'Copy one-liner' : 'Copy script'}</button>
+                    <div class="add-agent-result-actions">
+                        <button id="add_agent_copy" type="button" class="modal-button modal-button-primary">${oneLiner ? 'Copy install command' : 'Copy script'}</button>
+                        ${instructionsURL ? '<button id="add_agent_copy_instructions" type="button" class="modal-button modal-button-secondary">Copy instructions link</button>' : ''}
                         <button id="add_agent_download" type="button" class="modal-button modal-button-secondary">Download script</button>
-                        ${oneLiner && window._addAgentState.scriptDownloadURL ? `<a class="modal-button modal-button-secondary" href="${escapeHtml(window._addAgentState.scriptDownloadURL + '/instructions')}" target="_blank" rel="noopener noreferrer">View instructions</a>` : ''}
+                        ${instructionsURL ? `<a class="modal-button modal-button-secondary" href="${escapeHtml(instructionsURL)}" target="_blank" rel="noopener noreferrer">Open instructions</a>` : ''}
                     </div>
+                    ${instructionsURL ? `<div id="add_agent_instructions_url" style="overflow-wrap:anywhere;font-family:monospace;font-size:12px;color:var(--muted);">${escapeHtml(instructionsURL)}</div>` : ''}
                     <p id="add_agent_copy_status" role="status" aria-live="polite" style="margin:0;min-height:20px;color:var(--muted);font-size:13px;"></p>
                     ${oneLiner ? `<details id="add_agent_full_script"><summary style="cursor:pointer;">View full installation script</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;font-size:12px;">${escapeHtml(script)}</pre></details>` : ''}
                 </div>
@@ -19148,6 +19194,8 @@ function renderAddAgentStep(step) {
                     status.textContent = 'Clipboard unavailable. The command is selected for manual copying.';
                 }
             });
+            const copyInstructions = document.getElementById('add_agent_copy_instructions');
+            if (copyInstructions) copyInstructions.addEventListener('click', () => copyAddAgentInstructionsLink());
             const dlBtn = document.getElementById('add_agent_download');
             if (dlBtn) dlBtn.addEventListener('click', () => {
                 const blob = new Blob([script], { type: 'application/octet-stream' });
@@ -19177,6 +19225,27 @@ function renderAddAgentStep(step) {
             });
         }
         if (primaryBtn) primaryBtn.textContent = 'Done';
+    }
+}
+
+async function copyAddAgentInstructionsLink() {
+    const state = window._addAgentState || {};
+    const instructionsURL = state.instructionsURL || (state.scriptDownloadURL ? state.scriptDownloadURL + '/instructions' : '');
+    const status = document.getElementById('add_agent_copy_status');
+    if (!instructionsURL) return;
+    try {
+        if (!navigator.clipboard) throw new Error('Clipboard unavailable');
+        await navigator.clipboard.writeText(instructionsURL);
+        if (status) status.textContent = 'Instructions link copied. Keep it private.';
+    } catch {
+        const link = document.getElementById('add_agent_instructions_url');
+        if (!link) return;
+        const range = document.createRange();
+        range.selectNodeContents(link);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        if (status) status.textContent = 'Clipboard unavailable. The private link is selected for manual copying.';
     }
 }
 

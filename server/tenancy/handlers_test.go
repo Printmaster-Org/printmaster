@@ -660,6 +660,33 @@ func TestTrackedReplacementDeactivatesOldAgentAfterRegistration(t *testing.T) {
 	}
 }
 
+func TestDeploymentEmailReturnsInstructionsURL(t *testing.T) {
+	db, mux, sessionToken := setupEnrollmentSecurity(t, storage.RoleAdmin)
+	_ = db
+	originalSender := emailSender
+	SetEmailSender(func(string, string, string, string) error { return nil })
+	t.Cleanup(func() { SetEmailSender(originalSender) })
+	requestBody, _ := json.Marshal(map[string]interface{}{
+		"tenant_id": "tenant-a", "platform": "windows", "email": "operator@example.com", "ttl_minutes": 45,
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/packages/send-email", bytes.NewReader(requestBody))
+	request.Header.Set("Authorization", sessionToken)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("send deployment email returned %d: %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		InstructionsURL string `json:"instructions_url"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(payload.InstructionsURL, "/instructions") || strings.Contains(payload.InstructionsURL, "/install/") && !strings.HasSuffix(payload.InstructionsURL, "/instructions") {
+		t.Fatalf("email response did not return the browser instructions URL: %q", payload.InstructionsURL)
+	}
+}
+
 type enrollmentErrorStore struct {
 	storage.Store
 	lookupErr   error

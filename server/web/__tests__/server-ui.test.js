@@ -64,7 +64,7 @@ describe('agent lifecycle status filters', () => {
 describe('bootstrap installation guidance', () => {
     function render(platform, clipboard) {
         const oneLiner = 'irm https://example.invalid/install/fixture | iex';
-        const { context, document } = setup(['renderAddAgentStep'], {
+        const { context, document } = setup(['renderAddAgentStep', 'copyAddAgentInstructionsLink'], {
             navigator: { clipboard },
             escapeHtml: value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;'),
             window: { _addAgentState: { mode: 'script', platform, script: '<script>fixture</script>', oneLiner, scriptDownloadURL: 'https://example.invalid/install/fixture' } },
@@ -88,12 +88,34 @@ describe('bootstrap installation guidance', () => {
         expect(details.querySelector('script')).toBeNull();
         expect(details.querySelector('pre').textContent).toBe('<script>fixture</script>');
         const instructions = document.querySelector('#add_agent_content a[href="https://example.invalid/install/fixture/instructions"]');
-        expect(instructions.textContent).toBe('View instructions');
+        expect(instructions.textContent).toBe('Open instructions');
         expect(instructions.getAttribute('rel')).toBe('noopener noreferrer');
+        expect(document.getElementById('add_agent_copy').textContent).toBe('Copy install command');
+        expect(document.getElementById('add_agent_copy_instructions').textContent).toBe('Copy instructions link');
+        const copyInstructions = document.getElementById('add_agent_copy_instructions');
+        copyInstructions.click();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(writeText).toHaveBeenCalledWith('https://example.invalid/install/fixture/instructions');
         document.getElementById('add_agent_copy').click();
         await new Promise(resolve => setTimeout(resolve, 0));
         expect(writeText).toHaveBeenCalledWith(oneLiner);
         expect(document.getElementById('add_agent_copy_status').textContent).toBe('Copied to clipboard.');
+    });
+
+    test('email result offers the same browser instructions link for copying', async () => {
+        const writeText = jest.fn().mockResolvedValue(undefined);
+        const instructionsURL = 'https://example.invalid/install/mail-code/instructions';
+        const { context, document } = setup(['renderAddAgentStep', 'copyAddAgentInstructionsLink'], {
+            navigator: { clipboard: { writeText } },
+            escapeHtml: value => String(value),
+            window: { _addAgentState: { mode: 'email', emailSent: true, emailTo: 'operator@example.com', instructionsURL } },
+        });
+        context.renderAddAgentStep(3);
+        expect(document.getElementById('add_agent_primary').textContent).toBe('Done');
+        expect(document.getElementById('add_agent_primary').classList.contains('modal-button-secondary')).toBe(true);
+        document.getElementById('add_agent_copy_instructions').click();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(writeText).toHaveBeenCalledWith(instructionsURL);
     });
 
     test.each([undefined, { writeText: () => Promise.reject(new Error('denied')) }])('clipboard failure selects the command without exposing errors', async clipboard => {
@@ -130,6 +152,43 @@ describe('bootstrap installation guidance', () => {
         expect(fetch).toHaveBeenCalledTimes(1);
         expect(JSON.parse(fetch.mock.calls[0][1].body)).toMatchObject({ tenant_id: 'tenant-1', platform: 'windows', insecure_skip_verify: true });
         expect(document.getElementById('add_agent_content').textContent).toContain('TLS verification is disabled');
+    });
+
+    test('new onboarding defaults to a bootstrap script', () => {
+        const { context } = setup(['openAddAgentModal', 'renderAddAgentStep'], {
+            addAgentUIInitialized: false,
+            populateTenantDropdown: jest.fn(),
+            escapeHtml: value => String(value),
+            window: { __pm_shared: {} },
+        });
+        context.openAddAgentModal({});
+        expect(context.window._addAgentState.mode).toBe('script');
+        expect(context.document.querySelector('input[name="add_agent_action"][value="script"]').checked).toBe(true);
+    });
+
+    test('Back then Continue returns to the review step instead of generating the script', async () => {
+        const state = { step: 1, mode: 'script', tenantID: 'tenant-1', platform: 'windows', ttl: 60, one_time: true };
+        const { context, document } = setup(['initAddAgentUI', 'openAddAgentModal', 'closeAddAgentModal', 'renderAddAgentStep', 'handleAddAgentPrimary'], {
+            addAgentUIInitialized: false,
+            populateTenantDropdown: (select, options) => {
+                select.innerHTML = '<option value="tenant-1">Tenant one</option>';
+                select.value = options.selectedId || 'tenant-1';
+            },
+            escapeHtml: value => String(value),
+            fetch: jest.fn(),
+            window: { _addAgentState: state, __pm_shared: { showAlert: jest.fn() } },
+        });
+        context.initAddAgentUI();
+        context.openAddAgentModal({ tenantID: 'tenant-1' });
+        await context.handleAddAgentPrimary();
+        expect(context.window._addAgentState.step).toBe(2);
+        expect(document.getElementById('add_agent_back').parentElement.id).toBe('add_agent_footer');
+        document.getElementById('add_agent_back').click();
+        expect(context.window._addAgentState.step).toBe(1);
+        await context.handleAddAgentPrimary();
+        expect(context.window._addAgentState.step).toBe(2);
+        expect(document.getElementById('add_agent_step_indicator').textContent).toContain('Connection security');
+        expect(context.fetch).not.toHaveBeenCalled();
     });
 });
 

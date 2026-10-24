@@ -1947,9 +1947,10 @@ func handleSendDeploymentEmail(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":       true,
-		"message":       fmt.Sprintf("Deployment instructions sent to %s", in.Email),
-		"deployment_id": deploymentID,
+		"success":          true,
+		"message":          fmt.Sprintf("Deployment instructions sent to %s", in.Email),
+		"deployment_id":    deploymentID,
+		"instructions_url": downloadURL + "/instructions",
 	})
 }
 
