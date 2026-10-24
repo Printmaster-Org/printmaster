@@ -270,7 +270,6 @@ function Test-Path {
     if ($script:scenario -eq 'path query failure') { throw 'path inspection failed' }
     if ($LiteralPath -eq $configDir) { return $script:scenario -eq 'retained data' }
     if ($LiteralPath -eq $installDir) { return $script:scenario -eq 'legacy bin' }
-    if ($LiteralPath -like 'HKLM:*ServicesracPrintMasterAgent'.Replace('rac', 'rac')) { return $false }
     if ($LiteralPath -eq 'HKLM:\SYSTEM\CurrentControlSet\Services\PrintMasterAgent') { return $script:scenario -eq 'service registry' }
     if ($LiteralPath -like 'HKLM:*\Uninstall\PrintMasterAgent') { return $script:scenario -eq 'raw uninstall registry' }
     if ($LiteralPath -like 'HKLM:*\Uninstall') {
