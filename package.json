@@ -7,7 +7,7 @@
     "baseline-browser-mapping": "^2.11.32",
     "jest": "^30.5.2",
     "jest-environment-jsdom": "^30.5.2",
-    "js-yaml": "^4.3.2"
+    "js-yaml": "^5.5.0"
   },
   "overrides": {
     "@istanbuljs/load-nyc-config": {
