@@ -335,7 +335,7 @@ func TestDeploymentEmailTrustNoticeAndEscaping(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, text := range []string{data.InstructionsURL, "trust the Server", "Keep this enrollment link private", "Administrator PowerShell"} {
+		for _, text := range []string{data.InstructionsURL, "trust the Server", "Keep this enrollment link private", "Initial enrollment trusts this Server", "Administrator PowerShell"} {
 			if !strings.Contains(htmlBody, text) || !strings.Contains(textBody, text) {
 				t.Fatalf("deployment message missing guidance %q", text)
 			}

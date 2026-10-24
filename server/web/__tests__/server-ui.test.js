@@ -53,6 +53,7 @@ describe('bootstrap installation guidance', () => {
         const writeText = jest.fn().mockResolvedValue(undefined);
         const { document, oneLiner } = render('windows', { writeText });
         expect(document.getElementById('add_agent_content').textContent).toContain('trust the Server');
+        expect(document.getElementById('add_agent_content').textContent).toContain('Initial enrollment trusts this Server');
         expect(document.getElementById('add_agent_content').textContent).toContain('without an existing Agent');
         const details = document.querySelector('details#add_agent_full_script');
         expect(details.open).toBe(false);

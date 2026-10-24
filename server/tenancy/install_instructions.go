@@ -23,6 +23,7 @@ h1{font-size:24px;margin:8px 0}h2{font-size:18px;margin:24px 0 8px}p{margin:8px 
 <p>Run this command only if you trust the Server and expected these instructions. It downloads and executes a script with administrator privileges.</p>
 {{if eq .Entry.Platform "windows"}}<p>Use Administrator PowerShell on a machine without an existing Agent. This bootstrap will not update, repair or remove an existing Agent.</p>{{else}}<p>Run in a terminal. Installation uses sudo.</p>{{end}}
 <p>Keep this enrollment link private. Do not forward it or include it in screenshots or logs.</p>
+<p>Initial enrollment trusts this Server. Signed update verification is a separate step for later updates.</p>
 {{if .UsesHTTP}}<p><strong>This command uses unencrypted HTTP.</strong> Network interception can replace the script. Use a trusted HTTPS installation path instead.</p>{{end}}
 </section>
 <h2>Installation command</h2>

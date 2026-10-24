@@ -61,7 +61,7 @@ func TestInstallInstructionsPreserveDownloadAndEscapeContent(t *testing.T) {
 		}
 		if request.method == http.MethodGet && request.suffix == "/instructions" {
 			body := response.Body.String()
-			for _, text := range []string{"&lt;script&gt;", "&lt;img", "Copy one-liner", "<details>", "Administrator PowerShell", "Keep this enrollment link private"} {
+			for _, text := range []string{"&lt;script&gt;", "&lt;img", "Copy one-liner", "<details>", "Administrator PowerShell", "Keep this enrollment link private", "Initial enrollment trusts this Server"} {
 				if !strings.Contains(body, text) {
 					t.Fatalf("instructions missing %q", text)
 				}

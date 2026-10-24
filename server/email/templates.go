@@ -278,6 +278,7 @@ Platform: {{.Platform}}
 Only run this command if you trust the Server and expected these instructions.
 It downloads and executes a script with administrator privileges.
 Keep this enrollment link private. Do not forward it or include it in screenshots or logs.
+Initial enrollment trusts this Server. Signed update verification is a separate step for later updates.
 {{if eq .Platform "windows"}}Windows: use Administrator PowerShell on a machine without an existing Agent.
 This bootstrap will not update, repair or remove an existing Agent.
 {{else}}Run the command in a terminal; it uses sudo for installation.
@@ -1094,6 +1095,7 @@ const agentDeployHTMLTemplate = `<!DOCTYPE html>
                                             Only run this command if you trust the Server and expected these instructions.
                                             It downloads and executes a script with administrator privileges.
                                             Keep this enrollment link private; do not forward it or include it in screenshots or logs.
+                                            Initial enrollment trusts this Server. Signed update verification is a separate step for later updates.
                                         </p>
                                         {{if eq .Platform "windows"}}<p class="email-text" style="margin: 0 0 16px 0; font-size: 14px; line-height: 1.6;">
                                             Use Administrator PowerShell on a machine without an existing Agent.

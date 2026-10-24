@@ -19024,6 +19024,7 @@ function renderAddAgentStep(step) {
                         <p style="margin:0 0 8px;">This command downloads and runs an installation script with administrator privileges. Run it only if you trust the Server.</p>
                         ${windowsInstall ? '<p style="margin:0 0 8px;">Use Administrator PowerShell on a machine without an existing Agent. This bootstrap will not update, repair or remove an existing Agent.</p>' : '<p style="margin:0 0 8px;">Run in a terminal. Installation uses sudo.</p>'}
                         <p style="margin:0;">Keep this enrollment link private. Do not forward it or include it in screenshots or logs.</p>
+                        <p style="margin:8px 0 0;">Initial enrollment trusts this Server. Signed update verification is a separate step for later updates.</p>
                         ${oneLiner?.includes('http://') ? '<p style="margin:8px 0 0;">This command uses unencrypted HTTP; network interception can replace the script. Use a trusted HTTPS installation path instead.</p>' : ''}
                     </div>
                     <div id="add_agent_command" style="font-family:monospace;white-space:pre-wrap;padding:12px;background:var(--panel);border-radius:6px;border:1px solid var(--border);overflow-wrap:anywhere;">${escapeHtml(oneLiner || script)}</div>
