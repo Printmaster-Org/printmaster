@@ -18713,6 +18713,7 @@ function openAddAgentModal(opts) {
         one_time: true,
         token: null,
         mode: 'token',
+        insecureSkipVerify: false,
         platform: 'windows',
         format: 'zip',
         arch: 'amd64'
@@ -18771,88 +18772,73 @@ async function handleAddAgentPrimary() {
                 st.token = data.token;
                 st.script = null;
                 st.mode = 'token';
-                st.step = 2;
+                st.step = 3;
                 window._addAgentState = st;
-                renderAddAgentStep(2);
+                renderAddAgentStep(3);
             } catch (err) {
                 window.__pm_shared.showAlert('Failed to create join token: ' + (err && err.message ? err.message : err), 'Error', true, false);
             }
-        } else if (action === 'script') {
-            // Generate bootstrap script via server packages API
+        } else if (action === 'script' || action === 'email') {
+            const emailEl = document.getElementById('add_agent_email');
+            const emailAddr = emailEl ? emailEl.value.trim() : '';
+            if (action === 'email' && !emailAddr) {
+                window.__pm_shared.showAlert('Please enter a recipient email address.', 'Missing email', true, false);
+                return;
+            }
+            if (action === 'email' && (!emailAddr.includes('@') || !emailAddr.includes('.'))) {
+                window.__pm_shared.showAlert('Please enter a valid email address.', 'Invalid email', true, false);
+                return;
+            }
+            st.emailTo = emailAddr;
+            st.insecureSkipVerify = false;
+            st.mode = action;
+            st.step = 2;
+            window._addAgentState = st;
+            renderAddAgentStep(2);
+        } else {
+            window.__pm_shared.showAlert('Unsupported onboarding option selected.', 'Error', true, false);
+        }
+    } else if (st.step === 2) {
+        const tlsOption = document.getElementById('add_agent_skip_tls');
+        st.insecureSkipVerify = !!(tlsOption && tlsOption.checked);
+        window._addAgentState = st;
+
+        if (st.mode === 'script') {
             try {
-                const payload = { tenant_id: tenantID, platform: platform, installer_type: 'script', ttl_minutes: ttl };
+                const payload = { tenant_id: st.tenantID, platform: st.platform, installer_type: 'script', ttl_minutes: st.ttl, insecure_skip_verify: st.insecureSkipVerify };
                 const r = await fetch('/api/v1/packages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
                 if (!r.ok) {
                     throw new Error(await r.text());
                 }
-                // Handle JSON or plain text responses
-                const ct = (r.headers.get('content-type') || '').toLowerCase();
-                let scriptText = '';
-                let filename = 'bootstrap.sh';
-                let downloadURL = null;
-                let oneLiner = null;
-                if (ct.includes('application/json')) {
-                    const data = await r.json();
-                    scriptText = data.script || '';
-                    filename = data.filename || filename;
-                    downloadURL = data.download_url || null;
-                    oneLiner = data.one_liner || null;
-                } else {
-                    scriptText = await r.text();
-                    const cd = r.headers.get('content-disposition');
-                    if (cd) {
-                        const m = cd.match(/filename="?([^";]+)"?/);
-                        if (m && m[1]) filename = m[1];
-                    } else if (platform === 'windows') filename = 'bootstrap.ps1';
-                    else if (platform === 'darwin') filename = 'bootstrap.sh';
-                }
-
-                st.script = scriptText;
-                st.scriptFilename = filename;
-                st.scriptDownloadURL = downloadURL;
-                st.oneLiner = oneLiner;
+                const data = await r.json();
+                st.script = data.script || '';
+                st.scriptFilename = data.filename || (st.platform === 'windows' ? 'bootstrap.ps1' : 'bootstrap.sh');
+                st.scriptDownloadURL = data.download_url || null;
+                st.oneLiner = data.one_liner || null;
                 st.token = null;
-                st.mode = 'script';
-                st.step = 2;
+                st.step = 3;
                 window._addAgentState = st;
-                renderAddAgentStep(2);
+                renderAddAgentStep(3);
             } catch (err) {
                 window.__pm_shared.showAlert('Failed to generate bootstrap script: ' + (err && err.message ? err.message : err), 'Error', true, false);
             }
-        } else if (action === 'email') {
-            // Send bootstrap script via email
-            const emailEl = document.getElementById('add_agent_email');
-            const emailAddr = emailEl ? emailEl.value.trim() : '';
-            if (!emailAddr) {
-                window.__pm_shared.showAlert('Please enter a recipient email address.', 'Missing email', true, false);
-                return;
-            }
-            // Basic email validation
-            if (!emailAddr.includes('@') || !emailAddr.includes('.')) {
-                window.__pm_shared.showAlert('Please enter a valid email address.', 'Invalid email', true, false);
-                return;
-            }
+        } else if (st.mode === 'email') {
             try {
-                const payload = { tenant_id: tenantID, platform: platform, email: emailAddr, ttl_minutes: ttl };
+                const payload = { tenant_id: st.tenantID, platform: st.platform, email: st.emailTo, ttl_minutes: st.ttl, insecure_skip_verify: st.insecureSkipVerify };
                 const r = await fetch('/api/v1/packages/send-email', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
-                if (!r.ok) {
-                    const errText = await r.text();
-                    throw new Error(errText);
-                }
-                const data = await r.json();
+                if (!r.ok) throw new Error(await r.text());
+                await r.json();
                 st.emailSent = true;
-                st.emailTo = emailAddr;
-                st.mode = 'email';
-                st.step = 2;
+                st.step = 3;
                 window._addAgentState = st;
-                renderAddAgentStep(2);
+                renderAddAgentStep(3);
             } catch (err) {
                 window.__pm_shared.showAlert('Failed to send deployment email: ' + (err && err.message ? err.message : err), 'Error', true, false);
             }
         } else {
             window.__pm_shared.showAlert('Unsupported onboarding option selected.', 'Error', true, false);
         }
-    } else if (st.step === 2) {
+    } else if (st.step === 3) {
         // Done
         closeAddAgentModal();
         // Optionally refresh tokens/tenants list
@@ -18867,13 +18853,16 @@ function renderAddAgentStep(step) {
     if (!content) return;
     if (indicator) {
         if (step === 1) {
-            indicator.textContent = 'Step 1/2 — Create onboarding asset';
+            const mode = window._addAgentState?.mode || 'token';
+            indicator.textContent = mode === 'token' ? 'Step 1/2 — Create onboarding asset' : 'Step 1/3 — Choose installation method';
+        } else if (step === 2) {
+            indicator.textContent = 'Step 2/3 — Connection security';
         } else {
             const mode = (window._addAgentState && window._addAgentState.mode) ? window._addAgentState.mode : 'token';
             let label = 'Token (shown once)';
             if (mode === 'script') label = 'Bootstrap script';
             else if (mode === 'email') label = 'Email sent';
-            indicator.textContent = 'Step 2/2 — ' + label;
+            indicator.textContent = (mode === 'token' ? 'Step 2/2 — ' : 'Step 3/3 — ') + label;
         }
     }
 
@@ -18906,7 +18895,7 @@ function renderAddAgentStep(step) {
                 <label style="font-weight:600">Join token TTL (minutes)</label>
                 <input id="add_agent_ttl" type="number" value="${escapeHtml(String(ttlValue))}" min="1" style="padding:8px;border-radius:4px;border:1px solid var(--border);width:120px;" autocomplete="off" data-1p-ignore data-lpignore="true" />
 
-                <label style="display:flex;align-items:center;gap:8px;">
+                <label id="add_agent_one_time_row" style="display:flex;align-items:center;gap:8px;">
                     <input id="add_agent_one_time" type="checkbox" ${oneTimeChecked ? 'checked' : ''} />
                     <span style="color:var(--muted)">One-time (single-use) token</span>
                 </label>
@@ -18924,7 +18913,7 @@ function renderAddAgentStep(step) {
                     </div>
                     <div id="add_agent_email_row" style="margin-top:8px;display:none;">
                         <label style="font-weight:600">Recipient email</label>
-                        <input id="add_agent_email" type="email" placeholder="user@example.com" style="padding:8px;border-radius:4px;border:1px solid var(--border);width:280px;" autocomplete="off" data-1p-ignore data-lpignore="true" />
+                        <input id="add_agent_email" type="email" value="${escapeHtml(state.emailTo || '')}" placeholder="user@example.com" style="padding:8px;border-radius:4px;border:1px solid var(--border);width:280px;" autocomplete="off" data-1p-ignore data-lpignore="true" />
                         <div style="color:var(--muted);font-size:12px;margin-top:4px;">The recipient will receive an HTML email with the installation one-liner and full script.</div>
                     </div>
                 </div>
@@ -18976,11 +18965,11 @@ function renderAddAgentStep(step) {
         const actionRadios = content.querySelectorAll('input[name="add_agent_action"]');
         const platRow = content.querySelector('#add_agent_platform_row');
         const emailRow = content.querySelector('#add_agent_email_row');
+        const oneTimeRow = content.querySelector('#add_agent_one_time_row');
         const updatePrimaryLabel = () => {
             const sel = content.querySelector('input[name="add_agent_action"]:checked');
             if (!sel || !primaryBtn) return;
-            if (sel.value === 'script') primaryBtn.textContent = 'Generate Script';
-            else if (sel.value === 'email') primaryBtn.textContent = 'Send Email';
+            if (sel.value === 'script' || sel.value === 'email') primaryBtn.textContent = 'Continue';
             else primaryBtn.textContent = 'Create Token';
         };
         const updateFieldVisibility = () => {
@@ -18988,6 +18977,8 @@ function renderAddAgentStep(step) {
             const mode = sel ? sel.value : 'token';
             if (platRow) platRow.style.display = (mode === 'script' || mode === 'email') ? '' : 'none';
             if (emailRow) emailRow.style.display = mode === 'email' ? '' : 'none';
+            if (oneTimeRow) oneTimeRow.style.display = mode === 'token' ? '' : 'none';
+            if (indicator) indicator.textContent = mode === 'token' ? 'Step 1/2 — Create onboarding asset' : 'Step 1/3 — Choose installation method';
         };
         actionRadios.forEach(r => r.addEventListener('change', () => {
             state.mode = r.value;
@@ -18996,6 +18987,27 @@ function renderAddAgentStep(step) {
         }));
         updatePrimaryLabel();
         updateFieldVisibility();
+    } else if (step === 2) {
+        const state = window._addAgentState || {};
+        const isEmail = state.mode === 'email';
+        content.innerHTML = `
+            <div style="display:flex;flex-direction:column;gap:14px;">
+                <h3 style="margin:0;font-size:18px;">Verify the Server connection</h3>
+                <p style="margin:0;color:var(--text);line-height:1.5;">By default, the Agent checks the Server's TLS certificate on every connection. Keep verification on when the Server has a trusted certificate.</p>
+                <label style="display:flex;align-items:flex-start;gap:10px;padding:14px;border:1px solid var(--border);border-radius:6px;cursor:pointer;">
+                    <input id="add_agent_skip_tls" type="checkbox" ${state.insecureSkipVerify ? 'checked' : ''} style="margin-top:4px;" />
+                    <span><strong>Skip TLS certificate validation</strong><br><span style="color:var(--muted);font-size:13px;">Only for a self-signed Server certificate. This allows a network attacker to impersonate your Server and is not recommended.</span></span>
+                </label>
+                <p style="margin:0;color:var(--muted);font-size:13px;">This controls the Agent's future Server connections. It does not make the initial bootstrap download safer; use a trusted HTTPS installation link.</p>
+                ${isEmail ? `<p style="margin:0;color:var(--muted);font-size:13px;">Instructions will be emailed to <strong>${escapeHtml(state.emailTo || '')}</strong>.</p>` : ''}
+                <button id="add_agent_back" type="button" class="modal-button modal-button-secondary" style="align-self:flex-start;">Back</button>
+            </div>
+        `;
+        const skipTLS = content.querySelector('#add_agent_skip_tls');
+        if (primaryBtn) primaryBtn.textContent = isEmail ? 'Send email' : 'Generate script';
+        if (skipTLS) skipTLS.addEventListener('change', () => { state.insecureSkipVerify = skipTLS.checked; });
+        const backBtn = content.querySelector('#add_agent_back');
+        if (backBtn) backBtn.addEventListener('click', () => renderAddAgentStep(1));
     } else {
         // Step 2: show token, script, or email confirmation
         const token = (window._addAgentState && window._addAgentState.token) ? window._addAgentState.token : '';
@@ -19004,6 +19016,7 @@ function renderAddAgentStep(step) {
         const filename = (window._addAgentState && window._addAgentState.scriptFilename) ? window._addAgentState.scriptFilename : 'bootstrap';
         const emailSent = (window._addAgentState && window._addAgentState.emailSent) ? window._addAgentState.emailSent : false;
         const emailTo = (window._addAgentState && window._addAgentState.emailTo) ? window._addAgentState.emailTo : '';
+        const skipTLS = !!(window._addAgentState && window._addAgentState.insecureSkipVerify);
 
         if (emailSent && mode === 'email') {
             content.innerHTML = `
@@ -19012,6 +19025,7 @@ function renderAddAgentStep(step) {
                     <h3 style="margin:0;color:var(--text);">Email Sent Successfully</h3>
                     <p style="color:var(--muted);margin:0;">Agent deployment instructions have been sent to:</p>
                     <div style="font-family:monospace;padding:12px 24px;background:var(--panel);border-radius:6px;border:1px solid var(--border);font-weight:600;">${escapeHtml(emailTo)}</div>
+                    ${skipTLS ? '<p role="alert" style="color:var(--warning);margin:0;">TLS certificate validation is disabled for this Agent. A network attacker could impersonate the Server.</p>' : ''}
                     <p style="color:var(--muted);font-size:13px;margin:0;">The email includes the installation command, trust notice, and a link to browser instructions. Keep the enrollment link private.</p>
                 </div>
             `;
@@ -19025,6 +19039,7 @@ function renderAddAgentStep(step) {
                         ${windowsInstall ? '<p style="margin:0 0 8px;">Use Administrator PowerShell on a machine without an existing Agent. This bootstrap will not update, repair or remove an existing Agent.</p>' : '<p style="margin:0 0 8px;">Run in a terminal. Installation uses sudo.</p>'}
                         <p style="margin:0;">Keep this enrollment link private. Do not forward it or include it in screenshots or logs.</p>
                         <p style="margin:8px 0 0;">Initial enrollment trusts this Server. Signed update verification is a separate step for later updates.</p>
+                        ${skipTLS ? '<p role="alert" style="margin:8px 0 0;color:var(--warning);"><strong>TLS verification is disabled.</strong> A network attacker could impersonate the Server.</p>' : ''}
                         ${oneLiner?.includes('http://') ? '<p style="margin:8px 0 0;">This command uses unencrypted HTTP; network interception can replace the script. Use a trusted HTTPS installation path instead.</p>' : ''}
                     </div>
                     <div id="add_agent_command" style="font-family:monospace;white-space:pre-wrap;padding:12px;background:var(--panel);border-radius:6px;border:1px solid var(--border);overflow-wrap:anywhere;">${escapeHtml(oneLiner || script)}</div>

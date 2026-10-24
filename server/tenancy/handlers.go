@@ -159,18 +159,19 @@ func SetTenantCreatedCallback(cb func(ctx context.Context, tenantID string)) {
 }
 
 // generateDeploymentEmail generates HTML and text versions of the deployment email.
-func generateDeploymentEmail(theme, recipientEmail, platform, oneLiner, script, downloadURL, expiresIn, tenantName, serverURL, senderName string) (string, string, error) {
+func generateDeploymentEmail(theme, recipientEmail, platform, oneLiner, script, downloadURL, expiresIn, tenantName, serverURL, senderName string, insecureSkipVerify bool) (string, string, error) {
 	data := email.AgentDeploymentEmailData{
-		RecipientEmail:  recipientEmail,
-		Platform:        platform,
-		OneLiner:        oneLiner,
-		Script:          script,
-		DownloadURL:     downloadURL,
-		InstructionsURL: strings.TrimRight(downloadURL, "/") + "/instructions",
-		ExpiresIn:       expiresIn,
-		TenantName:      tenantName,
-		ServerURL:       serverURL,
-		SentBy:          senderName,
+		RecipientEmail:     recipientEmail,
+		Platform:           platform,
+		OneLiner:           oneLiner,
+		Script:             script,
+		DownloadURL:        downloadURL,
+		InstructionsURL:    strings.TrimRight(downloadURL, "/") + "/instructions",
+		InsecureSkipVerify: insecureSkipVerify,
+		ExpiresIn:          expiresIn,
+		TenantName:         tenantName,
+		ServerURL:          serverURL,
+		SentBy:             senderName,
 	}
 	return email.GenerateAgentDeploymentEmail(email.NormalizeTheme(theme), data)
 }
@@ -226,13 +227,14 @@ var AuthMiddleware func(http.HandlerFunc) http.HandlerFunc
 
 // installMap stores transient install scripts keyed by a short code.
 type installEntry struct {
-	Script    string
-	Filename  string
-	ExpiresAt time.Time
-	OneTime   bool
-	OneLiner  string
-	ServerURL string
-	Platform  string
+	Script             string
+	Filename           string
+	ExpiresAt          time.Time
+	OneTime            bool
+	OneLiner           string
+	ServerURL          string
+	Platform           string
+	InsecureSkipVerify bool
 }
 
 type tenantPayload struct {
@@ -249,14 +251,15 @@ type tenantPayload struct {
 }
 
 type packageRequest struct {
-	TenantID      string `json:"tenant_id"`
-	Platform      string `json:"platform"`
-	InstallerType string `json:"installer_type"`
-	TTLMinutes    int    `json:"ttl_minutes"`
-	Format        string `json:"format"`
-	Component     string `json:"component"`
-	Version       string `json:"version"`
-	Arch          string `json:"arch"`
+	TenantID           string `json:"tenant_id"`
+	Platform           string `json:"platform"`
+	InstallerType      string `json:"installer_type"`
+	TTLMinutes         int    `json:"ttl_minutes"`
+	Format             string `json:"format"`
+	Component          string `json:"component"`
+	Version            string `json:"version"`
+	Arch               string `json:"arch"`
+	InsecureSkipVerify bool   `json:"insecure_skip_verify"`
 }
 
 var installStore = struct {
@@ -1566,16 +1569,17 @@ func handleGeneratePackage(w http.ResponseWriter, r *http.Request) {
 		TenantID:   in.TenantID,
 		Details:    "Bootstrap package generated",
 		Metadata: map[string]interface{}{
-			"platform":       platform,
-			"installer_type": installerType,
-			"format":         strings.ToLower(strings.TrimSpace(in.Format)),
-			"ttl_minutes":    in.TTLMinutes,
+			"platform":             platform,
+			"installer_type":       installerType,
+			"format":               strings.ToLower(strings.TrimSpace(in.Format)),
+			"ttl_minutes":          in.TTLMinutes,
+			"insecure_skip_verify": in.InsecureSkipVerify,
 		},
 	})
 
 	switch installerType {
 	case "script":
-		script, filename := buildBootstrapScript(platform, serverURL, rawToken)
+		script, filename := buildBootstrapScript(platform, serverURL, rawToken, in.InsecureSkipVerify)
 		if script == "" || filename == "" {
 			writeJSONError(w, http.StatusInternalServerError, "unable to build bootstrap script")
 			return
@@ -1600,7 +1604,7 @@ func handleGeneratePackage(w http.ResponseWriter, r *http.Request) {
 		}
 		installStore.mu.Lock()
 		installStore.m[code] = installEntry{Script: script, Filename: filename, ExpiresAt: expiresAt, OneTime: oneTimeDownload,
-			OneLiner: oneLiner, ServerURL: serverURL, Platform: platform}
+			OneLiner: oneLiner, ServerURL: serverURL, Platform: platform, InsecureSkipVerify: in.InsecureSkipVerify}
 		installStore.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"script":       script,
@@ -1633,10 +1637,11 @@ func handleSendDeploymentEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var in struct {
-		TenantID   string `json:"tenant_id"`
-		Platform   string `json:"platform"`
-		Email      string `json:"email"`
-		TTLMinutes int    `json:"ttl_minutes"`
+		TenantID           string `json:"tenant_id"`
+		Platform           string `json:"platform"`
+		Email              string `json:"email"`
+		TTLMinutes         int    `json:"ttl_minutes"`
+		InsecureSkipVerify bool   `json:"insecure_skip_verify"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON")
@@ -1710,7 +1715,7 @@ func handleSendDeploymentEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build the bootstrap script
-	script, filename := buildBootstrapScript(platform, serverURL, rawToken)
+	script, filename := buildBootstrapScript(platform, serverURL, rawToken, in.InsecureSkipVerify)
 	if script == "" {
 		writeJSONError(w, http.StatusInternalServerError, "failed to generate bootstrap script")
 		return
@@ -1729,7 +1734,7 @@ func handleSendDeploymentEmail(w http.ResponseWriter, r *http.Request) {
 	}
 	installStore.mu.Lock()
 	installStore.m[code] = installEntry{Script: script, Filename: filename, ExpiresAt: expiresAt, OneTime: false,
-		OneLiner: oneLiner, ServerURL: serverURL, Platform: platform}
+		OneLiner: oneLiner, ServerURL: serverURL, Platform: platform, InsecureSkipVerify: in.InsecureSkipVerify}
 	installStore.mu.Unlock()
 
 	// Get the sender name from the request context (user who initiated)
@@ -1759,7 +1764,7 @@ func handleSendDeploymentEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate the email HTML/text using the email package
-	htmlBody, textBody, err := generateDeploymentEmail(theme, in.Email, platform, oneLiner, script, downloadURL, expiresIn, tenantName, serverURL, senderName)
+	htmlBody, textBody, err := generateDeploymentEmail(theme, in.Email, platform, oneLiner, script, downloadURL, expiresIn, tenantName, serverURL, senderName, in.InsecureSkipVerify)
 	if err != nil {
 		logError("failed to generate deployment email", "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "failed to generate email: "+err.Error())
@@ -1872,12 +1877,13 @@ func installCleanupLoop() {
 	}
 }
 
-func buildBootstrapScript(platform, serverURL, token string) (string, string) {
+func buildBootstrapScript(platform, serverURL, token string, options ...bool) (string, string) {
+	insecureSkipVerify := len(options) > 0 && options[0]
 	switch normalizePlatform(platform) {
 	case "windows":
-		return fmt.Sprintf(windowsBootstrapScript, serverURL, token), "install.ps1"
+		return fmt.Sprintf(windowsBootstrapScript, serverURL, token, insecureSkipVerify), "install.ps1"
 	default:
-		return fmt.Sprintf(unixBootstrapScript, serverURL, token), "install.sh"
+		return fmt.Sprintf(unixBootstrapScript, serverURL, token, insecureSkipVerify), "install.sh"
 	}
 }
 
@@ -2278,8 +2284,7 @@ $configContent = @"
 enabled = true
 url = "$server"
 name = "$agentName"
-token = "$token"
-insecure_skip_verify = true
+insecure_skip_verify = %t
 "@
 Set-Content -Path $configPath -Value $configContent -Encoding UTF8
 Show-Success "Configuration saved to $configPath"
@@ -2326,6 +2331,13 @@ if ($installProc.ExitCode -ne 0) {
 	exit $installProc.ExitCode
 }
 Show-Success "Service installed"
+
+# The service installer has now protected ProgramData\PrintMaster\agent.
+# Store the bootstrap credential where the upload worker loads it, without a UTF-8 BOM.
+$joinTokenPath = Join-Path $configDir "server_join_token"
+[System.IO.File]::WriteAllText($joinTokenPath, $token, [System.Text.UTF8Encoding]::new($false))
+$token = $null
+Show-Success "Server join token stored in the protected Agent data directory"
 
 # Register in Add/Remove Programs
 Show-Progress -Percent 78 -Message "Registering uninstaller..."
@@ -2447,19 +2459,55 @@ fi
 echo "Detected distro: ${ID:-unknown} (family: ${DISTRO_FAMILY:-unknown})"
 
 # Function to configure agent after install
+ensure_linux_service_user() {
+	[ "$(uname -s)" = "Linux" ] || return 0
+	command -v systemctl >/dev/null 2>&1 || return 0
+	if ! command -v getent >/dev/null 2>&1 || ! command -v groupadd >/dev/null 2>&1 || ! command -v useradd >/dev/null 2>&1; then
+		echo "Cannot create the PrintMaster service account: getent/groupadd/useradd is required." >&2
+		return 1
+	fi
+	getent group printmaster >/dev/null 2>&1 || groupadd --system printmaster
+	if id printmaster >/dev/null 2>&1; then return 0; fi
+	useradd --system --gid printmaster --home-dir /var/lib/printmaster --create-home \
+		--shell /usr/sbin/nologin --comment "PrintMaster Agent" printmaster
+}
+
 configure_agent() {
 	mkdir -p /etc/printmaster
+	SERVICE_ACCOUNT=0
+	if command -v systemctl >/dev/null 2>&1; then
+		DATA_DIR="/var/lib/printmaster/agent"
+		ensure_linux_service_user
+		if id printmaster >/dev/null 2>&1; then SERVICE_ACCOUNT=1; fi
+	else
+		DATA_DIR="${HOME}/.local/share/printmaster/agent"
+	fi
+	mkdir -p "$DATA_DIR"
+	CONFIG_PATH="/etc/printmaster/config.toml"
+	if [ -f /etc/printmaster/agent.toml ]; then
+		CONFIG_PATH="/etc/printmaster/agent.toml"
+	fi
 	AGENT_NAME="$(hostname 2>/dev/null || echo 'linux-agent')"
-	cat > /etc/printmaster/config.toml <<EOF
+	cat > "$CONFIG_PATH" <<EOF
 [server]
 enabled = true
 url = "$SERVER"
 name = "$AGENT_NAME"
-token = "$TOKEN"
-insecure_skip_verify = true
+	insecure_skip_verify = %t
 EOF
-	chmod 600 /etc/printmaster/config.toml
-	echo "Configuration: /etc/printmaster/config.toml"
+	printf '%%s' "$TOKEN" > "$DATA_DIR/server_join_token"
+	chmod 600 "$DATA_DIR/server_join_token"
+	if [ "$SERVICE_ACCOUNT" -eq 1 ]; then
+		chown -R printmaster:printmaster "$DATA_DIR"
+		chmod 750 "$DATA_DIR"
+		chown printmaster:printmaster "$DATA_DIR/server_join_token"
+		chown root:printmaster "$CONFIG_PATH"
+		chmod 640 "$CONFIG_PATH"
+	else
+		chmod 700 "$DATA_DIR"
+		chmod 600 "$DATA_DIR/server_join_token" "$CONFIG_PATH"
+	fi
+	echo "Configuration: $CONFIG_PATH"
 }
 
 # Function for direct binary install (fallback)
@@ -2484,7 +2532,6 @@ install_binary() {
 	fi
 
 	configure_agent
-
 	# Install systemd unit if available
 	if command -v systemctl >/dev/null 2>&1; then
 		cat >/etc/systemd/system/printmaster-agent.service <<EOL
@@ -2493,6 +2540,9 @@ Description=PrintMaster Agent
 After=network.target
 
 [Service]
+User=printmaster
+Group=printmaster
+WorkingDirectory=/var/lib/printmaster
 ExecStart=/usr/local/bin/pm-agent --config /etc/printmaster/config.toml
 Restart=on-failure
 RestartSec=5

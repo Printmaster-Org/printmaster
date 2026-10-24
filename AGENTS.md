@@ -20,7 +20,7 @@ The canonical documentation lives in the **Printmaster-Org/docs.printmaster.work
 - Review documentation impact for every feature, fix, removal, and deprecation as part of the same task. Keep source-local READMEs and examples accurate too. If no documentation change is needed, explicitly explain why in the PR or completion summary.
 - Maintain documentation structure as work progresses: add new canonical pages where useful, reorganize or consolidate existing material, and remove obsolete legacy plans/docs when appropriate rather than only appending to them. Keep current plans aligned with agreed scope and implemented reality; clearly distinguish pending, completed, deferred, and historical work. Preserve still-relevant decisions and recovery guidance, and update affected links, navigation, redirects and documentation tests when moving or removing pages.
 - The legacy documentation trees have been removed from this repo. Do not recreate them or duplicate guides here; retain only concise source-local READMEs, contribution/security entry points, agent instructions, and licenses. On imported docs-site pages, leave the `source`/`sourceCommit` front matter as it is (it records import provenance, and the docs tests check it), but point any source-code links at the current commit.
-- Commit the program change and the docs change as a linked pair, and mention both in your summary.
+- Commit the program change and the docs change as a linked pair, and mention both in your summary. Put the implementation commit SHA in the docs commit only; do not add a docs SHA to the program commit.
 - If the docs checkout is unavailable, say so and list the exact pages that need updating. Do not report the work as complete.
 
 ## Commit messages (required)
@@ -32,11 +32,12 @@ type(scope): imperative summary, lowercase, no trailing period
 
 Why the change was needed and what it changes (wrap ~72 cols).
 
-Docs: Printmaster-Org/docs.printmaster.work@<sha>   (or "Docs: none — <reason>")
 Co-authored-by: ...                                  (trailers last)
 ```
+
+When documentation changes are required, the program commit must not contain a reciprocal docs SHA. After the program commit is created, reference it from the paired docs commit using the `Implementation:` trailer below. This one-way link avoids circular commit references.
 
 - Types: `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `build`, `ci`, `chore`, `style`, `revert`, `ux`. Add `!` after the type or scope for breaking changes.
 - Scope is optional, lowercase, and names the area touched: `agent`, `server`, `web`, `scanner`, `storage`, `api`, `ci`, `deps`, or a vendor such as `epson`.
 - Keep the subject at 100 characters or fewer, with a blank line before the body.
-- In the paired docs commit, reference the program commit the same way: `Implementation: Printmaster-Org/printmaster@<sha>`.
+- In the paired docs commit, reference the program commit: `Implementation: Printmaster-Org/printmaster@<sha>`.

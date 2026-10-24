@@ -347,6 +347,64 @@ Write-Output (ConvertTo-Json -Compress -Depth 4 -InputObject $results)
 	}
 }
 
+func TestWindowsBootstrapStoresJoinTokenAfterServiceDirectoryProtection(t *testing.T) {
+	script, _ := buildBootstrapScript("windows", "https://example.invalid", "disposable-test-token")
+	if strings.Contains(script, `token = "$token"`) {
+		t.Fatal("bootstrap must not store the enrollment credential as the Agent bearer token")
+	}
+	serviceInstall := strings.Index(script, `-ArgumentList "--service","install","--silent"`)
+	tokenWrite := strings.Index(script, `WriteAllText($joinTokenPath, $token`)
+	serviceStart := strings.Index(script, `-ArgumentList "--service","start","--silent"`)
+	if serviceInstall < 0 || tokenWrite <= serviceInstall || serviceStart <= tokenWrite {
+		t.Fatal("bootstrap must store server_join_token after protected service installation and before service start")
+	}
+	if !strings.Contains(script, `$joinTokenPath = Join-Path $configDir "server_join_token"`) ||
+		!strings.Contains(script, `[System.Text.UTF8Encoding]::new($false)`) {
+		t.Fatal("bootstrap join token path or BOM-free encoding is incorrect")
+	}
+}
+
+func TestBootstrapTLSVerificationDefaultsSecureAndCanBeExplicitlySkipped(t *testing.T) {
+	for _, platform := range []string{"windows", "linux"} {
+		t.Run(platform, func(t *testing.T) {
+			secure, _ := buildBootstrapScript(platform, "https://example.invalid", "fixture-token")
+			insecure, _ := buildBootstrapScript(platform, "https://example.invalid", "fixture-token", true)
+			if !strings.Contains(secure, "insecure_skip_verify = false") {
+				t.Fatal("default bootstrap must verify server TLS certificates")
+			}
+			if !strings.Contains(insecure, "insecure_skip_verify = true") {
+				t.Fatal("explicit TLS bypass option was not rendered")
+			}
+			if strings.Contains(secure, "token = \"$token\"") || !strings.Contains(secure, "server_join_token") {
+				t.Fatal("bootstrap must persist the enrollment token where the Agent worker loads it")
+			}
+			if platform == "linux" {
+				for _, required := range []string{
+					"ensure_linux_service_user()",
+					"getent group printmaster",
+					"useradd --system --gid printmaster",
+					"User=printmaster",
+					"Group=printmaster",
+					"chown printmaster:printmaster \"$DATA_DIR/server_join_token\"",
+					"DATA_DIR=\"${HOME}/.local/share/printmaster/agent\"",
+				} {
+					if !strings.Contains(secure, required) {
+						t.Errorf("Linux bootstrap missing service account setup %q", required)
+					}
+				}
+				if strings.Contains(secure, "token = \"$TOKEN\"") {
+					t.Fatal("Linux bootstrap must not write the enrollment token to config.toml")
+				}
+				serviceSection := strings.Index(secure, "[Service]\n")
+				userDirective := strings.Index(secure, "User=printmaster")
+				if serviceSection < 0 || userDirective <= serviceSection {
+					t.Fatal("Linux bootstrap service directives must be inside the systemd Service section")
+				}
+			}
+		})
+	}
+}
+
 func setupEnrollmentSecurity(t *testing.T, role storage.Role) (*storage.SQLiteStore, *http.ServeMux, string) {
 	t.Helper()
 	db, err := storage.NewSQLiteStore(":memory:")

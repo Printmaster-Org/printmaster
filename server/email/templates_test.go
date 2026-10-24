@@ -353,6 +353,24 @@ func TestDeploymentEmailTrustNoticeAndEscaping(t *testing.T) {
 		if !strings.Contains(textBody, data.OneLiner) || !strings.Contains(textBody, data.Script) {
 			t.Fatal("plain-text fallback changed command/script bytes")
 		}
+		if strings.Contains(htmlBody, "TLS certificate validation is disabled") {
+			t.Fatal("secure-by-default email shows the TLS bypass warning")
+		}
+	}
+}
+
+func TestDeploymentEmailWarnsWhenTLSValidationIsDisabled(t *testing.T) {
+	t.Parallel()
+	_, textBody, err := GenerateAgentDeploymentEmail(ThemeLight, AgentDeploymentEmailData{
+		Platform: "linux", OneLiner: "curl https://example.invalid/install | sudo sh",
+		Script: "script", InsecureSkipVerify: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(textBody, "TLS certificate validation is disabled") ||
+		!strings.Contains(textBody, "network attacker could impersonate it") {
+		t.Fatal("email must explain the risk when TLS validation is explicitly skipped")
 	}
 }
 

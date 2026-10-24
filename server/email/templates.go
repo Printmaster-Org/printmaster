@@ -91,16 +91,17 @@ type PasswordResetEmailData struct {
 
 // AgentDeploymentEmailData holds data for the agent deployment script email
 type AgentDeploymentEmailData struct {
-	RecipientEmail  string // The email address receiving this
-	Platform        string // linux, windows, darwin
-	OneLiner        string // The one-liner command to run
-	Script          string // The full bootstrap script
-	DownloadURL     string // The hosted URL for the script
-	InstructionsURL string // Browser instructions using the same expiring install link
-	ExpiresIn       string // Human-readable TTL
-	TenantName      string // Tenant/customer name
-	ServerURL       string // Server base URL
-	SentBy          string // Name of the user who sent this
+	RecipientEmail     string // The email address receiving this
+	Platform           string // linux, windows, darwin
+	OneLiner           string // The one-liner command to run
+	Script             string // The full bootstrap script
+	DownloadURL        string // The hosted URL for the script
+	InstructionsURL    string // Browser instructions using the same expiring install link
+	InsecureSkipVerify bool   // Disable TLS certificate validation for the initial Agent connection
+	ExpiresIn          string // Human-readable TTL
+	TenantName         string // Tenant/customer name
+	ServerURL          string // Server base URL
+	SentBy             string // Name of the user who sent this
 }
 
 // GenerateInviteEmail generates a themed HTML invitation email
@@ -279,6 +280,8 @@ Only run this command if you trust the Server and expected these instructions.
 It downloads and executes a script with administrator privileges.
 Keep this enrollment link private. Do not forward it or include it in screenshots or logs.
 Initial enrollment trusts this Server. Signed update verification is a separate step for later updates.
+{{if .InsecureSkipVerify}}WARNING: TLS certificate validation is disabled for Agent-to-Server connections. Use only for a self-signed Server and understand that a network attacker could impersonate it.
+{{end}}
 {{if eq .Platform "windows"}}Windows: use Administrator PowerShell on a machine without an existing Agent.
 This bootstrap will not update, repair or remove an existing Agent.
 {{else}}Run the command in a terminal; it uses sudo for installation.
@@ -1111,6 +1114,9 @@ const agentDeployHTMLTemplate = `<!DOCTYPE html>
                                         </p>{{end}}
                                         {{if .InstructionsURL}}<p style="margin: 0 0 20px 0;">
                                             <a href="{{.InstructionsURL}}" class="email-button" style="display:inline-block;padding:12px 20px;border-radius:6px;font-weight:600;text-decoration:none;">View installation instructions</a>
+                                        </p>{{end}}
+                                        {{if .InsecureSkipVerify}}<p class="email-text" style="margin:0 0 16px 0;font-size:14px;line-height:1.6;border-left:3px solid {{.Warning}};padding:0 12px;">
+                                            <strong>Warning: TLS certificate validation is disabled</strong> for Agent-to-Server connections. Use only for a self-signed Server; a network attacker could impersonate it.
                                         </p>{{end}}
                                         <h3 class="email-text" style="margin: 0 0 12px 0; font-size: 18px; font-weight: 600;">
                                             ⚡ Quick Install (One-liner)

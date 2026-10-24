@@ -45,7 +45,7 @@ describe('bootstrap installation guidance', () => {
         const range = { selectNodeContents: jest.fn() };
         context.window.getSelection = jest.fn(() => selection);
         document.createRange = jest.fn(() => range);
-        context.renderAddAgentStep(2);
+        context.renderAddAgentStep(3);
         return { context, document, oneLiner, selection, range };
     }
 
@@ -78,6 +78,30 @@ describe('bootstrap installation guidance', () => {
         expect(context.window.getSelection).toHaveBeenCalledTimes(1);
         expect(document.getElementById('add_agent_copy_status').textContent).toContain('manual copying');
         expect(context.window.getSelection().toString()).toBe(oneLiner);
+    });
+
+    test('TLS bypass is an explicit opt-in carried into script generation', async () => {
+        const fetch = jest.fn().mockResolvedValue({
+            ok: true,
+            headers: { get: () => 'application/json' },
+            json: async () => ({ script: 'script', filename: 'install.ps1', download_url: 'https://example.invalid/install/code', one_liner: 'irm example | iex' }),
+        });
+        const state = { step: 2, mode: 'script', tenantID: 'tenant-1', platform: 'windows', ttl: 60, insecureSkipVerify: false };
+        const { context, document } = setup(['renderAddAgentStep', 'handleAddAgentPrimary'], {
+            fetch,
+            window: { _addAgentState: state, __pm_shared: { showAlert: jest.fn() } },
+            escapeHtml: value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;'),
+        });
+        context.renderAddAgentStep(2);
+        const toggle = document.getElementById('add_agent_skip_tls');
+        expect(toggle.checked).toBe(false);
+        expect(document.getElementById('add_agent_content').textContent).toContain('self-signed Server certificate');
+        expect(document.getElementById('add_agent_primary').textContent).toBe('Generate script');
+        toggle.checked = true;
+        await context.handleAddAgentPrimary();
+        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(fetch.mock.calls[0][1].body)).toMatchObject({ tenant_id: 'tenant-1', platform: 'windows', insecure_skip_verify: true });
+        expect(document.getElementById('add_agent_content').textContent).toContain('TLS verification is disabled');
     });
 });
 
