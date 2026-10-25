@@ -4428,10 +4428,8 @@ func buildAgentListItems(ctx context.Context, agents []*storage.Agent, scope map
 		ListAgentDeployments(context.Context, []string) ([]*storage.AgentDeployment, error)
 	}); ok && (scope == nil || len(scope) > 0) {
 		tenantIDs := make([]string, 0, len(scope))
-		if scope != nil {
-			for tenantID := range scope {
-				tenantIDs = append(tenantIDs, tenantID)
-			}
+		for tenantID := range scope {
+			tenantIDs = append(tenantIDs, tenantID)
 		}
 		var err error
 		deployments, err = deploymentStore.ListAgentDeployments(ctx, tenantIDs)
