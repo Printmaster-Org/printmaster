@@ -288,7 +288,7 @@ function Get-ItemProperty {
     if ($script:scenario -eq 'server only') { [pscustomobject]@{ DisplayName = 'PrintMaster Server' } }
 }
 function Get-ChildItem {
-    if ($script:scenario -eq 'legacy executable') { [pscustomobject]@{ Name = 'printmaster-agent-v0.31.1.exe' } }
+    if ($script:scenario -eq 'legacy executable') { [pscustomobject]@{ Name = 'printmaster-agent-v0.31.1.exe'; FullName = (Join-Path $env:ProgramFiles 'PrintMaster\printmaster-agent-v0.31.1.exe') } }
 }
 foreach ($command in @('Stop-Service', 'Stop-Process', 'Remove-Item', 'New-Item', 'Set-Content', 'Copy-Item', 'Start-Process', 'Invoke-WebRequest')) {
     Set-Item -Path "function:$command" -Value { throw 'MUTATION ATTEMPTED' }
@@ -338,6 +338,18 @@ Write-Output (ConvertTo-Json -Compress -Depth 4 -InputObject $results)
 				wantRefused := result.Scenario != "fresh" && result.Scenario != "server only"
 				if result.Refused != wantRefused || strings.Contains(result.Reason, "MUTATION ATTEMPTED") {
 					t.Errorf("scenario %q: refused=%t want=%t reason=%s", result.Scenario, result.Refused, wantRefused, result.Reason)
+				}
+				var diagnosticPath string
+				switch result.Scenario {
+				case "protected directory":
+					diagnosticPath = `programfiles\PrintMaster\Agent`
+				case "x86 protected directory":
+					diagnosticPath = `programfiles-x86\PrintMaster\Agent`
+				case "legacy executable":
+					diagnosticPath = `programfiles\PrintMaster\printmaster-agent-v0.31.1.exe`
+				}
+				if diagnosticPath != "" && !strings.Contains(result.Reason, diagnosticPath) {
+					t.Errorf("scenario %q hides the blocking path: %s", result.Scenario, result.Reason)
 				}
 			}
 		})

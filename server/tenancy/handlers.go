@@ -2502,12 +2502,13 @@ function Assert-FreshAgentInstall {
 		$legacyRoot = Join-Path $base "PrintMaster"
 		$agentRoot = Join-Path $legacyRoot "Agent"
 		if (Test-Path -LiteralPath $agentRoot -ErrorAction Stop) {
-			throw "Existing protected Agent installation found. Bootstrap installs new Agents only."
+			throw "Existing protected Agent installation found at $agentRoot (even an empty directory blocks bootstrap). Bootstrap installs new Agents only; review this path with the Agent cleanup utility."
 		}
 		if (Test-Path -LiteralPath $legacyRoot -ErrorAction Stop) {
 			$legacyAgent = Get-ChildItem -LiteralPath $legacyRoot -Filter "printmaster-agent*.exe" -ErrorAction Stop
 			if ($legacyAgent) {
-				throw "Existing legacy Agent executable found. Preserve it and use an owner-controlled migration."
+				$legacyPaths = ($legacyAgent | ForEach-Object { $_.FullName }) -join ", "
+				throw "Existing legacy Agent executable found at $legacyPaths. Preserve it and use an owner-controlled migration."
 			}
 		}
 	}
