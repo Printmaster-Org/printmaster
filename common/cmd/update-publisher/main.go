@@ -86,7 +86,7 @@ func run(args []string, getenv func(string) string, output io.Writer) error {
 		}
 	}
 	if *devOnly && fmt.Sprintf("%x", sha256.Sum256(root)) != devBootstrapRootSHA256 {
-		return fmt.Errorf("Dev publisher root fingerprint changed; owner root-transition review required")
+		return fmt.Errorf("dev publisher root fingerprint changed; owner root-transition review required")
 	}
 	if *mode == "preflight" {
 		if err := updatetrust.ValidateBootstrapRoot(root, time.Now()); err != nil {
@@ -262,7 +262,7 @@ func loadDevBaselineRegistry() (devBaselineRegistry, error) {
 		return devBaselineRegistry{}, err
 	}
 	if registry.Schema != 1 || registry.RootSHA256 != devBootstrapRootSHA256 || len(registry.Releases) == 0 {
-		return devBaselineRegistry{}, fmt.Errorf("Dev baseline registry schema/root is invalid; owner transition review required")
+		return devBaselineRegistry{}, fmt.Errorf("dev baseline registry schema/root is invalid; owner transition review required")
 	}
 	return registry, nil
 }
@@ -291,7 +291,7 @@ func validateDevInventory(targets []updatetrust.PublishTarget, sourceSHA, versio
 	if !validBaseVersion || len(sourceSHA) != 40 || strings.Trim(sourceSHA, "0123456789abcdef") != "" ||
 		len(commitPrefix) < 7 || len(commitPrefix) > len(sourceSHA) || !strings.HasPrefix(sourceSHA, commitPrefix) ||
 		version == "" {
-		return fmt.Errorf("Dev publication source/version identity is invalid")
+		return fmt.Errorf("dev publication source/version identity is invalid")
 	}
 	baselineDigests := make(map[string]map[string]string, len(registry.Releases))
 	versions := make(map[string]int, len(registry.Releases)+1)
@@ -322,14 +322,14 @@ func validateDevInventory(targets []updatetrust.PublishTarget, sourceSHA, versio
 	}
 	versions[version] = 0
 	if len(targets) != len(expected)*len(versions) {
-		return fmt.Errorf("Dev publication requires all pinned baselines and current build matrix (%d targets)", len(expected)*len(versions))
+		return fmt.Errorf("dev publication requires all pinned baselines and current build matrix (%d targets)", len(expected)*len(versions))
 	}
 	seen := make(map[string]struct{}, len(targets))
 	for _, entry := range targets {
 		target := entry.Target
 		key := target.Platform + "/" + target.Arch
 		if target.Component != "agent" || target.Channel != "dev" || target.Format != "binary" {
-			return fmt.Errorf("Dev publisher accepts only agent/dev binary targets")
+			return fmt.Errorf("dev publisher accepts only agent/dev binary targets")
 		}
 		if _, ok := expected[key]; !ok {
 			return fmt.Errorf("unexpected Dev target platform/architecture %q", key)
@@ -356,7 +356,7 @@ func validateDevInventory(targets []updatetrust.PublishTarget, sourceSHA, versio
 	}
 	for releaseVersion, count := range versions {
 		if count != len(expected) {
-			return fmt.Errorf("Dev inventory version %q has %d targets, expected %d", releaseVersion, count, len(expected))
+			return fmt.Errorf("dev inventory version %q has %d targets, expected %d", releaseVersion, count, len(expected))
 		}
 	}
 	return nil
@@ -394,7 +394,7 @@ func runDevPublication(ctx context.Context, options updatepublisher.Options, jou
 		}
 	}
 	if state.Latest == nil && (state.Generation != 0 || state.Pending != nil) {
-		return updatepublisher.Result{}, fmt.Errorf("Dev publisher authority is not an empty bootstrap or completed publication")
+		return updatepublisher.Result{}, fmt.Errorf("dev publisher authority is not an empty bootstrap or completed publication")
 	}
 	options.Bootstrap = state.Generation == 0 && state.Latest == nil
 	options.Targets = targets
