@@ -160,10 +160,11 @@ curl -fsSL https://packages.printmaster.work/install.sh | sudo bash
 
 ## Documentation
 
-The canonical documentation is published at **[docs.printmaster.work](https://docs.printmaster.work/)**.
-Guides, API references, research notes, and documentation images are maintained
-in the separate [documentation repository](https://github.com/Printmaster-Org/docs.printmaster.work),
-not duplicated in this source repository.
+The user and operator documentation is published at **[docs.printmaster.work](https://docs.printmaster.work/)**.
+Guides, API references, and documentation images are maintained in the separate
+[documentation repository](https://github.com/Printmaster-Org/docs.printmaster.work),
+not duplicated in this source repository. Build, test, contribution, and
+implementation notes belong beside the code and tools they describe.
 
 | Guide | Description |
 | ------- | ------------- |
@@ -174,8 +175,8 @@ not duplicated in this source repository.
 | [Troubleshooting](https://docs.printmaster.work/guides/troubleshooting/) | Common issues and solutions |
 | [FAQ](https://docs.printmaster.work/guides/faq/) | Frequently asked questions |
 
-See [Developer docs](https://docs.printmaster.work/development/) and the
-[API reference](https://docs.printmaster.work/api/) for development and integrations.
+See the [API reference](https://docs.printmaster.work/api/) for integrations
+and [CONTRIBUTING.md](CONTRIBUTING.md) for developer setup.
 
 ## Configuration
 

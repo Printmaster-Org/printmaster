@@ -1,5 +1,5 @@
 name: Update Publisher
-run-name: "Update publisher: ${{ inputs.lane || 'production' }} / ${{ inputs.operation || 'refresh' }}"
+run-name: "Update publisher: ${{ github.event_name == 'workflow_run' && format('dev / {0}', github.event.workflow_run.head_sha) || format('{0} / {1}', inputs.lane || 'production', inputs.operation || 'refresh') }}"
 
 on:
   workflow_dispatch:
@@ -16,6 +16,10 @@ on:
         description: Explicit bootstrap is allowed only for empty authority
   schedule:
     - cron: '17 */12 * * *'
+  workflow_run:
+    workflows: [CD Agent]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: read
@@ -130,5 +134,211 @@ jobs:
           elif test -n "$number"; then
             for issue in $number; do
               gh issue close "$issue" --comment "Independent authority, public metadata, freshness and mirror verification passed: $RUN_URL"
+            done
+          fi
+
+  publish-dev:
+    name: Publish exact Dev Agent build
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_branch == 'main' &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch' || github.event.workflow_run.event == 'workflow_run') &&
+      vars.ENABLE_UPDATE_PUBLISHER_DEV == 'true'
+    environment: update-publisher-production
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
+    env:
+      SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+      CD_RUN_ID: ${{ github.event.workflow_run.id }}
+    steps:
+      - name: Checkout exact CD source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Skip stale main builds
+        id: freshness
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)
+          if test "$current" = "$SOURCE_SHA"; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping stale CD source $SOURCE_SHA; main is $current."
+          fi
+
+      - name: Set up Go
+        if: steps.freshness.outputs.publish == 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: common/go.mod
+          cache: false
+
+      - name: Require the approved production root
+        if: steps.freshness.outputs.publish == 'true'
+        working-directory: ./common
+        run: go run ./cmd/update-keys check-root -root ../agent/update_publisher_root.json
+
+      - name: Download exact artifacts from this CD run
+        if: steps.freshness.outputs.publish == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          pattern: agent-binary-*
+          path: ${{ runner.temp }}/dev-current
+          merge-multiple: true
+
+      - name: Download all pinned root-bearing baselines
+        if: steps.freshness.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git show "$SOURCE_SHA:agent/update_publisher_root.json" > "$RUNNER_TEMP/dev-baseline-root.json"
+          expected_root_sha=$(sha256sum "$RUNNER_TEMP/dev-baseline-root.json" | cut -d' ' -f1)
+          node scripts/dev-update-inventory.mjs --baseline-list "$GITHUB_WORKSPACE" > "$RUNNER_TEMP/dev-baselines.json"
+          mkdir -p "$RUNNER_TEMP/dev-baseline"
+          while IFS= read -r baseline; do
+            version=$(jq -r '.version' <<< "$baseline")
+            source_sha=$(jq -r '.source_sha' <<< "$baseline")
+            [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-dev\.[a-f0-9]{7,40}$ ]]
+            [[ "$source_sha" =~ ^[a-f0-9]{40}$ ]]
+            tag="agent-v${version}"
+            tag_commit=$(git rev-parse "refs/tags/$tag^{commit}")
+            test "$tag_commit" = "$source_sha"
+            baseline_root_sha=$(git show "$source_sha:agent/update_publisher_root.json" | sha256sum | cut -d' ' -f1)
+            test "$baseline_root_sha" = "$expected_root_sha"
+            destination="$RUNNER_TEMP/dev-baseline/$version"
+            mkdir "$destination"
+            gh release download "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --dir "$destination" \
+              --pattern "printmaster-agent-v${version}-*"
+          done < <(jq -c '.releases[]' "$RUNNER_TEMP/dev-baselines.json")
+
+      - name: Resolve release version for exact source SHA
+        if: steps.freshness.outputs.publish == 'true'
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          base_version=$(tr -d '\r\n' < agent/VERSION)
+          base_version=${base_version%%-*}
+          short_sha=$(git rev-parse --short "$SOURCE_SHA")
+          tag="agent-v${base_version}-dev.${short_sha}"
+          tag_commit=$(git rev-parse "refs/tags/$tag^{commit}")
+          test "$tag_commit" = "$SOURCE_SHA"
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json tagName,targetCommitish > "$RUNNER_TEMP/release.json"
+          version=$(node scripts/dev-update-inventory.mjs --resolve-version \
+            "$RUNNER_TEMP/release.json" "$SOURCE_SHA" "$base_version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build exact Dev release inventory
+        if: steps.freshness.outputs.publish == 'true'
+        id: inventory
+        env:
+          UPDATE_ROOT_JSON: ${{ secrets.UPDATE_ROOT_JSON }}
+        run: |
+          set -euo pipefail
+          node scripts/dev-update-inventory.mjs \
+            "$RUNNER_TEMP/dev-current" "$GITHUB_WORKSPACE" "$SOURCE_SHA" \
+            "$RUNNER_TEMP/dev-inventory.json" "$RUNNER_TEMP/dev-baseline" \
+            "$RUNNER_TEMP/dev-baseline-root.json" "${{ steps.version.outputs.version }}"
+
+      - name: Build publisher without credentials
+        if: steps.freshness.outputs.publish == 'true'
+        working-directory: ./common
+        run: go build -o "$RUNNER_TEMP/update-publisher" ./cmd/update-publisher
+
+      - name: Publish exact Dev inventory
+        id: publish
+        if: steps.freshness.outputs.publish == 'true'
+        working-directory: ./common
+        env:
+          B2_METADATA_BUCKET: ${{ vars.B2_METADATA_BUCKET }}
+          B2_RECOVERY_BUCKET: ${{ vars.B2_RECOVERY_BUCKET }}
+          B2_S3_ENDPOINT: ${{ vars.B2_S3_ENDPOINT }}
+          UPDATE_PUBLIC_URL: ${{ vars.UPDATE_PUBLIC_URL }}
+          UPDATE_STATE_REPOSITORY: ${{ vars.UPDATE_STATE_REPOSITORY }}
+          UPDATE_STATE_TOKEN: ${{ secrets.UPDATE_STATE_TOKEN }}
+          UPDATE_ROOT_JSON: ${{ secrets.UPDATE_ROOT_JSON }}
+          UPDATE_TARGETS_PEM: ${{ secrets.UPDATE_TARGETS_PEM }}
+          UPDATE_SNAPSHOT_PEM: ${{ secrets.UPDATE_SNAPSHOT_PEM }}
+          UPDATE_TIMESTAMP_PEM: ${{ secrets.UPDATE_TIMESTAMP_PEM }}
+          B2_METADATA_DELIVERY_KEY_ID: ${{ secrets.B2_METADATA_DELIVERY_KEY_ID }}
+          B2_METADATA_DELIVERY_APPLICATION_KEY: ${{ secrets.B2_METADATA_DELIVERY_APPLICATION_KEY }}
+          B2_RECOVERY_DELIVERY_KEY_ID: ${{ secrets.B2_RECOVERY_DELIVERY_KEY_ID }}
+          B2_RECOVERY_DELIVERY_APPLICATION_KEY: ${{ secrets.B2_RECOVERY_DELIVERY_APPLICATION_KEY }}
+          B2_RECOVERY_RESTORE_KEY_ID: ${{ secrets.B2_RECOVERY_RESTORE_KEY_ID }}
+          B2_RECOVERY_RESTORE_APPLICATION_KEY: ${{ secrets.B2_RECOVERY_RESTORE_APPLICATION_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir "$RUNNER_TEMP/publisher-work" "$RUNNER_TEMP/publisher-mirror"
+          "$RUNNER_TEMP/update-publisher" \
+            -mode publish -dev-only -dev-source-sha "$SOURCE_SHA" \
+            -dev-version "${{ steps.version.outputs.version }}" \
+            -inventory "$RUNNER_TEMP/dev-inventory.json" \
+            -work "$RUNNER_TEMP/publisher-work" \
+            -mirror "$RUNNER_TEMP/publisher-mirror" \
+            -state-repository "$UPDATE_STATE_REPOSITORY" \
+            -public-url "$UPDATE_PUBLIC_URL" -externally-serialized
+          echo "published=true" >> "$GITHUB_OUTPUT"
+
+      - name: Retain public mirror qualification evidence
+        if: steps.freshness.outputs.publish == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dev-publisher-mirror-${{ env.SOURCE_SHA }}
+          path: ${{ runner.temp }}/publisher-mirror/*.json
+          if-no-files-found: error
+          retention-days: 7
+          include-hidden-files: false
+
+  notify-dev:
+    needs: publish-dev
+    if: always() && (needs.publish-dev.result == 'failure' || (needs.publish-dev.result == 'success' && needs.publish-dev.outputs.published == 'true'))
+    runs-on: ubuntu-26.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Report Dev publisher failure or verified recovery
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RESULT: ${{ needs.publish-dev.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Update publisher dev needs attention"
+          number=$(gh api --paginate "repos/$GH_REPO/issues?state=open&per_page=100" \
+            --jq ".[] | select(.pull_request == null and .title == \"$title\") | .number")
+          if test "$RESULT" = failure; then
+            body="Dev publisher failed or could not verify the exact build. Preserve pending state and recover exact bytes before signing again. Run: $RUN_URL"
+            if test -z "$number"; then
+              gh issue create --title "$title" --body "$body" --assignee mstrhakr
+            else
+              for issue in $number; do gh issue comment "$issue" --body "$body"; done
+            fi
+          elif test -n "$number"; then
+            for issue in $number; do
+              gh issue close "$issue" --comment "Dev TUF publication, public metadata and authenticated Server mirror verification passed: $RUN_URL"
             done
           fi

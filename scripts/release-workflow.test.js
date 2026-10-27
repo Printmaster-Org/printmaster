@@ -76,6 +76,7 @@ test('publisher workflow is serialized, opt-in, scoped and preserves failure evi
     expect(publish.environment).toBe("update-publisher-${{ inputs.lane || 'production' }}");
     expect(publish['timeout-minutes']).toBe(20);
     expect(publish.steps[0].with['persist-credentials']).toBe(false);
+    expect(publisher.on.workflow_run).toEqual({ workflows: ['CD Agent'], types: ['completed'], branches: ['main'] });
     const build = publish.steps.find(step => step.name === 'Build and test without credentials');
     expect(build.env).toBeUndefined();
     const operation = publish.steps.find(step => step.env);
@@ -92,6 +93,38 @@ test('publisher workflow is serialized, opt-in, scoped and preserves failure evi
     expect(publisher.jobs.notify.permissions).toEqual({ contents: 'read', issues: 'write' });
     expect(publisher.jobs.notify.steps[0].run).toContain('gh issue create');
     expect(publisher.jobs.notify.steps[0].run).toContain('gh issue close');
+
+    const dev = publisher.jobs['publish-dev'];
+    expect(dev.if).toContain("vars.ENABLE_UPDATE_PUBLISHER_DEV == 'true'");
+    expect(dev.if).toContain("github.event.workflow_run.conclusion == 'success'");
+    expect(dev.if).toContain("github.event.workflow_run.event == 'push'");
+    expect(dev.if).toContain("github.event.workflow_run.event == 'workflow_dispatch'");
+    expect(dev.if).toContain("github.event.workflow_run.event == 'workflow_run'");
+    expect(dev.environment).toBe('update-publisher-production');
+    expect(dev.concurrency).toBeUndefined();
+    expect(publisher.concurrency['cancel-in-progress']).toBe(false);
+    expect(dev.env.SOURCE_SHA).toBe('${{ github.event.workflow_run.head_sha }}');
+    const checkout = dev.steps.find(step => step.name === 'Checkout exact CD source');
+    expect(checkout.with.ref).toBe('${{ github.event.workflow_run.head_sha }}');
+    expect(checkout.with['fetch-depth']).toBe(0);
+    const devArtifacts = dev.steps.find(step => step.name === 'Download exact artifacts from this CD run');
+    expect(devArtifacts.with['run-id']).toBe('${{ github.event.workflow_run.id }}');
+    expect(devArtifacts.with.pattern).toBe('agent-binary-*');
+    const baselines = dev.steps.find(step => step.name === 'Download all pinned root-bearing baselines');
+    expect(baselines.run).toContain('--baseline-list');
+    expect(baselines.run).toContain('refs/tags/$tag^{commit}');
+    expect(baselines.run).toContain('test "$tag_commit" = "$source_sha"');
+    expect(baselines.run).toContain('test "$baseline_root_sha" = "$expected_root_sha"');
+    expect(baselines.run).toContain('"$RUNNER_TEMP/dev-baseline/$version"');
+    expect(baselines.run).not.toContain('5910da1');
+    const inventory = dev.steps.find(step => step.name === 'Build exact Dev release inventory');
+    expect(inventory.run).toContain('scripts/dev-update-inventory.mjs');
+    const devPublish = dev.steps.find(step => step.name === 'Publish exact Dev inventory');
+    expect(devPublish.run).toContain('-mode publish -dev-only');
+    expect(devPublish.run).not.toContain('-bootstrap');
+    expect(devPublish.env.UPDATE_TARGETS_PEM).toBe('${{ secrets.UPDATE_TARGETS_PEM }}');
+    expect(publisher.jobs['notify-dev'].needs).toBe('publish-dev');
+    expect(JSON.stringify(dev)).not.toMatch(/UPDATE_ROOT_JSON.*run:|continue-on-error|cancel-in-progress":true/);
     expect(JSON.stringify(publisher)).not.toMatch(/root\.pem|continue-on-error|cancel-in-progress":true/);
 });
 

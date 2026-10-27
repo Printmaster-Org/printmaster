@@ -3,11 +3,14 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 
 	"printmaster/common/config"
 )
+
+const defaultPublisherMetadataURL = "https://s3.us-west-004.backblazeb2.com/printmaster-update-metadata"
 
 // ConfigSourceTracker records which keys were set by environment variables.
 // Used to enforce lock semantics: env-set keys cannot be overridden by managed settings.
@@ -64,6 +67,8 @@ type ServerConfig struct {
 // ReleasesConfig tunes the GitHub release intake worker.
 type ReleasesConfig struct {
 	PublisherMetadataDir string `toml:"publisher_metadata_dir"` // Read-only publisher metadata mirror; never private keys.
+	PublisherMetadataURL string `toml:"publisher_metadata_url"` // Public HTTPS metadata base; proxied without B2 credentials.
+	publicMetadataClient *http.Client
 	MaxReleases          int    `toml:"max_releases"`
 	PollIntervalMinutes  int    `toml:"poll_interval_minutes"`
 	RetentionVersions    int    `toml:"retention_versions"` // 0 = disabled (keep all), N = keep N versions per component
@@ -183,10 +188,11 @@ func DefaultConfig() *Config {
 			DailySummaryTimezone: "Local",
 		},
 		Releases: ReleasesConfig{
-			MaxReleases:         6,
-			PollIntervalMinutes: 240,
-			RetentionVersions:   6,  // Keep 6 versions per component; 0 = keep all (no pruning)
-			IncludePrerelease:   "", // Auto-detect: Beta and Dev include prereleases, Stable doesn't
+			PublisherMetadataURL: defaultPublisherMetadataURL,
+			MaxReleases:          6,
+			PollIntervalMinutes:  240,
+			RetentionVersions:    6,  // Keep 6 versions per component; 0 = keep all (no pruning)
+			IncludePrerelease:    "", // Auto-detect: Beta and Dev include prereleases, Stable doesn't
 		},
 		SelfUpdate: SelfUpdateConfig{
 			Channel:              "stable",
@@ -268,6 +274,10 @@ func applyEnvOverrides(cfg *Config, tracker *ConfigSourceTracker) {
 	if val := os.Getenv("RELEASES_PUBLISHER_METADATA_DIR"); val != "" {
 		cfg.Releases.PublisherMetadataDir = val
 		tracker.EnvKeys["releases.publisher_metadata_dir"] = true
+	}
+	if val := os.Getenv("RELEASES_PUBLISHER_METADATA_URL"); val != "" {
+		cfg.Releases.PublisherMetadataURL = val
+		tracker.EnvKeys["releases.publisher_metadata_url"] = true
 	}
 	if val := os.Getenv("RELEASES_MAX_RELEASES"); val != "" {
 		var v int

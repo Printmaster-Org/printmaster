@@ -168,7 +168,9 @@ class Runner {
                     this.command(process.execPath, ['--check', path.join(directory, file)]);
                 }
             }
-            this.command(process.execPath, [require.resolve('jest/bin/jest'), '--runInBand']);
+            this.command(process.execPath, ['--test', path.join(root, 'scripts', 'dev-update-inventory.test.mjs')]);
+            this.command(process.execPath, [require.resolve('jest/bin/jest'), '--runInBand',
+                '--testPathIgnorePatterns', '<rootDir>/common/web/__tests__/playwright/|<rootDir>/scripts/dev-update-inventory.test.mjs']);
         } else if (suite === 'playwright') {
             for (const component of ['agent', 'server']) {
                 const binary = `printmaster-${component}${process.platform === 'win32' ? '.exe' : ''}`;

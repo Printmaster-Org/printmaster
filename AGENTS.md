@@ -7,21 +7,19 @@ Full guidance for AI agents is in [.github/copilot-instructions.md](.github/copi
 - Follow SOLID and DRY pragmatically: keep responsibilities clear, reuse existing helpers, and introduce interfaces at real boundaries rather than adding speculative abstractions.
 - Follow the existing structured logging conventions, levels, and field names. Record actionable failures and recovery outcomes with operation context; never log credentials or silently swallow errors.
 - Write concise comments explaining non-obvious invariants, tradeoffs, platform behavior, and recovery logic so contributors can safely extend the code. Do not narrate self-explanatory code.
-- Implement and commit coherent, tested slices with their related documentation. Preserve supported upgrade paths and mixed-version behavior; test failures and recovery, not just happy paths.
+- Implement and commit coherent, tested slices. Include related documentation in the same slice when the required impact check finds a reader-facing update is needed. Preserve supported upgrade paths and mixed-version behavior; test failures and recovery, not just happy paths.
 - Flag discovered out-of-scope bugs and architectural risks in the completion summary and relevant existing issue/design documentation. Distinguish implemented fixes, deferred work, and unresolved decisions; do not hide them or expand scope silently.
 
-## Keep the docs site in sync (required)
+## Documentation impact (required check)
 
-The canonical documentation lives in the **Printmaster-Org/docs.printmaster.work** repo. It is normally checked out next to this repo at `../docs.printmaster.work`.
+The canonical public documentation lives in **Printmaster-Org/docs.printmaster.work**, normally checked out next to this repo at `../docs.printmaster.work`. Assess documentation impact for every change; **not every code change requires a documentation edit**.
 
-- Any change to behavior, configuration, APIs, vendor/SNMP mappings, security, or UI must also update the relevant pages there:
-  - guides and developer pages: `content/`
-  - API contracts: `static/openapi/`
-- Review documentation impact for every feature, fix, removal, and deprecation as part of the same task. Keep source-local READMEs and examples accurate too. If no documentation change is needed, explicitly explain why in the PR or completion summary.
-- Maintain documentation structure as work progresses: add new canonical pages where useful, reorganize or consolidate existing material, and remove obsolete legacy plans/docs when appropriate rather than only appending to them. Keep current plans aligned with agreed scope and implemented reality; clearly distinguish pending, completed, deferred, and historical work. Preserve still-relevant decisions and recovery guidance, and update affected links, navigation, redirects and documentation tests when moving or removing pages.
-- The legacy documentation trees have been removed from this repo. Do not recreate them or duplicate guides here; retain only concise source-local READMEs, contribution/security entry points, agent instructions, and licenses. On imported docs-site pages, leave the `source`/`sourceCommit` front matter as it is (it records import provenance, and the docs tests check it), but point any source-code links at the current commit.
-- Commit the program change and the docs change as a linked pair, and mention both in your summary. Put the implementation commit SHA in the docs commit only; do not add a docs SHA to the program commit.
-- If the docs checkout is unavailable, say so and list the exact pages that need updating. Do not report the work as complete.
+- Update the canonical docs when a change alters user- or operator-visible behavior, a task's steps or outcome, supported platforms, configuration/defaults, permissions or security expectations, API/protocol contracts, deployment/upgrade/recovery guidance, or another fact readers rely on. Keep the edit focused on what readers need to know or do.
+- An internal refactor, test-only change, or build/CI maintenance change normally needs no site edit when it does not change reader-facing behavior or instructions. Keep code-owned examples, test fixtures, contributor/security entry points, and concise source-local READMEs accurate when those artifacts themselves change.
+- The docs site is for user/operator guidance and deliberately maintained technical references. Do not add implementation diaries, commit-by-commit audit notes, engineering backlogs, or internal progress reports there. Do not duplicate full guides in this repo or recreate the removed legacy documentation trees.
+- For API changes, update the appropriate public contract only when the documented contract or its guarantees change. Verify affected behavior against implementation. Preserve imported `source`/`sourceCommit` provenance; update source-code links when they are part of the change.
+- State the documentation disposition in the completion summary: pages/contracts updated, or a concise reason no public-doc change was needed. If a required docs checkout is unavailable, identify the exact pages that need updates and report the blocker.
+- When an implementation change does require a paired docs change, link the commits one-way: the docs commit references the implementation SHA; the program commit does not reference the docs SHA. Mention both in the summary.
 
 ## Commit messages (required)
 

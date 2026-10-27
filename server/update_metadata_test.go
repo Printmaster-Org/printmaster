@@ -78,18 +78,23 @@ func TestAuthenticatedMirrorServesPublisherTargetToRealVerifier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mirror := t.TempDir()
-	if err := updatetrust.MirrorPublication(context.Background(), mirror, root, identity, directoryPinnedSource{sealed}); err != nil {
+	publicMirror := t.TempDir()
+	if err := updatetrust.MirrorPublication(context.Background(), publicMirror, root, identity, directoryPinnedSource{sealed}); err != nil {
 		t.Fatal(err)
 	}
-	serverConfig = &Config{Releases: ReleasesConfig{PublisherMetadataDir: mirror}}
+	publicServer := httptest.NewTLSServer(http.FileServer(http.Dir(publicMirror)))
+	defer publicServer.Close()
+	serverConfig = &Config{Releases: ReleasesConfig{
+		PublisherMetadataURL: publicServer.URL,
+		publicMetadataClient: publicServer.Client(),
+	}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Header.Set("Authorization", "Bearer boundary-machine-a")
 		requireAuth(handleAgentUpdateMetadata)(w, r)
 	}))
 	defer server.Close()
 	client, err := updatetrust.NewClient(updatetrust.Options{TrustedRoot: root,
-		MetadataURL: server.URL + updatetrust.MetadataRoute, CacheDir: filepath.Join(t.TempDir(), "metadata")})
+		MetadataURL: server.URL + updatetrust.MetadataRoute, CacheDir: filepath.Join(t.TempDir(), "metadata"), HTTPClient: server.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}

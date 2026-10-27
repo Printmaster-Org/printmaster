@@ -85,7 +85,7 @@ root fixtures; it never enables live installers. Missing prerequisites fail
 visibly, and omitted/test-level skipped checks are not qualification evidence.
 The runner stops at the first failed command by default. Use `--keep-going`
 to collect independent failures; Docker log capture and cleanup still run on failure.
-See the [canonical testing guide](https://docs.printmaster.work/development/testing/).
+See the repository's [test runner and E2E notes](tests/README.md).
 
 ### Quick Development Workflow
 
@@ -110,15 +110,15 @@ printmaster/
 └── common/         # Shared packages (logger, config, etc.)
 ```
 
-Key documentation:
-- [Build workflow](https://docs.printmaster.work/development/build-workflow/) - Build, test, and release procedures
-- [Project structure](https://docs.printmaster.work/development/project-structure/) - Detailed architecture overview
-- [Developer docs](https://docs.printmaster.work/development/) - Plans, research, and implementation references
+Key maintainer references:
+- [Test runner and E2E fixtures](tests/README.md)
+- [Test data conventions](tests/testdata/README.md)
+- [Repository instructions](AGENTS.md)
 
-Maintain guides and API contracts in the separate
+Maintain user/operator guides and API references in the separate
 [documentation repository](https://github.com/Printmaster-Org/docs.printmaster.work).
-This repository retains entry-point READMEs, contribution/security policies,
-agent instructions, and licenses; do not recreate the legacy documentation trees.
+Keep implementation notes and developer procedures beside the code and tools
+they describe; do not use the public docs site as an engineering log or backlog.
 
 ## Making Changes
 
@@ -239,7 +239,8 @@ snmpwalk -v2c -c public <printer-ip> 1.3.6.1
 
 ### Resources
 
-- [SNMP reference](https://docs.printmaster.work/development/snmp-reference/) - OID documentation
+- [Public Printer SNMP reference](https://docs.printmaster.work/api/snmp-reference/) - Standard MIB and administrator guidance
+- [Vendor scanner modules](agent/scanner/vendor/README.md) - Source and test conventions
 - [agent/scanner/vendor/](agent/scanner/vendor/) - Existing vendor profiles
 - Open a [Printer Support Request](https://github.com/printmaster-org/printmaster/issues/new?template=printer_support.yml) if you need help
 

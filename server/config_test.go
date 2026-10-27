@@ -13,14 +13,20 @@ func TestPublisherMetadataConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("RELEASES_PUBLISHER_METADATA_DIR", "")
+	t.Setenv("RELEASES_PUBLISHER_METADATA_URL", "")
 	cfg, _, err := LoadConfig(path)
-	if err != nil || cfg.Releases.PublisherMetadataDir != "public-metadata" {
+	if err != nil || cfg.Releases.PublisherMetadataDir != "public-metadata" ||
+		cfg.Releases.PublisherMetadataURL != defaultPublisherMetadataURL {
 		t.Fatalf("TOML metadata mirror not loaded: %v %v", cfg, err)
 	}
 	t.Setenv("RELEASES_PUBLISHER_METADATA_DIR", "mounted-metadata")
+	t.Setenv("RELEASES_PUBLISHER_METADATA_URL", "https://metadata.example.test/root")
 	cfg, tracker, err := LoadConfig(path)
 	if err != nil || cfg.Releases.PublisherMetadataDir != "mounted-metadata" || !tracker.EnvKeys["releases.publisher_metadata_dir"] {
 		t.Fatalf("environment override not tracked: %v %v", cfg, err)
+	}
+	if cfg.Releases.PublisherMetadataURL != "https://metadata.example.test/root" || !tracker.EnvKeys["releases.publisher_metadata_url"] {
+		t.Fatalf("metadata URL environment override not tracked: %v %v", cfg.Releases, tracker.EnvKeys)
 	}
 }
 

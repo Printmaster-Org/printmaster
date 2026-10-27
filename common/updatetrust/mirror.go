@@ -23,15 +23,55 @@ type PublicReader struct {
 }
 
 func NewPublicReader(base string) (*PublicReader, error) {
+	return NewPublicReaderWithClient(base, nil)
+}
+
+// NewPublicReaderWithClient is also used by tests that provide a local trusted
+// TLS root. Redirects remain disabled regardless of the supplied client.
+func NewPublicReaderWithClient(base string, client *http.Client) (*PublicReader, error) {
 	u, err := url.Parse(base)
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil ||
 		u.RawQuery != "" || u.Fragment != "" || u.ForceQuery || strings.Contains(u.Path, "..") {
 		return nil, fmt.Errorf("public metadata base must be explicit HTTPS without credentials/query/fragment/traversal")
 	}
-	return &PublicReader{base: strings.TrimRight(base, "/"), client: &http.Client{
-		Timeout:       20 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}}, nil
+	if client == nil {
+		client = &http.Client{Timeout: 20 * time.Second}
+	} else {
+		copy := *client
+		client = &copy
+		if client.Timeout == 0 {
+			client.Timeout = 20 * time.Second
+		}
+	}
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &PublicReader{base: strings.TrimRight(base, "/"), client: client}, nil
+}
+
+// GetMetadata retrieves one validated public TUF metadata file. The caller is
+// responsible for authenticating its contents against a pinned root.
+func (r *PublicReader) GetMetadata(ctx context.Context, name string) ([]byte, int, error) {
+	if r == nil || !ValidMetadataName(name) {
+		return nil, 0, fmt.Errorf("invalid public metadata name")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.base+"/"+name, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Cache-Control", "no-cache")
+	response, err := r.client.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("public metadata request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		return nil, response.StatusCode, nil
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, MaxMetadataBytes+1))
+	if err != nil || len(data) == 0 || int64(len(data)) > MaxMetadataBytes {
+		return nil, response.StatusCode, fmt.Errorf("public metadata length/read failure for %s", name)
+	}
+	return data, response.StatusCode, nil
 }
 
 func (r *PublicReader) GetPinned(ctx context.Context, name, pin string) ([]byte, error) {

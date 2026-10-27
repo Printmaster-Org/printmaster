@@ -31,12 +31,44 @@ func handleAgentUpdateMetadata(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid publisher metadata name", http.StatusBadRequest)
 		return
 	}
-	if serverConfig == nil || strings.TrimSpace(serverConfig.Releases.PublisherMetadataDir) == "" {
+	if serverConfig == nil {
 		http.Error(w, "publisher metadata mirror not configured", http.StatusServiceUnavailable)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
+	if strings.TrimSpace(serverConfig.Releases.PublisherMetadataDir) == "" {
+		publicURL := strings.TrimSpace(serverConfig.Releases.PublisherMetadataURL)
+		if publicURL == "" {
+			http.Error(w, "publisher metadata mirror not configured", http.StatusServiceUnavailable)
+			return
+		}
+		reader, err := updatetrust.NewPublicReaderWithClient(publicURL, serverConfig.Releases.publicMetadataClient)
+		if err != nil {
+			logPublisherMetadataFailure(name, agent.AgentID, err)
+			http.Error(w, "publisher metadata origin unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		data, status, err := reader.GetMetadata(ctx, name)
+		if err != nil {
+			logPublisherMetadataFailure(name, agent.AgentID, err)
+			http.Error(w, "publisher metadata origin unavailable", http.StatusBadGateway)
+			return
+		}
+		if status == http.StatusNotFound {
+			http.NotFound(w, r)
+			return
+		}
+		if status != http.StatusOK {
+			if serverLogger != nil {
+				serverLogger.Warn("Publisher metadata origin rejected request", "name", name, "agent_id", agent.AgentID, "status", status)
+			}
+			http.Error(w, "publisher metadata origin unavailable", http.StatusBadGateway)
+			return
+		}
+		writePublisherMetadata(w, r, data, name, agent.AgentID)
+		return
+	}
 	root, err := os.OpenRoot(serverConfig.Releases.PublisherMetadataDir)
 	if err != nil {
 		logPublisherMetadataFailure(name, agent.AgentID, err)
@@ -76,11 +108,15 @@ func handleAgentUpdateMetadata(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "publisher metadata read failed", http.StatusInternalServerError)
 		return
 	}
+	writePublisherMetadata(w, r, data, name, agent.AgentID)
+}
+
+func writePublisherMetadata(w http.ResponseWriter, r *http.Request, data []byte, name, agentID string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if _, err := w.Write(data); err != nil {
-		logPublisherMetadataFailure(name, agent.AgentID, err)
+		logPublisherMetadataFailure(name, agentID, err)
 	}
 }
 
