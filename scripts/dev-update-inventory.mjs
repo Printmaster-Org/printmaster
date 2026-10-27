@@ -22,6 +22,12 @@ function canonical(value) {
     return value;
 }
 
+function baseAgentVersion(value) {
+    const baseVersion = value.trim().split('-', 1)[0];
+    if (!/^\d+\.\d+\.\d+$/.test(baseVersion)) throw new Error('Agent VERSION must begin with a stable numeric version');
+    return baseVersion;
+}
+
 export function resolveDevReleaseVersion(releases, sourceSha, baseVersion) {
     if (!Array.isArray(releases) || !/^[a-f0-9]{40}$/.test(sourceSha || '') || !/^\d+\.\d+\.\d+$/.test(baseVersion || '')) {
         throw new Error('valid release list, source SHA, and base version are required');
@@ -94,8 +100,7 @@ async function buildVersionTargets({ artifactDir, version, expectedDigests = nul
 export async function buildDevInventory({ artifactDir, sourceRoot, sourceSha, publisherRoot, version: requestedVersion = '', baselineDir = null, baselineRootPath = null, baselineRegistry = null }) {
     if (!/^[a-f0-9]{40}$/.test(sourceSha || '')) throw new Error('full source commit SHA is required');
 
-    const baseVersion = (await readFile(path.join(sourceRoot, 'agent', 'VERSION'), 'utf8')).trim();
-    if (!/^\d+\.\d+\.\d+$/.test(baseVersion)) throw new Error('Agent VERSION must be a stable numeric version');
+    const baseVersion = baseAgentVersion(await readFile(path.join(sourceRoot, 'agent', 'VERSION'), 'utf8'));
     const registry = await loadDevBaselines(sourceRoot, baseVersion, baselineRegistry);
     const defaultVersion = `${baseVersion}-dev.${sourceSha.slice(0, 7)}`;
     const version = requestedVersion || defaultVersion;
@@ -145,7 +150,7 @@ async function main() {
     if (process.argv[2] === '--baseline-list') {
         const sourceRoot = process.argv[3];
         if (!sourceRoot || process.argv.length !== 4) throw new Error('usage: dev-update-inventory.mjs --baseline-list SOURCE_ROOT');
-        const baseVersion = (await readFile(path.join(sourceRoot, 'agent', 'VERSION'), 'utf8')).trim();
+        const baseVersion = baseAgentVersion(await readFile(path.join(sourceRoot, 'agent', 'VERSION'), 'utf8'));
         process.stdout.write(`${JSON.stringify((await loadDevBaselines(sourceRoot, baseVersion)).releases)}\n`);
         return;
     }

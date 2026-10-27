@@ -25,7 +25,7 @@ async function fixture() {
     await mkdir(path.join(sourceRoot, 'agent'), { recursive: true });
     await mkdir(path.join(sourceRoot, 'common', 'cmd', 'update-publisher'), { recursive: true });
     await mkdir(artifactDir);
-    await writeFile(path.join(sourceRoot, 'agent', 'VERSION'), '0.32.0\n');
+    await writeFile(path.join(sourceRoot, 'agent', 'VERSION'), '0.32.0-beta.3\n');
     const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
     const rootBytes = await readFile(path.join(repositoryRoot, 'agent', 'update_publisher_root.json'));
     await writeFile(path.join(sourceRoot, 'agent', 'update_publisher_root.json'), rootBytes);
