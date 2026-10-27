@@ -228,7 +228,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --dir "$destination" \
               --pattern "printmaster-agent-v${version}-*"
-          done < <(jq -c '.releases[]' "$RUNNER_TEMP/dev-baselines.json")
+          done < <(jq -c '.[]' "$RUNNER_TEMP/dev-baselines.json")
 
       - name: Resolve release version for exact source SHA
         if: steps.freshness.outputs.publish == 'true'

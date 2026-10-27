@@ -116,6 +116,7 @@ test('release version resolver matches the unique tag to the exact source SHA', 
     ];
     const tagVersion = `0.32.0-dev.${sourceSha.slice(0, 7)}`;
     assert.equal(resolveDevReleaseVersion(releases, sourceSha, '0.32.0'), tagVersion);
+    assert.equal(resolveDevReleaseVersion(releases[0], sourceSha, '0.32.0'), tagVersion);
     assert.throws(() => resolveDevReleaseVersion(releases, '0'.repeat(40), '0.32.0'), /found 0/);
     assert.throws(() => resolveDevReleaseVersion([
         ...releases,

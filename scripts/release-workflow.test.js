@@ -112,6 +112,7 @@ test('publisher workflow is serialized, opt-in, scoped and preserves failure evi
     expect(devArtifacts.with.pattern).toBe('agent-binary-*');
     const baselines = dev.steps.find(step => step.name === 'Download all pinned root-bearing baselines');
     expect(baselines.run).toContain('--baseline-list');
+    expect(baselines.run).toContain("jq -c '.[]'");
     expect(baselines.run).toContain('refs/tags/$tag^{commit}');
     expect(baselines.run).toContain('test "$tag_commit" = "$source_sha"');
     expect(baselines.run).toContain('test "$baseline_root_sha" = "$expected_root_sha"');

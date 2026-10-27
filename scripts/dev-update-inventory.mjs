@@ -29,11 +29,12 @@ function baseAgentVersion(value) {
 }
 
 export function resolveDevReleaseVersion(releases, sourceSha, baseVersion) {
-    if (!Array.isArray(releases) || !/^[a-f0-9]{40}$/.test(sourceSha || '') || !/^\d+\.\d+\.\d+$/.test(baseVersion || '')) {
+    const releaseList = Array.isArray(releases) ? releases : releases && typeof releases === 'object' ? [releases] : null;
+    if (!releaseList || !/^[a-f0-9]{40}$/.test(sourceSha || '') || !/^\d+\.\d+\.\d+$/.test(baseVersion || '')) {
         throw new Error('valid release list, source SHA, and base version are required');
     }
     const tagPattern = new RegExp(`^agent-v${baseVersion.replaceAll('.', '\\.')}\\-dev\\.([a-f0-9]{7,40})$`);
-    const matches = releases.filter(release => {
+    const matches = releaseList.filter(release => {
         if (String(release.targetCommitish || '').toLowerCase() !== sourceSha) return false;
         const match = tagPattern.exec(release.tagName || '');
         return match && sourceSha.startsWith(match[1]);
