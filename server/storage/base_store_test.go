@@ -230,6 +230,136 @@ func TestAgentDeploymentReplacementAndReactivation(t *testing.T) {
 	}
 }
 
+func createPendingDeploymentFixture(t *testing.T, store interface {
+	CreateTenant(context.Context, *Tenant) error
+	CreateJoinToken(context.Context, string, int, bool) (*JoinToken, string, error)
+	CreateAgentDeployment(context.Context, *AgentDeployment) error
+}) (*JoinToken, *AgentDeployment) {
+	t.Helper()
+	ctx := context.Background()
+	if err := store.CreateTenant(ctx, &Tenant{ID: "tenant-pending", Name: "Pending Tenant"}); err != nil {
+		t.Fatal(err)
+	}
+	joinToken, _, err := store.CreateJoinToken(ctx, "tenant-pending", 60, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment := &AgentDeployment{
+		JoinTokenID: joinToken.ID, TenantID: joinToken.TenantID, Name: "Pending Linux Agent",
+		Platform: "linux", ReplaceAgentID: "replace-me", Status: "pending",
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}
+	if err := store.CreateAgentDeployment(ctx, deployment); err != nil {
+		t.Fatal(err)
+	}
+	return joinToken, deployment
+}
+
+func TestPendingAgentDeploymentLifecycle(t *testing.T) {
+	t.Run("remove expired deployment revokes invite", func(t *testing.T) {
+		store, err := NewSQLiteStore(":memory:")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		joinToken, deployment := createPendingDeploymentFixture(t, store)
+		if _, err := store.DB().Exec(`UPDATE agent_deployments SET expires_at = ? WHERE id = ?`, time.Now().UTC().Add(-time.Minute), deployment.ID); err != nil {
+			t.Fatal(err)
+		}
+		got, err := store.GetAgentDeployment(context.Background(), deployment.ID)
+		if err != nil || got.Status != "expired" {
+			t.Fatalf("deployment status = %+v, err=%v; want expired", got, err)
+		}
+		if err := store.DeletePendingAgentDeployment(context.Background(), deployment.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.GetAgentDeployment(context.Background(), deployment.ID); err != ErrAgentDeploymentNotFound {
+			t.Fatalf("removed deployment lookup err = %v, want not found", err)
+		}
+		tokens, err := store.ListJoinTokens(context.Background(), joinToken.TenantID)
+		if err != nil || len(tokens) != 1 || !tokens[0].Revoked {
+			t.Fatalf("removed deployment invite = %+v, err=%v; want revoked", tokens, err)
+		}
+	})
+
+	t.Run("revoke retains cancelled record", func(t *testing.T) {
+		store, err := NewSQLiteStore(":memory:")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		joinToken, deployment := createPendingDeploymentFixture(t, store)
+		if err := store.RevokeAgentDeployment(context.Background(), deployment.ID); err != nil {
+			t.Fatal(err)
+		}
+		got, err := store.GetAgentDeployment(context.Background(), deployment.ID)
+		if err != nil || got.Status != "revoked" {
+			t.Fatalf("revoked deployment = %+v, err=%v; want revoked", got, err)
+		}
+		tokens, err := store.ListJoinTokens(context.Background(), joinToken.TenantID)
+		if err != nil || len(tokens) != 1 || !tokens[0].Revoked {
+			t.Fatalf("revoked deployment invite = %+v, err=%v; want revoked", tokens, err)
+		}
+	})
+
+	t.Run("regenerate rotates token and preserves deployment details", func(t *testing.T) {
+		store, err := NewSQLiteStore(":memory:")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		oldToken, deployment := createPendingDeploymentFixture(t, store)
+		if _, err := store.DB().Exec(`UPDATE agent_deployments SET expires_at = ? WHERE id = ?`, time.Now().UTC().Add(-time.Minute), deployment.ID); err != nil {
+			t.Fatal(err)
+		}
+		replacement, rawToken, err := store.RegenerateAgentDeployment(context.Background(), deployment.ID, 45)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if replacement.ID == deployment.ID || replacement.JoinTokenID == oldToken.ID || replacement.TenantID != deployment.TenantID ||
+			replacement.Name != deployment.Name || replacement.Platform != deployment.Platform || replacement.ReplaceAgentID != deployment.ReplaceAgentID ||
+			replacement.Status != "pending" || !replacement.ExpiresAt.After(time.Now()) || rawToken == "" {
+			t.Fatalf("replacement deployment = %+v; old = %+v", replacement, deployment)
+		}
+		old, err := store.GetAgentDeployment(context.Background(), deployment.ID)
+		if err != nil || old.Status != "cancelled" {
+			t.Fatalf("old deployment = %+v, err=%v; want cancelled", old, err)
+		}
+		gotToken, err := store.ValidateJoinToken(context.Background(), rawToken)
+		if err != nil || gotToken.ID != replacement.JoinTokenID || !gotToken.OneTime {
+			t.Fatalf("replacement token = %+v, err=%v", gotToken, err)
+		}
+		if _, err := store.ValidateJoinToken(context.Background(), rawToken); err == nil {
+			t.Fatal("replacement one-time token was accepted more than once")
+		}
+	})
+
+	t.Run("joined deployment cannot be changed", func(t *testing.T) {
+		store, err := NewSQLiteStore(":memory:")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		joinToken, deployment := createPendingDeploymentFixture(t, store)
+		if _, err := store.DB().Exec(`UPDATE agent_deployments SET status = 'joined' WHERE id = ?`, deployment.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.DeletePendingAgentDeployment(context.Background(), deployment.ID); err != ErrAgentDeploymentConflict {
+			t.Fatalf("delete joined deployment err = %v, want conflict", err)
+		}
+		if err := store.RevokeAgentDeployment(context.Background(), deployment.ID); err != ErrAgentDeploymentConflict {
+			t.Fatalf("revoke joined deployment err = %v, want conflict", err)
+		}
+		if _, _, err := store.RegenerateAgentDeployment(context.Background(), deployment.ID, 60); err != ErrAgentDeploymentConflict {
+			t.Fatalf("regenerate joined deployment err = %v, want conflict", err)
+		}
+		tokens, err := store.ListJoinTokens(context.Background(), joinToken.TenantID)
+		if err != nil || len(tokens) != 1 || tokens[0].Revoked {
+			t.Fatalf("joined Agent invite changed: %+v, err=%v", tokens, err)
+		}
+	})
+}
+
 func TestAgentHeartbeatPreservesOmittedMetadata(t *testing.T) {
 	t.Parallel()
 	s, err := NewSQLiteStore(":memory:")

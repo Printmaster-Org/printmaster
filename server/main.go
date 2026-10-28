@@ -4458,7 +4458,7 @@ func buildAgentListItems(ctx context.Context, agents []*storage.Agent, scope map
 		})
 	}
 	for _, deployment := range deployments {
-		if deployment == nil || (deployment.Status != "pending" && deployment.Status != "expired") {
+		if deployment == nil || (deployment.Status != "pending" && deployment.Status != "expired" && deployment.Status != "revoked") {
 			continue
 		}
 		name := deployment.Name

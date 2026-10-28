@@ -114,6 +114,33 @@
         }
     ];
 
+    const PENDING_AGENT_MENU_ITEMS = [
+        {
+            id: 'regenerate-invite',
+            label: 'Regenerate Invite',
+            icon: '↻',
+            action: 'regenerate-agent-invite',
+            requiresAdmin: true
+        },
+        {
+            id: 'revoke-invite',
+            label: 'Revoke Invite',
+            icon: '⛔',
+            action: 'revoke-agent-invite',
+            requiresAdmin: true,
+            danger: true
+        },
+        {
+            id: 'remove-pending-agent',
+            label: 'Remove Pending Agent',
+            icon: '🗑️',
+            action: 'remove-pending-agent',
+            requiresAdmin: true,
+            danger: true
+        }
+    ];
+    const REVOKED_AGENT_MENU_ITEMS = PENDING_AGENT_MENU_ITEMS.filter(item => item.action !== 'revoke-agent-invite');
+
     /**
      * Context menu configuration for devices
      */
@@ -383,6 +410,18 @@
                 if (shared.deleteAgent) {
                     shared.deleteAgent(context.agentId, context.agentName);
                 }
+                break;
+
+            case 'remove-pending-agent':
+                if (shared.removePendingAgent) shared.removePendingAgent(context);
+                break;
+
+            case 'revoke-agent-invite':
+                if (shared.revokePendingAgentInvite) shared.revokePendingAgentInvite(context);
+                break;
+
+            case 'regenerate-agent-invite':
+                if (shared.regeneratePendingAgentInvite) shared.regeneratePendingAgentInvite(context);
                 break;
 
             case 'copy-agent-id':
@@ -660,8 +699,22 @@
             // Get agent data from the VM if available
             const agent = getAgentById(agentId);
             const meta = agent?.__meta || {};
-            if (agent?.pending_deployment) {
+            const isPendingDeployment = agent?.pending_deployment || agentId.startsWith('pending-deployment:');
+            if (isPendingDeployment) {
+                const deploymentID = agent?.deployment_id || agentId.slice('pending-deployment:'.length);
+                if (!deploymentID) return;
                 event.preventDefault();
+                const context = {
+                    agentId,
+                    deploymentID,
+                    agentName: target.getAttribute('data-agent-name') ||
+                        (agent && getAgentDisplayName(agent)) || agentId,
+                    tenantID: agent?.tenant_id || '',
+                    platform: agent?.platform || 'windows',
+                    status: agent?.status || 'pending'
+                };
+                const menuItems = agent?.status === 'revoked' ? REVOKED_AGENT_MENU_ITEMS : PENDING_AGENT_MENU_ITEMS;
+                showContextMenu(event, menuItems, context);
                 return;
             }
 

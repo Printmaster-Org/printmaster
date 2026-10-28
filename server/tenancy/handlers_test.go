@@ -470,6 +470,9 @@ func TestPendingRegistrationRequiresGlobalAdmin(t *testing.T) {
 				{http.MethodPost, "/api/v1/pending-registrations/999", `{"action":"approve","tenant_id":"tenant-b"}`},
 				{http.MethodPost, "/api/v1/pending-registrations/999", `{"action":"reject"}`},
 				{http.MethodDelete, "/api/v1/pending-registrations/999", ""},
+				{http.MethodDelete, "/api/v1/agent-deployments/deployment-a", ""},
+				{http.MethodPost, "/api/v1/agent-deployments/deployment-a/revoke", "{}"},
+				{http.MethodPost, "/api/v1/agent-deployments/deployment-a/regenerate", `{"ttl_minutes":30}`},
 			} {
 				req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
 				req.Header.Set("Authorization", sessionToken)
@@ -487,6 +490,80 @@ func TestPendingRegistrationRequiresGlobalAdmin(t *testing.T) {
 			tokens, err := db.ListJoinTokens(context.Background(), "tenant-b")
 			if err != nil || len(tokens) != 0 {
 				t.Fatalf("unauthorized approval issued tokens: %+v, %v", tokens, err)
+			}
+		})
+	}
+}
+
+func createEnrollmentDeploymentFixture(t *testing.T, db *storage.SQLiteStore) (*storage.JoinToken, *storage.AgentDeployment) {
+	t.Helper()
+	joinToken, _, err := db.CreateJoinToken(context.Background(), "tenant-a", 60, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment := &storage.AgentDeployment{JoinTokenID: joinToken.ID, TenantID: "tenant-a",
+		Name: "Office Agent", Platform: "windows", Status: "pending", ExpiresAt: time.Now().Add(time.Hour)}
+	if err := db.CreateAgentDeployment(context.Background(), deployment); err != nil {
+		t.Fatal(err)
+	}
+	return joinToken, deployment
+}
+
+func TestAgentDeploymentLifecycleEndpoints(t *testing.T) {
+	for _, action := range []string{"delete", "revoke", "regenerate"} {
+		t.Run(action, func(t *testing.T) {
+			db, mux, sessionToken := setupEnrollmentSecurity(t, storage.RoleAdmin)
+			oldToken, deployment := createEnrollmentDeploymentFixture(t, db)
+			method, path, body := http.MethodDelete, "/api/v1/agent-deployments/"+deployment.ID, ""
+			if action == "revoke" {
+				method, path, body = http.MethodPost, path+"/revoke", `{}`
+			} else if action == "regenerate" {
+				method, path, body = http.MethodPost, path+"/regenerate", `{"ttl_minutes":30}`
+			}
+			request := httptest.NewRequest(method, path, strings.NewReader(body))
+			request.Header.Set("Authorization", sessionToken)
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("%s returned %d: %s", action, response.Code, response.Body.String())
+			}
+			tokens, err := db.ListJoinTokens(context.Background(), "tenant-a")
+			oldRevoked := false
+			for _, token := range tokens {
+				if token.ID == oldToken.ID {
+					oldRevoked = token.Revoked
+				}
+			}
+			if err != nil || !oldRevoked {
+				t.Fatalf("old invite was not revoked: tokens=%+v err=%v", tokens, err)
+			}
+			if action == "delete" {
+				if _, err := db.GetAgentDeployment(context.Background(), deployment.ID); err != storage.ErrAgentDeploymentNotFound {
+					t.Fatalf("removed deployment lookup err=%v", err)
+				}
+				return
+			}
+			if action == "revoke" {
+				got, err := db.GetAgentDeployment(context.Background(), deployment.ID)
+				if err != nil || got.Status != "revoked" {
+					t.Fatalf("revoked deployment=%+v err=%v", got, err)
+				}
+				return
+			}
+			var result struct {
+				DeploymentID string `json:"deployment_id"`
+				Token        string `json:"token"`
+				ExpiresAt    string `json:"expires_at"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.DeploymentID == "" || result.DeploymentID == deployment.ID || result.Token == "" || result.ExpiresAt == "" {
+				t.Fatalf("regeneration response=%+v", result)
+			}
+			newToken, err := db.ValidateJoinToken(context.Background(), result.Token)
+			if err != nil || newToken.ID == oldToken.ID || !newToken.OneTime {
+				t.Fatalf("replacement token=%+v err=%v", newToken, err)
 			}
 		})
 	}

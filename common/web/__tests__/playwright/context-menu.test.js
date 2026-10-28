@@ -164,13 +164,13 @@ const sampleDevices = [
   }
 ];
 
-function createApiHandler(apiCalls = [], devices = sampleDevices) {
+function createApiHandler(apiCalls = [], devices = sampleDevices, agents = sampleAgents) {
   return route => {
     const url = route.request().url();
     const method = route.request().method();
 
     // Track POST calls for verification
-    if (method === 'POST') {
+    if (method === 'POST' || method === 'DELETE') {
       const postData = route.request().postData();
       apiCalls.push({ url, method, body: postData ? JSON.parse(postData) : null });
     }
@@ -179,7 +179,23 @@ function createApiHandler(apiCalls = [], devices = sampleDevices) {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(adminUser) });
     }
     if (url.includes('/api/v1/agents/list')) {
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(sampleAgents) });
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(agents) });
+    }
+    if (url.includes('/api/v1/agent-deployments/')) {
+      if (url.endsWith('/revoke')) {
+        agents[0].status = 'revoked';
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true }) });
+      }
+      if (url.endsWith('/regenerate')) {
+        agents[0].deployment_id = 'deployment-002';
+        agents[0].agent_id = 'pending-deployment:deployment-002';
+        agents[0].status = 'pending';
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+          deployment_id: 'deployment-002', token: 'new-one-time-invite-token', expires_at: new Date(Date.now() + 3600000).toISOString()
+        }) });
+      }
+      agents.splice(0, agents.length);
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true }) });
     }
     if (url.includes('/api/v1/devices/delete') && method === 'POST') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, deleted_from_agent: true }) });
@@ -632,4 +648,60 @@ test('agent context menu: appearance and actions', async ({ page, browserName })
   await expect(contextMenu).toBeVisible({ timeout: 5000 });
   await page.keyboard.press('Escape');
   await expect(contextMenu).not.toBeVisible({ timeout: 2000 });
+});
+
+test('pending Agent context menu can revoke, regenerate, and remove an expired invite', async ({ page }) => {
+  test.skip(isMobileViewport(page), 'Context menus are desktop-only (mobile uses different navigation)');
+  const apiCalls = [];
+  const pendingAgents = [{
+    agent_id: 'pending-deployment:deployment-001',
+    deployment_id: 'deployment-001',
+    name: 'Pending Linux Agent',
+    tenant_id: 't1',
+    platform: 'linux',
+    status: 'expired',
+    pending_deployment: true,
+    connection_type: 'none',
+  }];
+
+  await page.addInitScript(() => {
+    window.EventSource = class { constructor() { this.readyState = 1; } addEventListener() { } close() { } };
+    window.WebSocket = class { constructor() { } addEventListener() { } close() { } };
+  });
+  await page.route('**/api/**', createApiHandler(apiCalls, sampleDevices, pendingAgents));
+  await page.goto(`${global.__PM_BASE_URL__}/app`, { waitUntil: 'domcontentloaded' });
+  await page.locator('#desktop_tabs [data-target="agents"]').first().click();
+  const row = page.locator('[data-agent-id="pending-deployment:deployment-001"]').first();
+  await expect(row).toBeVisible();
+  await page.waitForFunction(() => document.getElementById('agents_table')?.dataset.contextMenuBound === 'true');
+
+  const menu = page.locator('.pm-context-menu');
+  await openContextMenuAndVerifyItems(page, row, menu, [
+    'regenerate-agent-invite', 'revoke-agent-invite', 'remove-pending-agent'
+  ], { force: true });
+  await expect(menu.locator('[data-action="delete-agent"]')).toHaveCount(0);
+
+  await menu.locator('[data-action="revoke-agent-invite"]').click();
+  await page.locator('#confirm_modal_confirm').click();
+  await expect(page.locator('.toast:visible').first()).toContainText('Agent invite revoked');
+  await expect(page.locator('[data-agent-id="pending-deployment:deployment-001"] .status-pill')).toContainText('Invite revoked');
+
+  await openContextMenuAndVerifyItems(page, row, menu, [
+    'regenerate-agent-invite', 'remove-pending-agent'
+  ], { force: true });
+  await expect(menu.locator('[data-action="revoke-agent-invite"]')).toHaveCount(0);
+  await menu.locator('[data-action="regenerate-agent-invite"]').click();
+  await page.locator('#confirm_modal_confirm').click();
+  await expect(page.locator('#add_agent_title')).toHaveText('Regenerated Agent Invite');
+  await expect(page.locator('#add_agent_content')).toContainText('new-one-time-invite-token');
+  await expect(page.locator('#add_agent_content')).toContainText('shown only once');
+  await expect.poll(() => apiCalls.some(call => call.url.endsWith('/deployment-001/regenerate'))).toBe(true);
+
+  await page.locator('#add_agent_cancel').click();
+  const replacementRow = page.locator('[data-agent-id="pending-deployment:deployment-002"]').first();
+  await expect(replacementRow).toBeVisible();
+  await openContextMenuAndClickAction(page, replacementRow, menu, 'remove-pending-agent', { force: true });
+  await page.locator('#confirm_modal_confirm').click();
+  await expect(page.locator('[data-agent-id^="pending-deployment:"]')).toHaveCount(0);
+  expect(apiCalls.map(call => `${call.method} ${new URL(call.url).pathname}`)).toContain('DELETE /api/v1/agent-deployments/deployment-002');
 });

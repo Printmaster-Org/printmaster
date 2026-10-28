@@ -270,6 +270,13 @@ type agentDeploymentStore interface {
 	SetAgentDeploymentStatus(context.Context, string, string) error
 }
 
+type agentDeploymentManagementStore interface {
+	GetAgentDeployment(context.Context, string) (*storage.AgentDeployment, error)
+	RevokeAgentDeployment(context.Context, string) error
+	DeletePendingAgentDeployment(context.Context, string) error
+	RegenerateAgentDeployment(context.Context, string, int) (*storage.AgentDeployment, string, error)
+}
+
 func validateReplacementTarget(ctx context.Context, tenantID, agentID string) error {
 	if agentID == "" {
 		return nil
@@ -364,6 +371,7 @@ func RegisterRoutesOnMux(mux *http.ServeMux, s storage.Store) {
 	// Pending agent registrations (expired token capture)
 	mux.HandleFunc("/api/v1/pending-registrations", wrap(handlePendingRegistrations))     // GET (admin)
 	mux.HandleFunc("/api/v1/pending-registrations/", wrap(handlePendingRegistrationByID)) // GET/POST/DELETE by ID
+	mux.HandleFunc("/api/v1/agent-deployments/", wrap(handleAgentDeploymentByID))         // DELETE or POST action by ID
 	// Package generation (bootstrap script) - admin only
 	mux.HandleFunc("/api/v1/packages", wrap(handleGeneratePackage))
 	mux.HandleFunc("/api/v1/packages/send-email", wrap(handleSendDeploymentEmail))
@@ -953,6 +961,128 @@ func handleRevokeJoinToken(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNotFound)
 	w.Write([]byte(`{"error":"token not found"}`))
+}
+
+func handleAgentDeploymentByID(w http.ResponseWriter, r *http.Request) {
+	if !requireTenancyEnabled(w, r) {
+		return
+	}
+	management, ok := dbStore.(agentDeploymentManagementStore)
+	if !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, "Agent deployment management unavailable")
+		return
+	}
+	if !authorizeOrReject(w, r, authz.ActionJoinTokensWrite, authz.ResourceRef{}) {
+		return
+	}
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/agent-deployments/"), "/"), "/")
+	if len(parts) == 0 || parts[0] == "" || len(parts) > 2 || (len(parts) == 2 && parts[1] != "revoke" && parts[1] != "regenerate") {
+		writeJSONError(w, http.StatusBadRequest, "invalid Agent deployment path")
+		return
+	}
+	deployment, err := management.GetAgentDeployment(r.Context(), parts[0])
+	if errors.Is(err, storage.ErrAgentDeploymentNotFound) {
+		writeJSONError(w, http.StatusNotFound, "Agent deployment not found")
+		return
+	}
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "failed to get Agent deployment")
+		return
+	}
+	if !authorizeOrReject(w, r, authz.ActionJoinTokensWrite, authz.ResourceRef{TenantIDs: []string{deployment.TenantID}}) {
+		return
+	}
+
+	action := "delete"
+	if len(parts) == 2 {
+		action = parts[1]
+	}
+	switch action {
+	case "delete":
+		if r.Method != http.MethodDelete {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		err = management.DeletePendingAgentDeployment(r.Context(), deployment.ID)
+		if errors.Is(err, storage.ErrAgentDeploymentConflict) {
+			writeJSONError(w, http.StatusConflict, "Agent deployment is no longer pending")
+			return
+		}
+		if errors.Is(err, storage.ErrAgentDeploymentNotFound) {
+			writeJSONError(w, http.StatusNotFound, "Agent deployment not found")
+			return
+		}
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "failed to remove Agent deployment")
+			return
+		}
+		recordAudit(r, &storage.AuditEntry{Action: "agent_deployment.delete", TargetType: "agent_deployment",
+			TargetID: deployment.ID, TenantID: deployment.TenantID, Details: "Pending Agent deployment removed and invite revoked"})
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"success": true})
+	case "revoke":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		err = management.RevokeAgentDeployment(r.Context(), deployment.ID)
+		if errors.Is(err, storage.ErrAgentDeploymentConflict) {
+			writeJSONError(w, http.StatusConflict, "Agent deployment is no longer pending")
+			return
+		}
+		if errors.Is(err, storage.ErrAgentDeploymentNotFound) {
+			writeJSONError(w, http.StatusNotFound, "Agent deployment not found")
+			return
+		}
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "failed to revoke Agent invite")
+			return
+		}
+		recordAudit(r, &storage.AuditEntry{Action: "agent_deployment.revoke", TargetType: "agent_deployment",
+			TargetID: deployment.ID, TenantID: deployment.TenantID, Details: "Pending Agent invite revoked"})
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"success": true})
+	case "regenerate":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var in struct {
+			TTLMinutes int `json:"ttl_minutes"`
+		}
+		decoder := json.NewDecoder(io.LimitReader(r.Body, 4096))
+		if err := decoder.Decode(&in); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid JSON")
+			return
+		}
+		if in.TTLMinutes <= 0 {
+			in.TTLMinutes = 60
+		}
+		if in.TTLMinutes > 10080 {
+			writeJSONError(w, http.StatusBadRequest, "invite TTL exceeds seven days")
+			return
+		}
+		replacement, token, err := management.RegenerateAgentDeployment(r.Context(), deployment.ID, in.TTLMinutes)
+		if errors.Is(err, storage.ErrAgentDeploymentConflict) {
+			writeJSONError(w, http.StatusConflict, "Agent deployment is no longer pending")
+			return
+		}
+		if errors.Is(err, storage.ErrAgentDeploymentNotFound) {
+			writeJSONError(w, http.StatusNotFound, "Agent deployment not found")
+			return
+		}
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "failed to regenerate Agent invite")
+			return
+		}
+		recordAudit(r, &storage.AuditEntry{Action: "agent_deployment.regenerate", TargetType: "agent_deployment",
+			TargetID: replacement.ID, TenantID: replacement.TenantID, Details: "Pending Agent invite regenerated",
+			Metadata: map[string]interface{}{"replaced_deployment_id": deployment.ID, "ttl_minutes": in.TTLMinutes}})
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"deployment_id": replacement.ID, "token": token, "expires_at": replacement.ExpiresAt.Format(time.RFC3339),
+		})
+	}
 }
 
 // handlePendingRegistrations handles GET for listing pending registrations

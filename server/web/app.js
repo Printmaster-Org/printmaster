@@ -10703,6 +10703,12 @@ function renderAgentsTableHeader() {
     }
 }
 
+function getPendingDeploymentHint(agent) {
+    if (agent?.status === 'expired') return 'Invite expired; right-click to regenerate or remove';
+    if (agent?.status === 'revoked') return 'Invite revoked; right-click to regenerate or remove';
+    return 'Waiting for the Agent to connect; right-click to manage the invite';
+}
+
 function renderAgentTable(agents) {
     const cards = document.getElementById('agents_cards');
     const wrapper = document.getElementById('agents_table_wrapper');
@@ -10729,7 +10735,7 @@ function renderAgentTable(agents) {
         const rows = agents.map(agent => {
             const meta = agent.__meta || {};
             return `
-                <tr data-agent-id="${escapeHtml(agent.agent_id || '')}" class="${agent.pending_deployment ? '' : 'agent-row-clickable'}" title="${agent.pending_deployment ? 'Waiting for the new Agent to connect' : 'Click to view details, right-click for actions'}">
+                <tr data-agent-id="${escapeHtml(agent.agent_id || '')}" class="${agent.pending_deployment ? '' : 'agent-row-clickable'}" title="${escapeHtml(agent.pending_deployment ? getPendingDeploymentHint(agent) : 'Click to view details, right-click for actions')}">
                     ${agentsVM.tableCustomizer.renderRow(agent, meta)}
                 </tr>
             `;
@@ -10744,7 +10750,7 @@ function renderAgentTable(agents) {
         const meta = agent.__meta || {};
         const tenantLabel = formatTenantDisplay(agent.tenant_id || meta.tenantId || '');
         return `
-            <tr data-agent-id="${escapeHtml(agent.agent_id || '')}" class="${agent.pending_deployment ? '' : 'agent-row-clickable'}" title="${agent.pending_deployment ? 'Waiting for the new Agent to connect' : 'Click to view details, right-click for actions'}">
+            <tr data-agent-id="${escapeHtml(agent.agent_id || '')}" class="${agent.pending_deployment ? '' : 'agent-row-clickable'}" title="${escapeHtml(agent.pending_deployment ? getPendingDeploymentHint(agent) : 'Click to view details, right-click for actions')}">
                 <td>
                     <div class="table-primary">${escapeHtml(getAgentDisplayName(agent))}</div>
                     <div class="muted-text">${escapeHtml(agent.hostname || '')}</div>
@@ -10766,12 +10772,12 @@ function renderAgentCard(agent) {
     const statusColor = AGENT_STATUS_COLORS[meta.statusKey || 'offline'] || 'var(--muted)';
     const tenantLabel = formatTenantDisplay(agent.tenant_id || meta.tenantId || '');
     return `
-        <div class="device-card ${agent.pending_deployment ? '' : 'agent-card-clickable'}" data-agent-id="${escapeHtml(agent.agent_id || '')}" data-agent-name="${escapeHtml(getAgentDisplayName(agent))}" title="${agent.pending_deployment ? 'Waiting for the new Agent to connect' : 'Click to view details, right-click for actions'}">
+        <div class="device-card ${agent.pending_deployment ? '' : 'agent-card-clickable'}" data-agent-id="${escapeHtml(agent.agent_id || '')}" data-agent-name="${escapeHtml(getAgentDisplayName(agent))}" title="${escapeHtml(agent.pending_deployment ? getPendingDeploymentHint(agent) : 'Click to view details, right-click for actions')}">
             <div class="device-card-header">
                 <div>
                     <div style="display:flex;align-items:center;gap:8px">
                         <div class="device-card-title">${window.__pm_shared.renderCopyableValue(getAgentDisplayName(agent), 'agent name')}</div>
-                        <span class="agent-joined-bubble" style="margin-left:8px;display:${registeredDate ? 'inline-flex' : 'none'};align-items:center;padding:2px 6px;border-radius:12px;background:var(--panel);font-size:12px;color:var(--muted);border:1px solid var(--border);">${registeredDate ? (agent.pending_deployment ? 'Pending install' : 'Joined') : ''}</span>
+                        <span class="agent-joined-bubble" style="margin-left:8px;display:${registeredDate ? 'inline-flex' : 'none'};align-items:center;padding:2px 6px;border-radius:12px;background:var(--panel);font-size:12px;color:var(--muted);border:1px solid var(--border);">${registeredDate ? (agent.status === 'expired' ? 'Invite expired' : agent.status === 'revoked' ? 'Invite revoked' : agent.pending_deployment ? 'Pending install' : 'Joined') : ''}</span>
                     </div>
                     <div class="device-card-subtitle">
                         ${window.__pm_shared.renderCopyableValue(agent.hostname, 'hostname', 'N/A')}
@@ -10811,7 +10817,7 @@ function renderAgentCard(agent) {
                 </div>` : ''}
             </div>
             <div class="device-card-hint muted-text" style="font-size:11px;padding:8px 12px;text-align:center;border-top:1px solid var(--border);">
-                ${agent.pending_deployment ? 'Waiting for the new Agent to connect' : 'Right-click for actions'}
+                ${agent.pending_deployment ? escapeHtml(getPendingDeploymentHint(agent)) : 'Right-click for actions'}
             </div>
         </div>
     `;
@@ -10949,8 +10955,8 @@ function enrichSingleAgent(agent) {
         : agent.status === 'deactivated'
             ? 'deactivated'
             : normalizeAgentStatusFromConnection(agent.connection_type);
-    const statusLabel = agent.pending_deployment && agent.status === 'expired'
-        ? 'Expired'
+    const statusLabel = agent.pending_deployment && (agent.status === 'expired' || agent.status === 'revoked')
+        ? (agent.status === 'expired' ? 'Invite expired' : 'Invite revoked')
         : agent.status === 'deactivated' && agent.replaced_by_agent_id
             ? 'Replaced'
             : (AGENT_STATUS_LABELS[statusKey] || statusKey);
@@ -11913,6 +11919,9 @@ try {
     window.__pm_shared.renderAgentDetailsModal = renderAgentDetailsModal;
     // Also expose delete/open helpers if present so shared callers use server implementations
     window.__pm_shared.deleteAgent = window.__pm_shared.deleteAgent || deleteAgent;
+    window.__pm_shared.removePendingAgent = removePendingAgent;
+    window.__pm_shared.revokePendingAgentInvite = revokePendingAgentInvite;
+    window.__pm_shared.regeneratePendingAgentInvite = regeneratePendingAgentInvite;
     window.__pm_shared.openAgentUI = window.__pm_shared.openAgentUI || openAgentUI;
     window.__pm_shared.replaceAgent = replaceAgent;
     window.__pm_shared.setAgentLifecycleStatus = setAgentLifecycleStatus;
@@ -11976,6 +11985,75 @@ async function deleteAgent(agentId, displayName) {
     } catch (error) {
         window.__pm_shared.error('Failed to delete agent:', error);
         window.__pm_shared.showToast(`Failed to delete agent: ${error.message}`, 'error');
+    }
+}
+
+async function removePendingAgent(context) {
+    const confirmed = await window.__pm_shared.showConfirm(
+        `Remove pending Agent "${context.agentName}"? Its invite will also be revoked.`,
+        'Remove Pending Agent', true);
+    if (!confirmed) return;
+    try {
+        const response = await fetch(`/api/v1/agent-deployments/${encodeURIComponent(context.deploymentID)}`, { method: 'DELETE' });
+        if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+        window.__pm_shared.showToast('Pending Agent removed; invite revoked', 'success');
+        await loadAgents(true);
+    } catch (error) {
+        window.__pm_shared.showToast(`Failed to remove pending Agent: ${error.message}`, 'error');
+    }
+}
+
+async function revokePendingAgentInvite(context) {
+    const confirmed = await window.__pm_shared.showConfirm(
+        `Revoke the invite for "${context.agentName}"? The pending row will remain so you can regenerate it later.`,
+        'Revoke Agent Invite', true);
+    if (!confirmed) return;
+    try {
+        const response = await fetch(`/api/v1/agent-deployments/${encodeURIComponent(context.deploymentID)}/revoke`, { method: 'POST' });
+        if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+        window.__pm_shared.showToast('Agent invite revoked', 'success');
+        await loadAgents(true);
+    } catch (error) {
+        window.__pm_shared.showToast(`Failed to revoke Agent invite: ${error.message}`, 'error');
+    }
+}
+
+async function regeneratePendingAgentInvite(context) {
+    const confirmed = await window.__pm_shared.showConfirm(
+        `Replace the current invite for "${context.agentName}"? The old token will stop working and the new one will be shown once.`,
+        'Regenerate Agent Invite', true);
+    if (!confirmed) return;
+    try {
+        const response = await fetch(`/api/v1/agent-deployments/${encodeURIComponent(context.deploymentID)}/regenerate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ttl_minutes: 60 }),
+        });
+        if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+        const result = await response.json();
+        window._addAgentState = {
+            step: 3,
+            mode: 'token',
+            token: result.token,
+            ttl: 60,
+            one_time: true,
+            tenantID: context.tenantID,
+            deploymentName: context.agentName,
+            platform: context.platform || 'windows',
+            format: 'zip',
+            arch: 'amd64',
+        };
+        renderAddAgentStep(3);
+        const modal = document.getElementById('add_agent_modal');
+        if (modal) {
+            modal.style.display = 'flex';
+            document.body.style.overflow = 'hidden';
+        }
+        const title = document.getElementById('add_agent_title');
+        if (title) title.textContent = 'Regenerated Agent Invite';
+        await loadAgents(true);
+    } catch (error) {
+        window.__pm_shared.showToast(`Failed to regenerate Agent invite: ${error.message}`, 'error');
     }
 }
 

@@ -47,7 +47,7 @@ describe('agent lifecycle status filters', () => {
         const pending = context.enrichSingleAgent({ agent_id: 'pending-deployment:id', status: 'expired', pending_deployment: true, connection_type: 'none' });
         expect(deactivated.__meta.statusKey).toBe('deactivated');
         expect(pending.__meta.statusKey).toBe('pending');
-        expect(pending.__meta.statusLabel).toBe('Expired');
+        expect(pending.__meta.statusLabel).toBe('Invite expired');
     });
 
     test('deactivated and pending rows can be independently filtered out', () => {

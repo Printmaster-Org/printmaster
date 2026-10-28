@@ -2212,6 +2212,171 @@ func (s *BaseStore) SetAgentDeploymentStatus(ctx context.Context, deploymentID, 
 	return nil
 }
 
+func (s *BaseStore) GetAgentDeployment(ctx context.Context, deploymentID string) (*AgentDeployment, error) {
+	var deployment AgentDeployment
+	var replaceAgentID, agentID sql.NullString
+	err := s.queryRowContext(ctx, `
+		SELECT id, join_token_id, tenant_id, name, platform, replace_agent_id,
+		       agent_id, status, expires_at, created_at
+		FROM agent_deployments WHERE id = ?
+	`, deploymentID).Scan(
+		&deployment.ID, &deployment.JoinTokenID, &deployment.TenantID, &deployment.Name,
+		&deployment.Platform, &replaceAgentID, &agentID, &deployment.Status,
+		&deployment.ExpiresAt, &deployment.CreatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrAgentDeploymentNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	deployment.ReplaceAgentID = replaceAgentID.String
+	deployment.AgentID = agentID.String
+	if deployment.Status == "pending" && !deployment.ExpiresAt.After(time.Now()) {
+		deployment.Status = "expired"
+	}
+	return &deployment, nil
+}
+
+func (s *BaseStore) RevokeAgentDeployment(ctx context.Context, deploymentID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := s.cancelPendingAgentDeploymentTx(ctx, tx, deploymentID, "revoked"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *BaseStore) DeletePendingAgentDeployment(ctx context.Context, deploymentID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := s.cancelPendingAgentDeploymentTx(ctx, tx, deploymentID, "cancelled"); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, s.query(`DELETE FROM agent_deployments WHERE id = ? AND status = 'cancelled'`), deploymentID)
+	if err != nil {
+		return err
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if deleted != 1 {
+		return ErrAgentDeploymentConflict
+	}
+	return tx.Commit()
+}
+
+func (s *BaseStore) RegenerateAgentDeployment(ctx context.Context, deploymentID string, ttlMinutes int) (*AgentDeployment, string, error) {
+	if ttlMinutes <= 0 {
+		return nil, "", fmt.Errorf("positive invite TTL is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	defer tx.Rollback()
+	old, err := s.cancelPendingAgentDeploymentTx(ctx, tx, deploymentID, "cancelled")
+	if err != nil {
+		return nil, "", err
+	}
+
+	rawTokenBytes := make([]byte, 24)
+	if _, err := rand.Read(rawTokenBytes); err != nil {
+		return nil, "", err
+	}
+	rawToken := hex.EncodeToString(rawTokenBytes)
+	tokenHash, err := hashArgon(rawToken)
+	if err != nil {
+		return nil, "", err
+	}
+	tokenID, err := generateSecureToken(16)
+	if err != nil {
+		return nil, "", fmt.Errorf("generate replacement token ID: %w", err)
+	}
+	newDeploymentID, err := generateSecureToken(16)
+	if err != nil {
+		return nil, "", fmt.Errorf("generate replacement deployment ID: %w", err)
+	}
+	now := time.Now().UTC()
+	expiresAt := now.Add(time.Duration(ttlMinutes) * time.Minute)
+	if _, err := tx.ExecContext(ctx, s.query(`
+		INSERT INTO join_tokens (id, token_hash, tenant_id, expires_at, one_time, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`), tokenID, tokenHash, old.TenantID, expiresAt, boolToInt(true), now); err != nil {
+		return nil, "", err
+	}
+	if _, err := tx.ExecContext(ctx, s.query(`
+		INSERT INTO agent_deployments (
+			id, join_token_id, tenant_id, name, platform, replace_agent_id,
+			status, expires_at, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+	`), newDeploymentID, tokenID, old.TenantID, old.Name, old.Platform,
+		old.ReplaceAgentID, expiresAt, now); err != nil {
+		return nil, "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, "", err
+	}
+	return &AgentDeployment{
+		ID: newDeploymentID, JoinTokenID: tokenID, TenantID: old.TenantID,
+		Name: old.Name, Platform: old.Platform, ReplaceAgentID: old.ReplaceAgentID,
+		Status: "pending", ExpiresAt: expiresAt, CreatedAt: now,
+	}, rawToken, nil
+}
+
+func (s *BaseStore) cancelPendingAgentDeploymentTx(ctx context.Context, tx *sql.Tx, deploymentID, nextStatus string) (*AgentDeployment, error) {
+	var deployment AgentDeployment
+	var replaceAgentID sql.NullString
+	err := tx.QueryRowContext(ctx, s.query(`
+		SELECT id, join_token_id, tenant_id, name, platform, replace_agent_id, status
+		FROM agent_deployments WHERE id = ?
+	`), deploymentID).Scan(
+		&deployment.ID, &deployment.JoinTokenID, &deployment.TenantID, &deployment.Name,
+		&deployment.Platform, &replaceAgentID, &deployment.Status,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrAgentDeploymentNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if deployment.Status != "pending" && deployment.Status != "revoked" {
+		return nil, ErrAgentDeploymentConflict
+	}
+	currentStatus := deployment.Status
+	deployment.ReplaceAgentID = replaceAgentID.String
+	result, err := tx.ExecContext(ctx, s.query(`UPDATE agent_deployments SET status = ? WHERE id = ? AND status = ?`), nextStatus, deploymentID, currentStatus)
+	if err != nil {
+		return nil, err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if updated != 1 {
+		return nil, ErrAgentDeploymentConflict
+	}
+	result, err = tx.ExecContext(ctx, s.query(`UPDATE join_tokens SET revoked = `+s.dialect.BoolValue(true)+` WHERE id = ?`), deployment.JoinTokenID)
+	if err != nil {
+		return nil, err
+	}
+	updated, err = result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if updated != 1 {
+		return nil, ErrAgentDeploymentNotFound
+	}
+	return &deployment, nil
+}
+
 func (s *BaseStore) GetAgentDeploymentByJoinTokenID(ctx context.Context, joinTokenID string) (*AgentDeployment, error) {
 	var deployment AgentDeployment
 	var replaceAgentID, agentID sql.NullString
