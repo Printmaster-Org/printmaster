@@ -238,15 +238,22 @@ function Build-Component {
         if ($IsWindows -or $env:OS -eq "Windows_NT") {
             Write-BuildLog "Generating Windows version resource..."
             $winverScript = Join-Path $ProjectRoot "tools\generate-winver.ps1"
-            if (Test-Path $winverScript) {
-                try {
-                    & $winverScript -Component $Component -Version $versionString -GitCommit $gitCommit -BuildTime $buildTime 2>&1 | ForEach-Object {
-                        Write-BuildLog $_.ToString() "INFO"
-                    }
-                }
-                catch {
-                    Write-BuildLog "Warning: Failed to generate version resource: $_" "WARN"
-                }
+            if (-not (Test-Path $winverScript)) {
+                throw "Windows version resource generator is missing: $winverScript"
+            }
+            & $winverScript -Component $Component -Version $versionString -GitCommit $gitCommit -BuildTime $buildTime 2>&1 | ForEach-Object {
+                Write-BuildLog $_.ToString() "INFO"
+            }
+            if ($LASTEXITCODE -ne 0) {
+                throw "Windows version resource generation failed with exit code $LASTEXITCODE"
+            }
+            $resourcePath = Join-Path (Get-Location) 'resource.syso'
+            if (-not (Test-Path $resourcePath)) {
+                throw "Windows version resource was not generated: $resourcePath"
+            }
+            $resourceBytes = [System.IO.File]::ReadAllBytes($resourcePath)
+            if ($resourceBytes.Length -lt 20 -or [BitConverter]::ToUInt16($resourceBytes, 0) -ne 0x8664) {
+                throw "Windows version resource is not a valid amd64 COFF object: $resourcePath"
             }
         }
         
