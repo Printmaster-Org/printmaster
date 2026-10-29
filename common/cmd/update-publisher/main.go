@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,6 +57,9 @@ func run(args []string, getenv func(string) string, output io.Writer) error {
 	publicURL := flags.String("public-url", "", "public B2 metadata HTTPS base URL")
 	bootstrap := flags.Bool("bootstrap", false, "explicit first publication only")
 	devOnly := flags.Bool("dev-only", false, "accept only the complete Dev Agent binary matrix and bootstrap empty authority once")
+	releaseOnly := flags.Bool("release-only", false, "accept one exact Beta or Stable Agent binary matrix")
+	releaseChannel := flags.String("release-channel", "", "exact release channel: beta or stable")
+	releaseVersion := flags.String("release-version", "", "exact release tag version for the selected channel")
 	devSourceSHA := flags.String("dev-source-sha", "", "full source SHA for the current Dev build")
 	devVersion := flags.String("dev-version", "", "exact source-derived current Dev Agent version")
 	serialized := flags.Bool("externally-serialized", false, "exclusive ownership of all publish/recovery writers")
@@ -66,10 +70,13 @@ func run(args []string, getenv func(string) string, output io.Writer) error {
 	}
 	if flags.NArg() != 0 || (*mode != "publish" && *mode != "check" && *mode != "mirror" && *mode != "preflight") || *stateRepo == "" ||
 		*publicURL == "" || (*mode != "preflight" && *mirror == "") || !*serialized || (*mode == "publish" && *work == "") ||
-		(*mode != "publish" && (*bootstrap || *devOnly || *interrupt || *inventory != "")) ||
-		(*mode != "publish" && (*devSourceSHA != "" || *devVersion != "")) ||
-		(*devOnly && (*mode != "publish" || *inventory == "" || *bootstrap || *interrupt || *devSourceSHA == "" || *devVersion == "")) ||
-		(!*devOnly && (*devSourceSHA != "" || *devVersion != "")) {
+		(*mode != "publish" && (*bootstrap || *devOnly || *releaseOnly || *interrupt || *inventory != "")) ||
+		(*mode != "publish" && (*devSourceSHA != "" || *devVersion != "" || *releaseChannel != "" || *releaseVersion != "")) ||
+		(*devOnly && (*mode != "publish" || *inventory == "" || *bootstrap || *interrupt || *releaseOnly || *devSourceSHA == "" || *devVersion == "")) ||
+		(*releaseOnly && (*mode != "publish" || *inventory == "" || *bootstrap || *interrupt || *devOnly ||
+			(*releaseChannel != "beta" && *releaseChannel != "stable") || *releaseVersion == "")) ||
+		(!*devOnly && (*devSourceSHA != "" || *devVersion != "")) ||
+		(!*releaseOnly && (*releaseChannel != "" || *releaseVersion != "")) {
 		return fmt.Errorf("explicit mode, state repository, public URL, mirror, serialization and publish work directory required")
 	}
 	if *interrupt && (*stateRepo != "Printmaster-Org/printmaster-update-rehearsal-state" ||
@@ -85,8 +92,8 @@ func run(args []string, getenv func(string) string, output io.Writer) error {
 			return err
 		}
 	}
-	if *devOnly && fmt.Sprintf("%x", sha256.Sum256(root)) != devBootstrapRootSHA256 {
-		return fmt.Errorf("dev publisher root fingerprint changed; owner root-transition review required")
+	if (*devOnly || *releaseOnly) && fmt.Sprintf("%x", sha256.Sum256(root)) != devBootstrapRootSHA256 {
+		return fmt.Errorf("automated Agent publisher root fingerprint changed; owner root-transition review required")
 	}
 	if *mode == "preflight" {
 		if err := updatetrust.ValidateBootstrapRoot(root, time.Now()); err != nil {
@@ -166,6 +173,10 @@ func run(args []string, getenv func(string) string, output io.Writer) error {
 				if err := validateDevInventory(targets, *devSourceSHA, *devVersion); err != nil {
 					return err
 				}
+			} else if *releaseOnly {
+				if err := validateAgentReleaseInventory(targets, *releaseChannel, *releaseVersion); err != nil {
+					return err
+				}
 			}
 		}
 		open := func(bucket, prefix string, recovery bool) (*updateb2.Store, error) {
@@ -207,6 +218,8 @@ func run(args []string, getenv func(string) string, output io.Writer) error {
 		var result updatepublisher.Result
 		if *devOnly {
 			result, err = runDevPublication(ctx, options, journal, targets)
+		} else if *releaseOnly {
+			result, err = runReleasePublication(ctx, options, journal, targets)
 		} else {
 			result, err = updatepublisher.Run(ctx, options)
 		}
@@ -362,7 +375,70 @@ func validateDevInventory(targets []updatetrust.PublishTarget, sourceSHA, versio
 	return nil
 }
 
+func validateAgentReleaseInventory(targets []updatetrust.PublishTarget, channel, version string) error {
+	if channel != "beta" && channel != "stable" {
+		return fmt.Errorf("release channel must be beta or stable")
+	}
+	baseVersion := version
+	if channel == "beta" {
+		parts := strings.Split(version, "-beta.")
+		if len(parts) != 2 || parts[1] == "" {
+			return fmt.Errorf("beta release version must be x.y.z-beta.n")
+		}
+		sequence, err := strconv.Atoi(parts[1])
+		if err != nil || sequence <= 0 || strconv.Itoa(sequence) != parts[1] {
+			return fmt.Errorf("beta release sequence must be a positive integer")
+		}
+		baseVersion = parts[0]
+	}
+	baseParts := strings.Split(baseVersion, ".")
+	if len(baseParts) != 3 {
+		return fmt.Errorf("release version must be x.y.z, with -beta.n for Beta")
+	}
+	for _, part := range baseParts {
+		if part == "" || strings.Trim(part, "0123456789") != "" {
+			return fmt.Errorf("release version must be x.y.z, with -beta.n for Beta")
+		}
+	}
+	expected := map[string]struct{}{
+		"linux/amd64": {}, "linux/arm64": {}, "windows/amd64": {},
+		"darwin/amd64": {}, "darwin/arm64": {},
+	}
+	if len(targets) != len(expected) {
+		return fmt.Errorf("release publication requires exactly %d Agent binaries", len(expected))
+	}
+	seen := make(map[string]struct{}, len(targets))
+	for _, entry := range targets {
+		target := entry.Target
+		key := target.Platform + "/" + target.Arch
+		if _, ok := expected[key]; !ok || target.Component != "agent" || target.Channel != channel ||
+			target.Version != version || target.Format != "binary" {
+			return fmt.Errorf("release publisher accepts only the exact agent/%s binary matrix", channel)
+		}
+		if target.SizeBytes <= 0 || len(target.SHA256) != 64 || strings.Trim(target.SHA256, "0123456789abcdef") != "" {
+			return fmt.Errorf("invalid release target digest or size")
+		}
+		identity, err := target.Path()
+		if err != nil {
+			return err
+		}
+		if _, ok := seen[identity]; ok {
+			return fmt.Errorf("duplicate release target %q", identity)
+		}
+		seen[identity] = struct{}{}
+	}
+	return nil
+}
+
 func runDevPublication(ctx context.Context, options updatepublisher.Options, journal updatestate.Journal, targets []updatetrust.PublishTarget) (updatepublisher.Result, error) {
+	return runAgentPublication(ctx, options, journal, targets, true)
+}
+
+func runReleasePublication(ctx context.Context, options updatepublisher.Options, journal updatestate.Journal, targets []updatetrust.PublishTarget) (updatepublisher.Result, error) {
+	return runAgentPublication(ctx, options, journal, targets, false)
+}
+
+func runAgentPublication(ctx context.Context, options updatepublisher.Options, journal updatestate.Journal, targets []updatetrust.PublishTarget, allowBootstrap bool) (updatepublisher.Result, error) {
 	state, _, err := journal.Read(ctx)
 	if err != nil {
 		return updatepublisher.Result{}, err
@@ -385,7 +461,7 @@ func runDevPublication(ctx context.Context, options updatepublisher.Options, jou
 		recovery.Work, recovery.Targets, recovery.Bootstrap = work, nil, false
 		result, err := updatepublisher.Run(ctx, recovery)
 		if err != nil {
-			return updatepublisher.Result{}, fmt.Errorf("recover pending Dev publication before signing new inventory: %w", err)
+			return updatepublisher.Result{}, fmt.Errorf("recover pending Agent publication before signing new inventory: %w", err)
 		}
 		recoveredPending = result.RecoveredPending
 		state, _, err = journal.Read(ctx)
@@ -394,9 +470,12 @@ func runDevPublication(ctx context.Context, options updatepublisher.Options, jou
 		}
 	}
 	if state.Latest == nil && (state.Generation != 0 || state.Pending != nil) {
-		return updatepublisher.Result{}, fmt.Errorf("dev publisher authority is not an empty bootstrap or completed publication")
+		return updatepublisher.Result{}, fmt.Errorf("agent publisher authority is not an empty bootstrap or completed publication")
 	}
-	options.Bootstrap = state.Generation == 0 && state.Latest == nil
+	if !allowBootstrap && (state.Generation == 0 || state.Latest == nil) {
+		return updatepublisher.Result{}, fmt.Errorf("beta/stable publication requires an existing completed publisher authority")
+	}
+	options.Bootstrap = allowBootstrap && state.Generation == 0 && state.Latest == nil
 	options.Targets = targets
 	workIndex++
 	work, err := newWork(fmt.Sprintf("publish-dev-%d", workIndex))

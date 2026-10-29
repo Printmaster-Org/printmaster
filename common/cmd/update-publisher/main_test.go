@@ -26,6 +26,21 @@ func TestPublisherRejectsInvalidOperationBeforeCredentials(t *testing.T) {
 	}
 }
 
+func TestReleaseOnlyRejectsBootstrapAndDevFlagsBeforeCredentials(t *testing.T) {
+	base := []string{
+		"-mode", "publish", "-release-only", "-release-channel", "beta", "-release-version", "0.32.0-beta.4",
+		"-inventory", "inventory.json", "-work", "work", "-mirror", "mirror",
+		"-state-repository", "owner/repo", "-public-url", "https://example.com", "-externally-serialized",
+	}
+	for _, extra := range [][]string{{"-bootstrap"}, {"-dev-only"}, {"-dev-source-sha", strings.Repeat("a", 40)}} {
+		args := append(append([]string(nil), base...), extra...)
+		err := run(args, func(string) string { t.Fatal("invalid release mode read credentials"); return "" }, io.Discard)
+		if err == nil {
+			t.Fatalf("release-only accepted conflicting flags %v", extra)
+		}
+	}
+}
+
 func TestDevInventoryRequiresPinnedBaselineAndCurrentBuild(t *testing.T) {
 	const sourceSHA = "abcdef0123456789abcdef0123456789abcdef01"
 	const version = "0.32.0-dev.abcdef0"
@@ -67,6 +82,51 @@ func TestDevInventoryRequiresPinnedBaselineAndCurrentBuild(t *testing.T) {
 	}
 	if err := validateDevInventory(targets, fmt.Sprintf("%040x", 1), version); err == nil {
 		t.Fatal("current version not bound to source SHA accepted")
+	}
+}
+
+func TestAgentReleaseInventoryRequiresExactFivePlatformBinaryMatrix(t *testing.T) {
+	const version = "0.32.0-beta.4"
+	platforms := []struct{ platform, arch string }{
+		{"linux", "amd64"}, {"linux", "arm64"}, {"windows", "amd64"},
+		{"darwin", "amd64"}, {"darwin", "arm64"},
+	}
+	targets := make([]updatetrust.PublishTarget, 0, len(platforms))
+	for _, item := range platforms {
+		targets = append(targets, updatetrust.PublishTarget{Target: updatetrust.Target{
+			Component: "agent", Channel: "beta", Version: version, Platform: item.platform,
+			Arch: item.arch, Format: "binary", SHA256: strings.Repeat("a", 64), SizeBytes: 1024,
+		}})
+	}
+	if err := validateAgentReleaseInventory(targets, "beta", version); err != nil {
+		t.Fatalf("valid Beta inventory rejected: %v", err)
+	}
+	wrongChannel := append([]updatetrust.PublishTarget(nil), targets...)
+	wrongChannel[0].Target.Channel = "dev"
+	if err := validateAgentReleaseInventory(wrongChannel, "beta", version); err == nil {
+		t.Fatal("Dev target accepted in Beta inventory")
+	}
+	wrongVersion := append([]updatetrust.PublishTarget(nil), targets...)
+	wrongVersion[0].Target.Version = "0.32.0-beta.5"
+	if err := validateAgentReleaseInventory(wrongVersion, "beta", version); err == nil {
+		t.Fatal("different Beta version accepted")
+	}
+	if err := validateAgentReleaseInventory(targets[:len(targets)-1], "beta", version); err == nil {
+		t.Fatal("incomplete Beta matrix accepted")
+	}
+	if err := validateAgentReleaseInventory(targets, "beta", "0.32.0-beta.04"); err == nil {
+		t.Fatal("noncanonical Beta sequence accepted")
+	}
+	stableTargets := append([]updatetrust.PublishTarget(nil), targets...)
+	for i := range stableTargets {
+		stableTargets[i].Target.Channel = "stable"
+		stableTargets[i].Target.Version = "0.32.0"
+	}
+	if err := validateAgentReleaseInventory(stableTargets, "stable", "0.32.0"); err != nil {
+		t.Fatalf("valid Stable inventory rejected: %v", err)
+	}
+	if err := validateAgentReleaseInventory(stableTargets, "stable", version); err == nil {
+		t.Fatal("Beta version accepted in Stable inventory")
 	}
 }
 

@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { buildDevInventory, resolveDevReleaseVersion } from './dev-update-inventory.mjs';
+import { buildAgentReleaseInventory, buildDevInventory, resolveDevReleaseVersion } from './dev-update-inventory.mjs';
 
 const sourceSha = '1234567890abcdef1234567890abcdef12345678';
 const version = `0.32.0-dev.${sourceSha.slice(0, 7)}`;
@@ -70,6 +70,46 @@ test('target digests match the exact artifact bytes', async () => {
     const targets = await buildDevInventory({ ...input, sourceSha, publisherRoot: input.publisherRoot });
     const targetFile = targets.find(item => item.target.platform === 'windows').file;
     assert.equal(await readFile(targetFile, 'utf8'), 'windows-amd64');
+});
+
+test('release inventory binds five binaries to the exact Beta or Stable source, root, and channel', async () => {
+    const input = await fixture();
+    const betaVersion = '0.32.0-beta.3';
+    const artifactDir = path.join(path.dirname(input.artifactDir), 'beta-artifacts');
+    await mkdir(artifactDir);
+    for (const [platform, arch, suffix] of assets) {
+        await writeFile(path.join(artifactDir, `printmaster-agent-v${betaVersion}-${platform}-${arch}${suffix}`), `beta-${platform}-${arch}`);
+    }
+
+    const targets = await buildAgentReleaseInventory({ ...input, artifactDir, publisherRoot: input.publisherRoot, channel: 'beta', version: betaVersion });
+    assert.equal(targets.length, 5);
+    for (const item of targets) {
+        assert.equal(item.target.channel, 'beta');
+        assert.equal(item.target.version, betaVersion);
+        assert.equal(item.target.format, 'binary');
+        assert.ok(item.target.size_bytes > 0);
+        assert.ok(/^[a-f0-9]{64}$/.test(item.target.sha256));
+    }
+    await assert.rejects(buildAgentReleaseInventory({ ...input, artifactDir, publisherRoot: input.publisherRoot, channel: 'beta', version: '0.32.0-beta.4' }), /match Agent VERSION/);
+    await assert.rejects(buildAgentReleaseInventory({ ...input, artifactDir, publisherRoot: JSON.stringify({ _type: 'root', version: 2 }), channel: 'beta', version: betaVersion }), /root differs/);
+
+    const stableVersion = '0.32.0';
+    await writeFile(path.join(input.sourceRoot, 'agent', 'VERSION'), `${stableVersion}\n`);
+    const stableArtifactDir = path.join(path.dirname(input.artifactDir), 'stable-artifacts');
+    await mkdir(stableArtifactDir);
+    for (const [platform, arch, suffix] of assets) {
+        await writeFile(path.join(stableArtifactDir, `printmaster-agent-v${stableVersion}-${platform}-${arch}${suffix}`), `stable-${platform}-${arch}`);
+    }
+    const stableTargets = await buildAgentReleaseInventory({
+        ...input, artifactDir: stableArtifactDir, publisherRoot: input.publisherRoot,
+        channel: 'stable', version: stableVersion,
+    });
+    assert.equal(stableTargets.length, 5);
+    assert.ok(stableTargets.every(item => item.target.channel === 'stable' && item.target.version === stableVersion));
+    await assert.rejects(buildAgentReleaseInventory({
+        ...input, artifactDir: stableArtifactDir, publisherRoot: input.publisherRoot,
+        channel: 'stable', version: betaVersion,
+    }), /does not match the selected/);
 });
 
 test('first-publication inventory includes the pinned root-bearing baseline and next Dev build', async () => {

@@ -129,6 +129,39 @@ test('publisher workflow is serialized, opt-in, scoped and preserves failure evi
     expect(JSON.stringify(publisher)).not.toMatch(/root\.pem|continue-on-error|cancel-in-progress":true/);
 });
 
+test('Beta and Stable TUF publication is tag-bound, separately gated, and serialized', () => {
+    const publisher = yaml.load(fs.readFileSync(path.join(root, '.github', 'workflows', 'update-publisher-release.yml'), 'utf8'));
+    expect(publisher.on.workflow_run).toEqual({ workflows: ['CD Agent'], types: ['completed'] });
+    expect(publisher.permissions).toEqual({ contents: 'read' });
+    expect(publisher.concurrency).toEqual({ group: 'update-publisher-production', 'cancel-in-progress': false });
+    const release = publisher.jobs['publish-release'];
+    expect(release.if).toContain("github.event.workflow_run.conclusion == 'success'");
+    expect(release.if).toContain("github.event.workflow_run.event == 'push'");
+    expect(release.if).toContain('startsWith(github.event.workflow_run.head_branch, \'agent-v\')');
+    expect(release.if).toContain("vars.ENABLE_UPDATE_PUBLISHER_BETA == 'true'");
+    expect(release.if).toContain("vars.ENABLE_UPDATE_PUBLISHER_STABLE == 'true'");
+    expect(release.environment).toBe('update-publisher-production');
+    expect(release.env.SOURCE_SHA).toBe('${{ github.event.workflow_run.head_sha }}');
+    expect(release.env.CD_RUN_ID).toBe('${{ github.event.workflow_run.id }}');
+    const verify = release.steps.find(step => step.name === 'Resolve release lane and verify exact tag');
+    expect(verify.run).toContain('agent-v([0-9]+\\.[0-9]+\\.[0-9]+)-beta');
+    expect(verify.run).toContain('test "$tag_commit" = "$SOURCE_SHA"');
+    expect(verify.run).toContain('test "$ENABLE_BETA" = true');
+    expect(verify.run).toContain('test "$ENABLE_STABLE" = true');
+    const artifacts = release.steps.find(step => step.name === 'Download exact artifacts from this CD run');
+    expect(artifacts.with['run-id']).toBe('${{ github.event.workflow_run.id }}');
+    expect(artifacts.with.pattern).toBe('agent-binary-*');
+    const inventory = release.steps.find(step => step.name === 'Build exact release inventory');
+    expect(inventory.run).toContain('--release-inventory');
+    const publish = release.steps.find(step => step.name === 'Publish exact Beta or Stable inventory');
+    expect(publish.run).toContain('-mode publish -release-only');
+    expect(publish.run).not.toContain('-bootstrap');
+    expect(publish.env.UPDATE_TARGETS_PEM).toBe('${{ secrets.UPDATE_TARGETS_PEM }}');
+    expect(release['continue-on-error']).toBeUndefined();
+    expect(publisher.jobs['notify-release'].needs).toBe('publish-release');
+    for (const step of release.steps.filter(item => item.uses)) expect(step.uses).toMatch(/@[a-f0-9]{40}$/);
+});
+
 test('publisher credential preflight is manual, serialized and never receives signers', () => {
     const preflight = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/update-publisher-preflight.yml'), 'utf8'));
     expect(Object.keys(preflight.on)).toEqual(['workflow_dispatch']);
@@ -153,6 +186,40 @@ test('publisher credential preflight is manual, serialized and never receives si
     expect(operation.env.UPDATE_STATE_TOKEN).toBe('${{ secrets.UPDATE_STATE_TOKEN }}');
     expect(JSON.stringify(preflight)).not.toMatch(/_PEM|root\.pem|workflow_run|ENABLE_UPDATE_PUBLISHER|upload-artifact|continue-on-error/);
     for (const step of inspect.steps.filter(step => step.uses)) expect(step.uses).toMatch(/@[a-f0-9]{40}$/);
+});
+
+test('Beta and Stable TUF publication is separately gated and bound to exact CD artifacts', () => {
+    const publisher = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/update-publisher-release.yml'), 'utf8'));
+    expect(publisher.on.workflow_run).toEqual({ workflows: ['CD Agent'], types: ['completed'] });
+    expect(publisher.concurrency).toEqual({ group: 'update-publisher-production', 'cancel-in-progress': false });
+    expect(publisher.permissions).toEqual({ contents: 'read' });
+    const release = publisher.jobs['publish-release'];
+    expect(release.if).toContain("github.event.workflow_run.conclusion == 'success'");
+    expect(release.if).toContain("github.event.workflow_run.event == 'push'");
+    expect(release.if).toContain("vars.ENABLE_UPDATE_PUBLISHER_BETA == 'true'");
+    expect(release.if).toContain("vars.ENABLE_UPDATE_PUBLISHER_STABLE == 'true'");
+    expect(release.environment).toBe('update-publisher-production');
+    expect(release.env.SOURCE_SHA).toBe('${{ github.event.workflow_run.head_sha }}');
+    expect(release.env.CD_RUN_ID).toBe('${{ github.event.workflow_run.id }}');
+    const verify = release.steps.find(step => step.name === 'Resolve release lane and verify exact tag');
+    expect(verify.run).toContain('agent-v([0-9]+\\.[0-9]+\\.[0-9]+)-beta');
+    expect(verify.run).toContain('test "$tag_commit" = "$SOURCE_SHA"');
+    expect(verify.run).toContain('ENABLE_BETA');
+    expect(verify.run).toContain('ENABLE_STABLE');
+    const artifacts = release.steps.find(step => step.name === 'Download exact artifacts from this CD run');
+    expect(artifacts.with['run-id']).toBe('${{ github.event.workflow_run.id }}');
+    expect(artifacts.with.pattern).toBe('agent-binary-*');
+    const inventory = release.steps.find(step => step.name === 'Build exact release inventory');
+    expect(inventory.run).toContain('--release-inventory');
+    const publish = release.steps.find(step => step.name === 'Publish exact Beta or Stable inventory');
+    expect(publish.run).toContain('-mode publish -release-only');
+    expect(publish.run).not.toContain('-bootstrap');
+    expect(publish.env.UPDATE_TARGETS_PEM).toBe('${{ secrets.UPDATE_TARGETS_PEM }}');
+    expect(JSON.stringify(release)).not.toMatch(/continue-on-error|cancel-in-progress":true/);
+    for (const step of release.steps.filter(item => item.uses)) expect(step.uses).toMatch(/@[a-f0-9]{40}$/);
+    expect(publisher.jobs['notify-release'].needs).toBe('publish-release');
+    expect(publisher.jobs['notify-release'].permissions).toEqual({ contents: 'read', issues: 'write' });
+    expect(publisher.jobs['notify-release'].steps[0].run).toContain('gh issue create');
 });
 
 test('B2 preflight is manual, opt-in, environment-scoped and cannot publish', () => {

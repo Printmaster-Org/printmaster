@@ -1,0 +1,187 @@
+name: Update Publisher Release
+run-name: "Update publisher release: ${{ github.event.workflow_run.head_branch }}"
+
+on:
+  workflow_run:
+    workflows: [CD Agent]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-publisher-production
+  cancel-in-progress: false
+
+jobs:
+  publish-release:
+    name: Publish exact Beta or Stable Agent release
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.event == 'push' &&
+      startsWith(github.event.workflow_run.head_branch, 'agent-v') &&
+      (vars.ENABLE_UPDATE_PUBLISHER_BETA == 'true' || vars.ENABLE_UPDATE_PUBLISHER_STABLE == 'true')
+    environment: update-publisher-production
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
+      channel: ${{ steps.release.outputs.channel }}
+      version: ${{ steps.release.outputs.version }}
+    env:
+      SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+      CD_RUN_ID: ${{ github.event.workflow_run.id }}
+      RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
+    steps:
+      - name: Checkout exact tag source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve release lane and verify exact tag
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENABLE_BETA: ${{ vars.ENABLE_UPDATE_PUBLISHER_BETA }}
+          ENABLE_STABLE: ${{ vars.ENABLE_UPDATE_PUBLISHER_STABLE }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_TAG" =~ ^agent-v([0-9]+\.[0-9]+\.[0-9]+)-beta\.([1-9][0-9]*)$ ]]; then
+            channel=beta
+            version="${BASH_REMATCH[1]}-beta.${BASH_REMATCH[2]}"
+            test "$ENABLE_BETA" = true
+          elif [[ "$RELEASE_TAG" =~ ^agent-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            channel=stable
+            version="${BASH_REMATCH[1]}"
+            test "$ENABLE_STABLE" = true
+          else
+            echo "Not a supported Beta or Stable Agent tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          test "$(tr -d '\r\n' < agent/VERSION)" = "$version"
+          tag_commit=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
+          test "$tag_commit" = "$SOURCE_SHA"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName > "$RUNNER_TEMP/release.json"
+          test "$(jq -r '.tagName' "$RUNNER_TEMP/release.json")" = "$RELEASE_TAG"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: common/go.mod
+          cache: false
+
+      - name: Require the approved production root
+        working-directory: ./common
+        run: go run ./cmd/update-keys check-root -root ../agent/update_publisher_root.json
+
+      - name: Download exact artifacts from this CD run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          pattern: agent-binary-*
+          path: ${{ runner.temp }}/release-current
+          merge-multiple: true
+
+      - name: Build exact release inventory
+        id: inventory
+        env:
+          UPDATE_ROOT_JSON: ${{ secrets.UPDATE_ROOT_JSON }}
+        run: |
+          set -euo pipefail
+          node scripts/dev-update-inventory.mjs --release-inventory \
+            "$RUNNER_TEMP/release-current" "$GITHUB_WORKSPACE" \
+            "$RUNNER_TEMP/release-inventory.json" \
+            "${{ steps.release.outputs.channel }}" "${{ steps.release.outputs.version }}"
+
+      - name: Build publisher without credentials
+        working-directory: ./common
+        run: go build -o "$RUNNER_TEMP/update-publisher" ./cmd/update-publisher
+
+      - name: Publish exact Beta or Stable inventory
+        id: publish
+        working-directory: ./common
+        env:
+          CHANNEL: ${{ steps.release.outputs.channel }}
+          VERSION: ${{ steps.release.outputs.version }}
+          B2_METADATA_BUCKET: ${{ vars.B2_METADATA_BUCKET }}
+          B2_RECOVERY_BUCKET: ${{ vars.B2_RECOVERY_BUCKET }}
+          B2_S3_ENDPOINT: ${{ vars.B2_S3_ENDPOINT }}
+          UPDATE_PUBLIC_URL: ${{ vars.UPDATE_PUBLIC_URL }}
+          UPDATE_STATE_REPOSITORY: ${{ vars.UPDATE_STATE_REPOSITORY }}
+          UPDATE_STATE_TOKEN: ${{ secrets.UPDATE_STATE_TOKEN }}
+          UPDATE_ROOT_JSON: ${{ secrets.UPDATE_ROOT_JSON }}
+          UPDATE_TARGETS_PEM: ${{ secrets.UPDATE_TARGETS_PEM }}
+          UPDATE_SNAPSHOT_PEM: ${{ secrets.UPDATE_SNAPSHOT_PEM }}
+          UPDATE_TIMESTAMP_PEM: ${{ secrets.UPDATE_TIMESTAMP_PEM }}
+          B2_METADATA_DELIVERY_KEY_ID: ${{ secrets.B2_METADATA_DELIVERY_KEY_ID }}
+          B2_METADATA_DELIVERY_APPLICATION_KEY: ${{ secrets.B2_METADATA_DELIVERY_APPLICATION_KEY }}
+          B2_RECOVERY_DELIVERY_KEY_ID: ${{ secrets.B2_RECOVERY_DELIVERY_KEY_ID }}
+          B2_RECOVERY_DELIVERY_APPLICATION_KEY: ${{ secrets.B2_RECOVERY_DELIVERY_APPLICATION_KEY }}
+          B2_RECOVERY_RESTORE_KEY_ID: ${{ secrets.B2_RECOVERY_RESTORE_KEY_ID }}
+          B2_RECOVERY_RESTORE_APPLICATION_KEY: ${{ secrets.B2_RECOVERY_RESTORE_APPLICATION_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir "$RUNNER_TEMP/publisher-work" "$RUNNER_TEMP/publisher-mirror"
+          "$RUNNER_TEMP/update-publisher" \
+            -mode publish -release-only -release-channel "$CHANNEL" -release-version "$VERSION" \
+            -inventory "$RUNNER_TEMP/release-inventory.json" \
+            -work "$RUNNER_TEMP/publisher-work" \
+            -mirror "$RUNNER_TEMP/publisher-mirror" \
+            -state-repository "$UPDATE_STATE_REPOSITORY" \
+            -public-url "$UPDATE_PUBLIC_URL" -externally-serialized
+          echo "published=true" >> "$GITHUB_OUTPUT"
+
+      - name: Retain public mirror qualification evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-publisher-mirror-${{ steps.release.outputs.channel }}-${{ steps.release.outputs.version }}
+          path: ${{ runner.temp }}/publisher-mirror/*.json
+          if-no-files-found: error
+          retention-days: 7
+          include-hidden-files: false
+
+  notify-release:
+    needs: publish-release
+    if: always() && (needs.publish-release.result == 'failure' || (needs.publish-release.result == 'success' && needs.publish-release.outputs.published == 'true'))
+    runs-on: ubuntu-26.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Report release publisher failure or verified recovery
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RESULT: ${{ needs.publish-release.result }}
+          CHANNEL: ${{ needs.publish-release.outputs.channel || 'release' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Update publisher $CHANNEL needs attention"
+          number=$(gh api --paginate "repos/$GH_REPO/issues?state=open&per_page=100" \
+            --jq ".[] | select(.pull_request == null and .title == \"$title\") | .number")
+          if test "$RESULT" = failure; then
+            body="The exact Beta/Stable release publication or mirror verification failed. Preserve pending state and recover exact bytes before signing again. Run: $RUN_URL"
+            if test -z "$number"; then
+              gh issue create --title "$title" --body "$body" --assignee mstrhakr
+            else
+              for issue in $number; do gh issue comment "$issue" --body "$body"; done
+            fi
+          elif test -n "$number"; then
+            for issue in $number; do
+              gh issue close "$issue" --comment "Exact release authority, public metadata, and mirror verification passed: $RUN_URL"
+            done
+          fi
