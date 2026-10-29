@@ -348,7 +348,9 @@ Write-Output (ConvertTo-Json -Compress -Depth 4 -InputObject $results)
 				case "legacy executable":
 					diagnosticPath = `programfiles\PrintMaster\printmaster-agent-v0.31.1.exe`
 				}
-				if diagnosticPath != "" && !strings.Contains(result.Reason, diagnosticPath) {
+				reasonPath := strings.ReplaceAll(result.Reason, `\`, "/")
+				diagnosticPath = strings.ReplaceAll(diagnosticPath, `\`, "/")
+				if diagnosticPath != "" && !strings.Contains(reasonPath, diagnosticPath) {
 					t.Errorf("scenario %q hides the blocking path: %s", result.Scenario, result.Reason)
 				}
 			}

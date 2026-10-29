@@ -161,3 +161,21 @@ func TestDevOnlyRejectsRootChangeBeforePublisherCredentials(t *testing.T) {
 		t.Fatalf("root transition did not fail before credentials: %v", err)
 	}
 }
+
+func TestReleaseOnlyRejectsRootChangeBeforePublisherCredentials(t *testing.T) {
+	args := []string{
+		"-mode", "publish", "-release-only", "-release-channel", "beta",
+		"-release-version", "0.32.0-beta.4", "-inventory", "inventory.json",
+		"-work", "work", "-mirror", "mirror", "-state-repository", "owner/repo",
+		"-public-url", "https://metadata.example", "-externally-serialized",
+	}
+	err := run(args, func(name string) string {
+		if name != "UPDATE_ROOT_JSON" {
+			t.Fatalf("root mismatch accessed credential %s", name)
+		}
+		return "null"
+	}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "publisher root fingerprint changed") {
+		t.Fatalf("release publisher did not fail before credentials on root mismatch: %v", err)
+	}
+}
