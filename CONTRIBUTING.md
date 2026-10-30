@@ -172,6 +172,53 @@ go test -v -run TestFunctionName ./package/
 go test -race ./...
 ```
 
+### Qualifying the 0.32 Legacy Bridge
+
+0.32.x retains the legacy manifest/download protocol for the first upgrade
+from 0.30.x/0.31.x. Remove legacy updater support in 0.33.0 Stable. Modern
+Agents must continue requiring TUF; a TUF error must never enable legacy
+signature authorization or an unverified installation.
+
+The required CI `legacy-updaters` jobs compile the updater and HTTP client
+from pinned 0.30.5, 0.31.0, and 0.31.1 commits against the current Server.
+For a local diagnostic, from `server/`:
+
+```powershell
+$env:GOWORK = 'off'
+$env:PRINTMASTER_TEST_LEGACY_UPDATERS = '1'
+go test . -run '^TestHistoricalLegacyUpdaterAgainstCurrentServer$' -count=1 -timeout=15m -v
+```
+
+This test extracts historical source into temporary directories and verifies
+legacy discovery, resumed downloads, hash rejection, authentication, and
+installation handoff. Its artifact is not executable; Windows helper launch
+and process restart are stubbed. It does not qualify a real service restart,
+MSI transaction, package repository, or database migration. It requires the
+pinned Git history and access to historical Go module dependencies.
+
+Before publishing 0.32.0 Stable:
+
+- Require a successful full CI attempt for the exact release source SHA.
+- Run `legacy-linux-migration.yml` and `legacy-windows-migration.yml` on
+  disposable hosted runners for 0.30.5, 0.31.0, and 0.31.1. Preserve and review
+  failed/timed-out installer evidence; do not retry an ambiguous transaction.
+- Publish exact Stable MSI/DEB/RPM TUF identities in addition to the five
+  binary targets. The current release inventory builder and publisher guard
+  accept binary targets only; extend both and verify the actual packaged
+  bytes, including any RPM transformations. Keep Beta binary-only.
+- Document pre-existing legacy MSI/portable format ambiguity and the
+  matching-MSI manual workaround. Do not copy historical artifact collisions
+  or misrepresent installer migration tests as legacy automatic MSI updates.
+- Use release scripts, not manual VERSION edits. Prepare the version commit
+  without pushing its tag; push the commit, qualify its exact SHA, then
+  publish the tag. Agent and Server releases are independent.
+- Enable the Stable publisher gate only for the authorized release. Verify
+  published GitHub assets, package repositories, and public TUF metadata
+  agree on hashes, versions, platform, architecture, and format.
+- Verify a pilot upgrade preserves identity, credentials, configuration,
+  saved devices, service health, and heartbeat. Test a subsequent TUF update
+  separately from the legacy first hop before broad rollout.
+
 ### Writing Tests
 
 - Use table-driven tests where appropriate
