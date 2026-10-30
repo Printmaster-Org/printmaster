@@ -89,18 +89,19 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: '**/go.sum'
       - name: Exercise pinned historical clients against current Server
-        working-directory: server
         env:
           PRINTMASTER_TEST_LEGACY_UPDATERS: '1'
-        run: go test . -run '^TestHistoricalLegacyUpdaterAgainstCurrentServer$' -count=1 -timeout=15m -v
+        run: node scripts/run-tests.js --suite go --module server --package ./
       - name: Require modern TUF authorization without legacy fallback
-        working-directory: agent
-        run: go test ./autoupdate -run 'TestMissingPublisherTrustBlocksAllEntryPoints|TestPublisherFailureCannotFallBackToLegacySignature|TestPublisherTargetUsesIntendedIdentity' -count=1
+        run: node scripts/run-tests.js --suite go --module agent --package ./autoupdate
 
   javascript:
     name: Jest

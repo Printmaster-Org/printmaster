@@ -194,7 +194,7 @@ test('CI uses the same runner for every test suite and preserves the complete ga
     for (const selection of ['lint,go', 'js', 'playwright', 'integration', 'docker']) {
         expect(commands.some(command => command.includes(`bash tests.sh --suite ${selection}`))).toBe(true);
     }
-    expect(ci.jobs['ci-passed'].needs).toEqual(['modules', 'go', 'installer-permissions', 'javascript', 'playwright', 'integration', 'e2e']);
+    expect(ci.jobs['ci-passed'].needs).toEqual(['modules', 'go', 'installer-permissions', 'legacy-updaters', 'javascript', 'playwright', 'integration', 'e2e']);
     expect(ci.jobs.playwright.needs).toBeUndefined();
     expect(ci.jobs.javascript.needs).toBeUndefined();
     expect(ci.jobs.playwright.strategy.matrix.shard).toEqual([1, 2, 3, 4, 5, 6]);

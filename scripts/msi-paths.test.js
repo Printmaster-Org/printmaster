@@ -43,10 +43,11 @@ test('legacy MSI qualification is disposable manual-only, independently pinned a
     const workflow = yaml.load(read('.github/workflows/legacy-windows-migration.yml'));
     expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
     expect(workflow.jobs.migrate['runs-on']).toBe('windows-latest');
-    expect(workflow.jobs.migrate.strategy.matrix.version).toEqual(['0.31.0', '0.31.1']);
+    expect(workflow.jobs.migrate.strategy.matrix.version).toEqual(['0.30.5', '0.31.0', '0.31.1']);
     const script = read('scripts/qualify-legacy-windows-migration.ps1');
     expect(script).toContain('RUNNER_ENVIRONMENT');
     expect(script).toContain('github-hosted');
+    expect(script).toContain('01a29a6fd941840e780444515312f16a240d7b286a7a35370b3289daa7039a64');
     expect(script).toContain('467515862f9760761e7467e435a73862b1a549f2df18c6e998533b69ad25a6ab');
     expect(script).toContain('447fd61df0f985c0b2e8fde01f545469c30bed77f781c9fcb5bec6d42ff4cc42');
     expect(script).toContain("'InstallServices'");

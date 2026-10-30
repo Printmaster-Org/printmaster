@@ -71,11 +71,9 @@ test('historical updater bridge and modern TUF isolation are required by the rel
     expect(bridge.steps[0].with['fetch-depth']).toBe(0);
     expect(bridge.steps[0].with['persist-credentials']).toBe(false);
     const historical = bridge.steps.find(step => step.env?.PRINTMASTER_TEST_LEGACY_UPDATERS);
-    expect(historical.workingDirectory || historical['working-directory']).toBe('server');
-    expect(historical.run).toContain('^TestHistoricalLegacyUpdaterAgainstCurrentServer$');
-    const modern = bridge.steps.find(step => step['working-directory'] === 'agent');
-    expect(modern.run).toContain('TestMissingPublisherTrustBlocksAllEntryPoints');
-    expect(modern.run).toContain('TestPublisherFailureCannotFallBackToLegacySignature');
+    expect(historical.run).toBe('node scripts/run-tests.js --suite go --module server --package ./');
+    const modern = bridge.steps.find(step => step.name === 'Require modern TUF authorization without legacy fallback');
+    expect(modern.run).toBe('node scripts/run-tests.js --suite go --module agent --package ./autoupdate');
     expect(ci.jobs['ci-passed'].needs).toContain('legacy-updaters');
     for (const step of bridge.steps) expect(step['continue-on-error']).toBeUndefined();
 });
