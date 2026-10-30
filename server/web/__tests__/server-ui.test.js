@@ -61,6 +61,46 @@ describe('agent lifecycle status filters', () => {
     });
 });
 
+describe('legacy Agent bridge advisory', () => {
+    function renderer() {
+        return setup(['renderLegacyAgentUpdateBadge', 'renderAgentVersionCell'], {
+            escapeHtml: value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;'),
+            agentsVM: { latestVersion: '', updateState: {} },
+        }).context;
+    }
+
+    test.each(['0.9.9', '0.30.0', '0.30.5', '0.31.1', 'v0.31.1', '0.31.2-beta.1', '0.30.5+build'])('warns for %s in table and cards', version => {
+        const context = renderer();
+        for (const forTable of [true, false]) {
+            const markup = context.renderAgentVersionCell({ version }, forTable);
+            expect(markup).toContain('Legacy updater</span>');
+            expect(markup).toContain('Update this Agent to 0.32.x before upgrading the Server to 0.33.0 Stable.');
+            expect(markup).toContain('Legacy updater support ends in 0.33.0 Stable.');
+            expect(markup).toContain('aria-label=');
+        }
+    });
+
+    test.each(['', 'N/A', 'unknown', '0.31', '0.31.1<script>', '0.32.0-beta.3', '0.32.0', '0.33.0', '1.0.0'])('does not label %s as legacy', version => {
+        expect(renderer().renderLegacyAgentUpdateBadge({ version })).toBe('');
+    });
+
+    test('excludes invitations and clears after the Agent reports 0.32', () => {
+        const context = renderer();
+        const agent = { version: '0.31.1', pending_deployment: true };
+        expect(context.renderLegacyAgentUpdateBadge(agent)).toBe('');
+        agent.pending_deployment = false;
+        expect(context.renderLegacyAgentUpdateBadge(agent)).toContain('Legacy updater');
+        agent.version = '0.32.0';
+        expect(context.renderLegacyAgentUpdateBadge(agent)).toBe('');
+    });
+
+    test('keeps warning during an update', () => {
+        const context = renderer();
+        context.agentsVM.updateState.legacy = { status: 'downloading', progress: 25 };
+        expect(context.renderAgentVersionCell({ agent_id: 'legacy', version: '0.31.1' }, true)).toContain('Legacy updater');
+    });
+});
+
 describe('bootstrap installation guidance', () => {
     function render(platform, clipboard) {
         const oneLiner = 'irm https://example.invalid/install/fixture | iex';
@@ -294,7 +334,7 @@ describe('ordered agent update lifecycle', () => {
     });
 
     test('version cells keep final check/errors visible without hiding later available updates', () => {
-        const { context: render, document } = setup(['renderAgentVersionCell'], {
+        const { context: render, document } = setup(['renderLegacyAgentUpdateBadge', 'renderAgentVersionCell'], {
             agentsVM, compareVersions: () => 1,
             escapeHtml: value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;'),
         });

@@ -10615,10 +10615,20 @@ function renderAgentCards(agents) {
     cards.innerHTML = agents.map(agent => renderAgentCard(agent)).join('');
 }
 
+function renderLegacyAgentUpdateBadge(agent) {
+    if (agent.pending_deployment) return '';
+    const version = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(String(agent.version || '').trim());
+    if (!version || Number(version[1]) !== 0 || Number(version[2]) > 31) return '';
+    const message = 'Update this Agent to 0.32.x before upgrading the Server to 0.33.0 Stable. Legacy updater support ends in 0.33.0 Stable.';
+    return `<span class="status-pill warning" title="${escapeHtml(message)}" aria-label="${escapeHtml('Legacy updater. ' + message)}">Legacy updater</span>`;
+}
+
 function renderAgentVersionCell(agent, forTable = false) {
     const currentVersion = agent.version || '';
     const latestVersion = agentsVM.latestVersion;
     let displayVersion = escapeHtml(currentVersion || 'N/A');
+    const legacyBadge = renderLegacyAgentUpdateBadge(agent);
+    if (legacyBadge) displayVersion += ` ${legacyBadge}`;
     const agentId = agent.agent_id || '';
 
     // Check if there's an active update for this agent
