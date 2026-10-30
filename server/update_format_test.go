@@ -38,6 +38,25 @@ func TestAgentUpdateManifestAndDownloadHonorFormat(t *testing.T) {
 	if err := f.store.UpsertGlobalSettings(ctx, &storage.SettingsRecord{Settings: pmsettings.DefaultSettings()}); err != nil {
 		t.Fatal(err)
 	}
+	for _, version := range []string{"0.30.5", "0.31.0", "0.31.1"} {
+		path := filepath.Join(t.TempDir(), "legacy-agent")
+		body := []byte("legacy-agent-" + version)
+		if err := os.WriteFile(path, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		hash := sha256.Sum256(body)
+		artifact := &storage.ReleaseArtifact{
+			Component: "agent", Version: version, Channel: "stable", Platform: "windows", Arch: "amd64",
+			SourceURL: "https://example.com/legacy-agent", CachePath: path,
+			SHA256: hex.EncodeToString(hash[:]), SizeBytes: int64(len(body)),
+		}
+		if err := f.store.UpsertReleaseArtifact(ctx, artifact); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := releaseManager.EnsureManifestForArtifact(ctx, artifact); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	cacheDir := t.TempDir()
 	payloads := map[string]string{"binary": "raw-exe-bytes", "msi": "msi-package-bytes"}
@@ -72,6 +91,7 @@ func TestAgentUpdateManifestAndDownloadHonorFormat(t *testing.T) {
 	type manifestResponse struct {
 		Success  bool `json:"success"`
 		Manifest struct {
+			Version     string `json:"version"`
 			Format      string `json:"format"`
 			SHA256      string `json:"sha256"`
 			DownloadURL string `json:"download_url"`
@@ -88,10 +108,12 @@ func TestAgentUpdateManifestAndDownloadHonorFormat(t *testing.T) {
 	for _, tc := range []struct {
 		name, requested, wantFormat, wantURLSuffix string
 	}{
-		// Pinned wire contracts: both stable versions omit format and
-		// explicit_channel. This does not execute their legacy installers.
+		// Pinned legacy wire contracts: stable requests omit format and
+		// explicit_channel, and must still receive the current stable binary.
+		// 0.30.5: agent-v0.30.5
 		// v0.31.0: 84ed40c6bbed41414c4bf345c7a72e533afad404
 		// v0.31.1: fc829197b991853a78da72cab625b1c821d0d91b
+		{"0.30.5 request", "", "binary", "/windows-amd64"},
 		{"0.31.0 request", "", "binary", "/windows-amd64"},
 		{"0.31.1 request", "", "binary", "/windows-amd64"},
 		{"binary install", "binary", "binary", "/windows-amd64"},
@@ -109,7 +131,7 @@ func TestAgentUpdateManifestAndDownloadHonorFormat(t *testing.T) {
 				t.Fatalf("manifest request failed: %d %s", w.Code, w.Body.String())
 			}
 			hash := sha256.Sum256([]byte(payloads[tc.wantFormat]))
-			if resp.Manifest.Format != tc.wantFormat || resp.Manifest.SHA256 != hex.EncodeToString(hash[:]) {
+			if resp.Manifest.Version != "0.32.0" || resp.Manifest.Format != tc.wantFormat || resp.Manifest.SHA256 != hex.EncodeToString(hash[:]) {
 				t.Fatalf("got format %q sha %q, want %s artifact", resp.Manifest.Format, resp.Manifest.SHA256, tc.wantFormat)
 			}
 			if !strings.HasSuffix(resp.Manifest.DownloadURL, tc.wantURLSuffix) {

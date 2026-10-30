@@ -31,7 +31,7 @@ func TestLiveLegacyWindowsMSIMigration(t *testing.T) {
 	}
 	work := os.Getenv("PRINTMASTER_LIVE_LEGACY_MSI_DIR")
 	version := os.Getenv("PRINTMASTER_LIVE_LEGACY_MSI_VERSION")
-	if !filepath.IsAbs(work) || (version != "0.31.0" && version != "0.31.1") {
+	if !filepath.IsAbs(work) || (version != "0.30.5" && version != "0.31.0" && version != "0.31.1") {
 		t.Fatal("invalid native MSI fixture configuration")
 	}
 	connection, err := mgr.Connect()

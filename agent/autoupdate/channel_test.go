@@ -131,6 +131,31 @@ func TestBetaReleaseVersionOrdering(t *testing.T) {
 	}
 }
 
+func TestLegacyStableUpgradePolicyAllows030And031To032(t *testing.T) {
+	t.Parallel()
+	for _, current := range []string{"0.30.0", "0.30.5", "0.31.0", "0.31.1"} {
+		t.Run(current, func(t *testing.T) {
+			t.Parallel()
+			manager, err := NewManager(Options{
+				Enabled: true, CurrentVersion: current, Channel: "stable", DataDir: t.TempDir(),
+				ServerClient: &channelTestClient{},
+				PolicyProvider: &mockPolicyProvider{enabled: true, spec: updatepolicy.PolicySpec{
+					VersionPinStrategy: updatepolicy.VersionPinMajor,
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			allowed, err := manager.applicationPolicy(context.Background(), &UpdateManifest{
+				Version: "0.32.0", Channel: "stable",
+			}, false)
+			if err != nil || !allowed {
+				t.Fatalf("stable upgrade from %s to 0.32.0 rejected: allowed=%t err=%v", current, allowed, err)
+			}
+		})
+	}
+}
+
 func TestDevReleaseUpdateNeeded(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

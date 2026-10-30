@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: ['0.31.0', '0.31.1']
+        version: ['0.30.5', '0.31.0', '0.31.1']
         format: [deb, rpm]
     env:
       PRINTMASTER_LIVE_LEGACY_MIGRATION: disposable-github-runner

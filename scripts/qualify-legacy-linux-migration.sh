@@ -13,8 +13,10 @@ format="${3:?expected deb or rpm}"
 source_dir="${4:?expected source directory}"
 work="${5:?expected qualification directory}"
 case "$version:$format" in
+    0.30.5:deb) digest=8401dff90137a596911bfe36bd35158007fec3992f49a8a0ca06429a32076d9d ;;
     0.31.0:deb) digest=886c991ff24c66d486b085eced4d2f951bb9f28ffdc7f98fc982184a1623f198 ;;
     0.31.1:deb) digest=abf11273818443f64557d6da6b8ee7f5f65774682ca17bab9c5f857d39d406d0 ;;
+    0.30.5:rpm) digest=e96210d5706c9b42882d8126ebab62d3f0509742efeb242b74d395e7131221bb ;;
     0.31.0:rpm) digest=86a267a68b9fd26235bc6b12c0b4104eee6e47e3ca1ff5d1246c5c94dce3df1a ;;
     0.31.1:rpm) digest=986e7fcfa90576a5bc1c8034b13d3a67300f7adb17a03ca92a0815867b7cfc92 ;;
     *) echo "Unsupported pinned legacy package: $version $format" >&2; exit 1 ;;
@@ -23,7 +25,11 @@ mkdir -p "$work/evidence"
 baseline="$work/baseline.$format"
 if [[ "$action" == fetch ]]; then
     asset="printmaster-agent_${version}_amd64.deb"
-    if [[ "$format" == rpm ]]; then asset="printmaster-agent-${version}-1.fc44.x86_64.rpm"; fi
+    if [[ "$format" == rpm ]]; then
+        fedora_release=fc44
+        if [[ "$version" == 0.30.5 ]]; then fedora_release=fc43; fi
+        asset="printmaster-agent-${version}-1.${fedora_release}.x86_64.rpm"
+    fi
     curl --fail --location --proto '=https' --proto-redir '=https' --max-time 120 \
         --output "$baseline" "https://github.com/Printmaster-Org/printmaster/releases/download/agent-v${version}/${asset}"
     printf '%s  %s\n' "$digest" "$baseline" | sha256sum --check

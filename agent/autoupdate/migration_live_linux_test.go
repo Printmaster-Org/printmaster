@@ -34,7 +34,7 @@ func TestLiveLegacyLinuxMigration(t *testing.T) {
 	format := os.Getenv("PRINTMASTER_LIVE_LEGACY_MIGRATION_FORMAT")
 	version := os.Getenv("PRINTMASTER_LIVE_LEGACY_MIGRATION_VERSION")
 	if !filepath.IsAbs(work) || (format != "deb" && format != "rpm") ||
-		(version != "0.31.0" && version != "0.31.1") {
+		(version != "0.30.5" && version != "0.31.0" && version != "0.31.1") {
 		t.Fatal("invalid native migration fixture configuration")
 	}
 	ctx := t.Context()

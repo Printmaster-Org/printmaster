@@ -1,5 +1,5 @@
 param(
-    [Parameter(Mandatory)][ValidateSet('0.31.0', '0.31.1')][string]$Version,
+    [Parameter(Mandatory)][ValidateSet('0.30.5', '0.31.0', '0.31.1')][string]$Version,
     [Parameter(Mandatory)][string]$Work
 )
 $ErrorActionPreference = 'Stop'
@@ -8,6 +8,7 @@ if ($env:PRINTMASTER_LIVE_LEGACY_MSI -ne 'disposable-github-runner' -or
     throw 'Native MSI migration requires an explicitly approved disposable GitHub-hosted runner.'
 }
 $digests = @{
+    '0.30.5' = '01a29a6fd941840e780444515312f16a240d7b286a7a35370b3289daa7039a64'
     '0.31.0' = '467515862f9760761e7467e435a73862b1a549f2df18c6e998533b69ad25a6ab'
     '0.31.1' = '447fd61df0f985c0b2e8fde01f545469c30bed77f781c9fcb5bec6d42ff4cc42'
 }
