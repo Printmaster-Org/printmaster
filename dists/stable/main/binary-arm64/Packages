@@ -1,17 +1,17 @@
 Package: printmaster-agent
-Version: 0.31.1
+Version: 0.32.0
 Architecture: arm64
 Maintainer: PrintMaster Team <printmaster@example.com>
-Installed-Size: 17292
+Installed-Size: 36640
 Depends: libc6
-Filename: pool/main/printmaster-agent_0.31.1_arm64.deb
-Size: 5717508
-MD5sum: 44c9fc98576558d2b26ce81b82d4c45e
-SHA1: d6fb55e67db70a32605d07d866d5852951f4f026
-SHA256: 202a5e7549dfe8014c19177701a1f44db4b77b2aa10682607fbbbf1262e25eec
+Filename: pool/main/printmaster-agent_0.32.0_arm64.deb
+Size: 10864518
+MD5sum: 2d3201efef72eff9a2fa3fd17a9718d4
+SHA1: 80095680455594f78749ab60e03e9b089947d838
+SHA256: 3e5754d3b2e56d40894a311b643d57275414b042cb274d8a601f9f4043c71cfa
 Section: admin
 Priority: optional
-Homepage: https://github.com/mstrhakr/printmaster
+Homepage: https://github.com/printmaster-org/printmaster
 Description: PrintMaster Agent - Network printer fleet management
  PrintMaster Agent discovers and monitors network printers via SNMP,
  collects metrics (page counts, toner levels, status), and optionally
