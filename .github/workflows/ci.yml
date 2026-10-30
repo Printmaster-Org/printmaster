@@ -74,6 +74,34 @@ jobs:
   installer-permissions:
     uses: ./.github/workflows/installer-permissions.yml
 
+  legacy-updaters:
+    name: Legacy updater bridge (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, windows-latest]
+    env:
+      GOWORK: 'off'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: '**/go.sum'
+      - name: Exercise pinned historical clients against current Server
+        working-directory: server
+        env:
+          PRINTMASTER_TEST_LEGACY_UPDATERS: '1'
+        run: go test . -run '^TestHistoricalLegacyUpdaterAgainstCurrentServer$' -count=1 -timeout=15m -v
+      - name: Require modern TUF authorization without legacy fallback
+        working-directory: agent
+        run: go test ./autoupdate -run 'TestMissingPublisherTrustBlocksAllEntryPoints|TestPublisherFailureCannotFallBackToLegacySignature|TestPublisherTargetUsesIntendedIdentity' -count=1
+
   javascript:
     name: Jest
     runs-on: ubuntu-26.04
@@ -190,7 +218,7 @@ jobs:
   ci-passed:
     name: CI Passed
     runs-on: ubuntu-26.04
-    needs: [modules, go, installer-permissions, javascript, playwright, integration, e2e]
+    needs: [modules, go, installer-permissions, legacy-updaters, javascript, playwright, integration, e2e]
     if: always()
     steps:
       - name: Check results

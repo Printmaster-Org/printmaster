@@ -62,6 +62,24 @@ test('native installer permission qualification is required by the CI release ga
     for (const step of native.steps) expect(step['continue-on-error']).toBeUndefined();
 });
 
+test('historical updater bridge and modern TUF isolation are required by the release gate', () => {
+    const ci = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8'));
+    const bridge = ci.jobs['legacy-updaters'];
+    expect(bridge.strategy.matrix.os).toEqual(['ubuntu-26.04', 'windows-latest']);
+    expect(bridge.strategy['fail-fast']).toBe(false);
+    expect(bridge.env.GOWORK).toBe('off');
+    expect(bridge.steps[0].with['fetch-depth']).toBe(0);
+    expect(bridge.steps[0].with['persist-credentials']).toBe(false);
+    const historical = bridge.steps.find(step => step.env?.PRINTMASTER_TEST_LEGACY_UPDATERS);
+    expect(historical.workingDirectory || historical['working-directory']).toBe('server');
+    expect(historical.run).toContain('^TestHistoricalLegacyUpdaterAgainstCurrentServer$');
+    const modern = bridge.steps.find(step => step['working-directory'] === 'agent');
+    expect(modern.run).toContain('TestMissingPublisherTrustBlocksAllEntryPoints');
+    expect(modern.run).toContain('TestPublisherFailureCannotFallBackToLegacySignature');
+    expect(ci.jobs['ci-passed'].needs).toContain('legacy-updaters');
+    for (const step of bridge.steps) expect(step['continue-on-error']).toBeUndefined();
+});
+
 test('publisher workflow is serialized, opt-in, scoped and preserves failure evidence', () => {
     const publisher = yaml.load(fs.readFileSync(path.join(root, '.github', 'workflows', 'update-publisher.yml'), 'utf8'));
     expect(publisher.on.workflow_dispatch.inputs.lane.options).toEqual(['rehearsal', 'production']);
