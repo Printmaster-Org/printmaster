@@ -85,7 +85,7 @@ func TestDevInventoryRequiresPinnedBaselineAndCurrentBuild(t *testing.T) {
 	}
 }
 
-func TestAgentReleaseInventoryRequiresExactFivePlatformBinaryMatrix(t *testing.T) {
+func TestAgentReleaseInventoryRequiresExactChannelArtifactMatrix(t *testing.T) {
 	const version = "0.32.0-beta.4"
 	platforms := []struct{ platform, arch string }{
 		{"linux", "amd64"}, {"linux", "arm64"}, {"windows", "amd64"},
@@ -122,11 +122,33 @@ func TestAgentReleaseInventoryRequiresExactFivePlatformBinaryMatrix(t *testing.T
 		stableTargets[i].Target.Channel = "stable"
 		stableTargets[i].Target.Version = "0.32.0"
 	}
+	if err := validateAgentReleaseInventory(stableTargets, "stable", "0.32.0"); err == nil {
+		t.Fatal("Stable binary-only inventory accepted without package authorization")
+	}
+	for _, item := range []struct{ platform, arch, format string }{
+		{"windows", "amd64", "msi"}, {"linux", "amd64", "deb"}, {"linux", "arm64", "deb"},
+		{"linux", "amd64", "rpm"}, {"linux", "arm64", "rpm"},
+	} {
+		stableTargets = append(stableTargets, updatetrust.PublishTarget{Target: updatetrust.Target{
+			Component: "agent", Channel: "stable", Version: "0.32.0", Platform: item.platform,
+			Arch: item.arch, Format: item.format, SHA256: strings.Repeat("b", 64), SizeBytes: 2048,
+		}})
+	}
 	if err := validateAgentReleaseInventory(stableTargets, "stable", "0.32.0"); err != nil {
 		t.Fatalf("valid Stable inventory rejected: %v", err)
 	}
 	if err := validateAgentReleaseInventory(stableTargets, "stable", version); err == nil {
 		t.Fatal("Beta version accepted in Stable inventory")
+	}
+	duplicate := append([]updatetrust.PublishTarget(nil), stableTargets...)
+	duplicate[len(duplicate)-1] = duplicate[0]
+	if err := validateAgentReleaseInventory(duplicate, "stable", "0.32.0"); err == nil {
+		t.Fatal("duplicate binary accepted instead of required RPM")
+	}
+	wrongFormat := append([]updatetrust.PublishTarget(nil), stableTargets...)
+	wrongFormat[len(wrongFormat)-1].Target.Format = "msi"
+	if err := validateAgentReleaseInventory(wrongFormat, "stable", "0.32.0"); err == nil {
+		t.Fatal("Linux MSI accepted instead of RPM")
 	}
 }
 

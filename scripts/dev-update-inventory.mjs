@@ -70,17 +70,29 @@ export async function loadDevBaselines(sourceRoot, baseVersion, registryOverride
 }
 
 async function buildVersionTargets({ artifactDir, version, channel = 'dev', expectedDigests = null }) {
-    const expectedNames = REQUIRED.map(([platform, arch, suffix]) => `printmaster-agent-v${version}-${platform}-${arch}${suffix}`).sort();
     const files = await readdir(artifactDir, { withFileTypes: true });
     if (files.some(entry => !entry.isFile())) throw new Error(`artifact directory for ${version} must contain only flat regular files`);
     const actualNames = files.map(entry => entry.name).sort();
+    const matrix = REQUIRED.map(([platform, arch, suffix]) => ({
+        platform, arch, format: 'binary', filename: `printmaster-agent-v${version}-${platform}-${arch}${suffix}`,
+    }));
+    if (channel === 'stable') {
+        matrix.push({ platform: 'windows', arch: 'amd64', format: 'msi', filename: `printmaster-agent-v${version}-windows-amd64.msi` });
+        for (const [arch, rpmArch] of [['amd64', 'x86_64'], ['arm64', 'aarch64']]) {
+            matrix.push({ platform: 'linux', arch, format: 'deb', filename: `printmaster-agent_${version}_${arch}.deb` });
+            const pattern = new RegExp(`^printmaster-agent-${version.replaceAll('.', '\\.')}\\-1\\.fc[1-9]\\d*\\.${rpmArch}\\.rpm$`);
+            const matches = actualNames.filter(name => pattern.test(name));
+            if (matches.length !== 1) throw new Error(`expected exactly one Stable ${arch} RPM for ${version}`);
+            matrix.push({ platform: 'linux', arch, format: 'rpm', filename: matches[0] });
+        }
+    }
+    const expectedNames = matrix.map(item => item.filename).sort();
     if (JSON.stringify(actualNames) !== JSON.stringify(expectedNames)) {
         throw new Error(`artifact set for ${version} does not match required matrix; expected ${expectedNames.join(', ')}`);
     }
 
     const targets = [];
-    for (const [platform, arch, suffix] of REQUIRED) {
-        const filename = `printmaster-agent-v${version}-${platform}-${arch}${suffix}`;
+    for (const { platform, arch, format, filename } of matrix) {
         const file = path.resolve(artifactDir, filename);
         const info = await lstat(file);
         if (!info.isFile() || info.isSymbolicLink() || info.size <= 0 || info.size > MAX_ARTIFACT_BYTES) {
@@ -91,7 +103,7 @@ async function buildVersionTargets({ artifactDir, version, channel = 'dev', expe
             throw new Error(`pinned baseline digest mismatch: ${filename}`);
         }
         targets.push({
-            target: { component: 'agent', channel, version, platform, arch, format: 'binary', sha256: digest, size_bytes: info.size },
+            target: { component: 'agent', channel, version, platform, arch, format, sha256: digest, size_bytes: info.size },
             file,
         });
     }
@@ -177,7 +189,7 @@ async function main() {
         if (!publisherRoot) throw new Error('publisher root is required');
         const targets = await buildAgentReleaseInventory({ artifactDir, sourceRoot, publisherRoot, channel, version });
         await writeFile(outputPath, `${JSON.stringify(targets, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
-        process.stdout.write(`Validated ${targets.length} ${channel} Agent binaries for ${version}.\n`);
+        process.stdout.write(`Validated ${targets.length} ${channel} Agent artifacts for ${version}.\n`);
         return;
     }
     if (process.argv[2] === '--baseline-list') {

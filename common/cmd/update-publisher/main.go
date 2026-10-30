@@ -401,19 +401,24 @@ func validateAgentReleaseInventory(targets []updatetrust.PublishTarget, channel,
 		}
 	}
 	expected := map[string]struct{}{
-		"linux/amd64": {}, "linux/arm64": {}, "windows/amd64": {},
-		"darwin/amd64": {}, "darwin/arm64": {},
+		"linux/amd64/binary": {}, "linux/arm64/binary": {}, "windows/amd64/binary": {},
+		"darwin/amd64/binary": {}, "darwin/arm64/binary": {},
+	}
+	if channel == "stable" {
+		for _, key := range []string{"windows/amd64/msi", "linux/amd64/deb", "linux/arm64/deb", "linux/amd64/rpm", "linux/arm64/rpm"} {
+			expected[key] = struct{}{}
+		}
 	}
 	if len(targets) != len(expected) {
-		return fmt.Errorf("release publication requires exactly %d Agent binaries", len(expected))
+		return fmt.Errorf("release publication requires exactly %d Agent targets for %s", len(expected), channel)
 	}
 	seen := make(map[string]struct{}, len(targets))
 	for _, entry := range targets {
 		target := entry.Target
-		key := target.Platform + "/" + target.Arch
+		key := target.Platform + "/" + target.Arch + "/" + target.Format
 		if _, ok := expected[key]; !ok || target.Component != "agent" || target.Channel != channel ||
-			target.Version != version || target.Format != "binary" {
-			return fmt.Errorf("release publisher accepts only the exact agent/%s binary matrix", channel)
+			target.Version != version {
+			return fmt.Errorf("release publisher accepts only the exact agent/%s artifact matrix", channel)
 		}
 		if target.SizeBytes <= 0 || len(target.SHA256) != 64 || strings.Trim(target.SHA256, "0123456789abcdef") != "" {
 			return fmt.Errorf("invalid release target digest or size")

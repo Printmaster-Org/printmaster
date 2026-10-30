@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -72,7 +72,7 @@ test('target digests match the exact artifact bytes', async () => {
     assert.equal(await readFile(targetFile, 'utf8'), 'windows-amd64');
 });
 
-test('release inventory binds five binaries to the exact Beta or Stable source, root, and channel', async () => {
+test('release inventory binds Beta binaries and Stable packages to exact source, root, and channel', async () => {
     const input = await fixture();
     const betaVersion = '0.32.0-beta.3';
     const artifactDir = path.join(path.dirname(input.artifactDir), 'beta-artifacts');
@@ -100,12 +100,39 @@ test('release inventory binds five binaries to the exact Beta or Stable source, 
     for (const [platform, arch, suffix] of assets) {
         await writeFile(path.join(stableArtifactDir, `printmaster-agent-v${stableVersion}-${platform}-${arch}${suffix}`), `stable-${platform}-${arch}`);
     }
+    const packages = [
+        `printmaster-agent-v${stableVersion}-windows-amd64.msi`,
+        `printmaster-agent_${stableVersion}_amd64.deb`,
+        `printmaster-agent_${stableVersion}_arm64.deb`,
+        `printmaster-agent-${stableVersion}-1.fc44.x86_64.rpm`,
+        `printmaster-agent-${stableVersion}-1.fc44.aarch64.rpm`,
+    ];
+    await assert.rejects(buildAgentReleaseInventory({ ...input, artifactDir: stableArtifactDir, channel: 'stable', version: stableVersion }), /exactly one Stable/);
+    for (const filename of packages) await writeFile(path.join(stableArtifactDir, filename), `finished-package-${filename}`);
     const stableTargets = await buildAgentReleaseInventory({
         ...input, artifactDir: stableArtifactDir, publisherRoot: input.publisherRoot,
         channel: 'stable', version: stableVersion,
     });
-    assert.equal(stableTargets.length, 5);
+    assert.equal(stableTargets.length, 10);
     assert.ok(stableTargets.every(item => item.target.channel === 'stable' && item.target.version === stableVersion));
+    assert.deepEqual(stableTargets.filter(item => item.target.format !== 'binary').map(item =>
+        `${item.target.platform}/${item.target.arch}/${item.target.format}`).sort(),
+    ['linux/amd64/deb', 'linux/amd64/rpm', 'linux/arm64/deb', 'linux/arm64/rpm', 'windows/amd64/msi']);
+    for (const item of stableTargets) {
+        const bytes = await readFile(item.file);
+        assert.equal(item.target.sha256, createHash('sha256').update(bytes).digest('hex'));
+        assert.equal(item.target.size_bytes, bytes.length);
+    }
+    const extraRPM = path.join(stableArtifactDir, `printmaster-agent-${stableVersion}-1.fc45.x86_64.rpm`);
+    await writeFile(extraRPM, 'ambiguous second RPM');
+    await assert.rejects(buildAgentReleaseInventory({ ...input, artifactDir: stableArtifactDir, channel: 'stable', version: stableVersion }), /exactly one Stable amd64 RPM/);
+    await rm(extraRPM);
+    await rm(path.join(stableArtifactDir, packages[0]));
+    await assert.rejects(buildAgentReleaseInventory({ ...input, artifactDir: stableArtifactDir, channel: 'stable', version: stableVersion }), /artifact set/);
+    await writeFile(path.join(stableArtifactDir, packages[0]), 'restored MSI');
+    await writeFile(path.join(artifactDir, packages[0]), 'package not allowed in Beta');
+    await writeFile(path.join(input.sourceRoot, 'agent', 'VERSION'), `${betaVersion}\n`);
+    await assert.rejects(buildAgentReleaseInventory({ ...input, artifactDir, channel: 'beta', version: betaVersion }), /artifact set/);
     await assert.rejects(buildAgentReleaseInventory({
         ...input, artifactDir: stableArtifactDir, publisherRoot: input.publisherRoot,
         channel: 'stable', version: betaVersion,

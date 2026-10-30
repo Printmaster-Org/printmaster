@@ -93,6 +93,38 @@ jobs:
           path: ${{ runner.temp }}/release-current
           merge-multiple: true
 
+      - name: Download exact Stable MSI from this CD run
+        if: steps.release.outputs.channel == 'stable'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          name: agent-windows-msi
+          path: ${{ runner.temp }}/release-current
+
+      - name: Download exact Stable DEBs from this CD run
+        if: steps.release.outputs.channel == 'stable'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          pattern: agent-deb-*
+          path: ${{ runner.temp }}/release-current
+          merge-multiple: true
+
+      - name: Download exact Stable RPMs from this CD run
+        if: steps.release.outputs.channel == 'stable'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          pattern: agent-rpm-*
+          path: ${{ runner.temp }}/release-current
+          merge-multiple: true
+
       - name: Build exact release inventory
         id: inventory
         env:

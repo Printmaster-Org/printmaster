@@ -78,6 +78,20 @@ test('historical updater bridge and modern TUF isolation are required by the rel
     for (const step of bridge.steps) expect(step['continue-on-error']).toBeUndefined();
 });
 
+test('Stable release publisher authorizes packages from the exact CD run without widening Beta', () => {
+    const publisher = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/update-publisher-release.yml'), 'utf8'));
+    const downloads = publisher.jobs['publish-release'].steps.filter(step => step.name?.startsWith('Download exact Stable'));
+    expect(downloads).toHaveLength(3);
+    expect(downloads.map(step => step.with.name || step.with.pattern)).toEqual(['agent-windows-msi', 'agent-deb-*', 'agent-rpm-*']);
+    for (const step of downloads) {
+        expect(step.if).toBe("steps.release.outputs.channel == 'stable'");
+        expect(step.with['run-id']).toBe('${{ github.event.workflow_run.id }}');
+        expect(step.with.repository).toBe('${{ github.repository }}');
+        expect(step.with.path).toBe('${{ runner.temp }}/release-current');
+        expect(step.uses).toMatch(/@[a-f0-9]{40}$/);
+    }
+});
+
 test('publisher workflow is serialized, opt-in, scoped and preserves failure evidence', () => {
     const publisher = yaml.load(fs.readFileSync(path.join(root, '.github', 'workflows', 'update-publisher.yml'), 'utf8'));
     expect(publisher.on.workflow_dispatch.inputs.lane.options).toEqual(['rehearsal', 'production']);

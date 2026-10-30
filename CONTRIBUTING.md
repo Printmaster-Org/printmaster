@@ -203,9 +203,10 @@ Before publishing 0.32.0 Stable:
   disposable hosted runners for 0.30.5, 0.31.0, and 0.31.1. Preserve and review
   failed/timed-out installer evidence; do not retry an ambiguous transaction.
 - Publish exact Stable MSI/DEB/RPM TUF identities in addition to the five
-  binary targets. The current release inventory builder and publisher guard
-  accept binary targets only; extend both and verify the actual packaged
-  bytes, including any RPM transformations. Keep Beta binary-only.
+  binary targets. The release inventory builder and publisher guard require
+  all ten Stable targets from the same CD run. Verify the actual packaged
+  bytes, including any RPM transformations, match the published assets and
+  package repositories. Beta remains binary-only.
 - Document pre-existing legacy MSI/portable format ambiguity and the
   matching-MSI manual workaround. Do not copy historical artifact collisions
   or misrepresent installer migration tests as legacy automatic MSI updates.
