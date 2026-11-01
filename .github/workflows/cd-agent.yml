@@ -410,7 +410,7 @@ jobs:
     steps:
     - name: Install dependencies
       run: |
-        dnf install -y rpm-build systemd-rpm-macros git
+        dnf install -y rpm-build rpm-sign gnupg2 systemd-rpm-macros git
 
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -450,6 +450,13 @@ jobs:
         cp "$BINARY" printmaster-agent
         chmod +x printmaster-agent build-rpm.sh
         ./build-rpm.sh "${{ steps.version.outputs.version }}" "${{ matrix.arch }}"
+
+    - name: Sign and verify Stable RPM package before artifact upload
+      if: steps.version.outputs.is_beta != 'true'
+      env:
+        GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+      run: bash scripts/sign-stable-rpms.sh agent/dist
 
     - name: Upload RPM Package
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -1003,62 +1010,20 @@ jobs:
         
         echo "Release signed"
 
-    - name: Sign RPM packages
-      env:
-        GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
-        GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+    - name: Verify RPM package signatures
       run: |
-        # Normalize passphrase (treat whitespace-only as empty)
-        GPG_PASSPHRASE="$(echo "$GPG_PASSPHRASE" | xargs)"
-        
-        if [ -z "$GPG_PRIVATE_KEY" ]; then
-          echo "No GPG key configured, skipping RPM signing"
-          exit 0
-        fi
-        
+        set -euo pipefail
         cd apt-repo
-        
-        # Check if we have RPM packages
         if ! ls rpm/packages/*.rpm 1>/dev/null 2>&1; then
-          echo "No RPM packages to sign"
+          echo "No RPM packages to verify"
           exit 0
         fi
-        
-        # Get the GPG key ID
-        GPG_KEY_ID=$(gpg --list-keys --keyid-format SHORT | grep -A1 "^pub" | tail -1 | awk '{print $1}')
-        echo "Using GPG key: $GPG_KEY_ID"
-        
-        # Configure rpmmacros for signing
-        mkdir -p ~/.gnupg
-        echo "%_gpg_name $GPG_KEY_ID" >> ~/.rpmmacros
-        echo "%__gpg_sign_cmd %{__gpg} gpg --batch --verbose --no-armor --pinentry-mode loopback --passphrase \"$GPG_PASSPHRASE\" -u \"%{_gpg_name}\" -sbo %{__signature_filename} --digest-algo sha256 %{__plaintext_filename}" >> ~/.rpmmacros
-        
-        # Sign each RPM package
+        test -s gpg.key
+        rpm --import gpg.key
         for rpm in rpm/packages/*.rpm; do
-          echo "Signing $rpm..."
-          rpm --addsign "$rpm" <<< "$GPG_PASSPHRASE" || {
-            # Alternative method using rpmsign directly
-            echo "Trying alternative signing method..."
-            rpmsign --addsign --key-id="$GPG_KEY_ID" "$rpm" <<< "$GPG_PASSPHRASE" || {
-              echo "Warning: Failed to sign $rpm, trying expect-based approach..."
-              # Final fallback - use expect if available
-              if command -v expect &> /dev/null; then
-                expect -c "
-                  spawn rpm --addsign $rpm
-                  expect \"Enter pass phrase:\"
-                  send \"$GPG_PASSPHRASE\r\"
-                  expect eof
-                "
-              else
-                echo "ERROR: Could not sign $rpm"
-              fi
-            }
-          }
-        done
-        
-        echo "Verifying RPM signatures:"
-        for rpm in rpm/packages/*.rpm; do
-          rpm -K "$rpm" || true
+          verification="$(rpm --checksig --verbose "$rpm")"
+          printf '%s\n' "$verification"
+          grep -Eiq 'signature.*: OK' <<< "$verification" || { echo "Missing or invalid package signature: $rpm" >&2; exit 1; }
         done
 
     - name: Generate DNF repository metadata

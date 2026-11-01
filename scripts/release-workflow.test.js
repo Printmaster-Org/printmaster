@@ -348,6 +348,22 @@ test('Fedora RPM job trusts only the checkout before reading Git version metadat
     expect(rpm).not.toMatch(/safe\.directory\s+['"]?\*/);
 });
 
+test('Stable RPMs are signed before artifact upload and preserved unchanged by the repository job', () => {
+    const workflow = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/cd-agent.yml'), 'utf8'));
+    const steps = workflow.jobs['build-rpm'].steps;
+    const sign = steps.find(step => step.name === 'Sign and verify Stable RPM package before artifact upload');
+    const uploadIndex = steps.findIndex(step => step.name === 'Upload RPM Package');
+    expect(sign.if).toBe("steps.version.outputs.is_beta != 'true'");
+    expect(sign.env.GPG_PRIVATE_KEY).toBe('${{ secrets.APT_GPG_PRIVATE_KEY }}');
+    expect(sign.run).toBe('bash scripts/sign-stable-rpms.sh agent/dist');
+    expect(steps.indexOf(sign)).toBeLessThan(uploadIndex);
+    const verify = workflow.jobs['update-package-repos'].steps.find(step => step.name === 'Verify RPM package signatures');
+    expect(verify.run).toContain('rpm --import gpg.key');
+    expect(verify.run).toContain('rpm --checksig --verbose');
+    expect(verify.run).toContain('signature.*: OK');
+    expect(verify.run).not.toContain('rpm --addsign');
+});
+
 test('CI tests main and pull requests without rerunning for release tags', () => {
     const ci = fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
     const triggers = ci.slice(ci.indexOf('\non:'), ci.indexOf('\nconcurrency:'));

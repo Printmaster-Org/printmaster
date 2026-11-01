@@ -103,6 +103,18 @@ test('released legacy migration uses pinned assets and only disposable manual na
     expect(fixture).toContain('server_join_token');
 });
 
+test('Stable RPM signer uses an ephemeral keyring and fails unless the signed bytes verify', () => {
+    const signer = read('scripts/sign-stable-rpms.sh');
+    expect(signer).toContain('GNUPGHOME="$(mktemp -d)"');
+    expect(signer).toContain('trap \'rm -rf "$GNUPGHOME"\' EXIT');
+    expect(signer).toContain('GPG_PRIVATE_KEY');
+    expect(signer).toContain('GPG_PASSPHRASE');
+    expect(signer).toContain('rpmsign --addsign "$package"');
+    expect(signer).toContain('rpm --checksig --verbose "$package"');
+    expect(signer).toContain('signature.*: OK');
+    expect(signer).not.toMatch(/\|\| true|continue-on-error/);
+});
+
 debianTest('actual Debian build requires helper and contains protected helper/units with no privilege grant', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-package-test-'));
     const run = (command, args) => {
