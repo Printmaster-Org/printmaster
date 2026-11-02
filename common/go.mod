@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/sigstore/sigstore v1.11.1
+	github.com/sigstore/sigstore v1.11.2
 	github.com/theupdateframework/go-tuf/v2 v2.4.2
 	golang.org/x/sys v0.49.0
 )
