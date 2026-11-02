@@ -8,7 +8,7 @@ require (
 	github.com/gosnmp/gosnmp v1.47.0
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/kardianos/service v1.3.0
-	golang.org/x/net v0.61.0
+	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.49.0
 	modernc.org/sqlite v1.61.0
 	printmaster/common v0.0.0
