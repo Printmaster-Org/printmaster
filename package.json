@@ -4,7 +4,7 @@
   "private": true,
   "devDependencies": {
     "@playwright/test": "^1.64.1",
-    "baseline-browser-mapping": "^2.11.32",
+    "baseline-browser-mapping": "^2.11.34",
     "jest": "^30.5.2",
     "jest-environment-jsdom": "^30.5.2",
     "js-yaml": "^5.5.0"
