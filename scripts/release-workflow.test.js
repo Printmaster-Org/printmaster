@@ -358,8 +358,10 @@ test('Stable RPMs are signed before artifact upload and preserved unchanged by t
     expect(sign.run).toBe('bash scripts/sign-stable-rpms.sh agent/dist');
     expect(steps.indexOf(sign)).toBeLessThan(uploadIndex);
     const verify = workflow.jobs['update-package-repos'].steps.find(step => step.name === 'Verify RPM package signatures');
-    expect(verify.run).toContain('rpm --import gpg.key');
-    expect(verify.run).toContain('rpm --checksig --verbose');
+    expect(verify.run).toContain('rpm_db="$RUNNER_TEMP/rpmdb"');
+    expect(verify.run).toContain('rpm --dbpath "$rpm_db" --initdb');
+    expect(verify.run).toContain('rpm --dbpath "$rpm_db" --import gpg.key');
+    expect(verify.run).toContain('rpm --dbpath "$rpm_db" --checksig --verbose');
     expect(verify.run).toContain('signature.*: OK');
     expect(verify.run).not.toContain('rpm --addsign');
 });

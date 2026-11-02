@@ -1019,9 +1019,12 @@ jobs:
           exit 0
         fi
         test -s gpg.key
-        rpm --import gpg.key
+        rpm_db="$RUNNER_TEMP/rpmdb"
+        mkdir -p "$rpm_db"
+        rpm --dbpath "$rpm_db" --initdb
+        rpm --dbpath "$rpm_db" --import gpg.key
         for rpm in rpm/packages/*.rpm; do
-          verification="$(rpm --checksig --verbose "$rpm")"
+          verification="$(rpm --dbpath "$rpm_db" --checksig --verbose "$rpm")"
           printf '%s\n' "$verification"
           grep -Eiq 'signature.*: OK' <<< "$verification" || { echo "Missing or invalid package signature: $rpm" >&2; exit 1; }
         done
