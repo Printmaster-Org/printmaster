@@ -357,7 +357,12 @@ test('Stable RPMs are signed before artifact upload and preserved unchanged by t
     expect(sign.env.GPG_PRIVATE_KEY).toBe('${{ secrets.APT_GPG_PRIVATE_KEY }}');
     expect(sign.run).toBe('bash scripts/sign-stable-rpms.sh agent/dist');
     expect(steps.indexOf(sign)).toBeLessThan(uploadIndex);
-    const verify = workflow.jobs['update-package-repos'].steps.find(step => step.name === 'Verify RPM package signatures');
+    const repositorySteps = workflow.jobs['update-package-repos'].steps;
+    const dnfSetup = repositorySteps.find(step => step.name === 'Setup DNF repository structure');
+    expect(dnfSetup.run).toContain('rpm/packages/printmaster-agent-0.32.0-1.fc44.aarch64.rpm');
+    expect(dnfSetup.run).toContain('rpm/packages/printmaster-agent-0.32.0-1.fc44.x86_64.rpm');
+    expect(dnfSetup.run).not.toMatch(/rm -f[^\n]*\*/);
+    const verify = repositorySteps.find(step => step.name === 'Verify RPM package signatures');
     expect(verify.run).toContain('rpm_db="$RUNNER_TEMP/rpmdb"');
     expect(verify.run).toContain('rpm --dbpath "$rpm_db" --initdb');
     expect(verify.run).toContain('rpm --dbpath "$rpm_db" --import gpg.key');

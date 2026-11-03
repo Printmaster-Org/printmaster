@@ -924,6 +924,10 @@ jobs:
           ls -la ../downloads-rpm/ || true
         fi
 
+        rm -f \
+          rpm/packages/printmaster-agent-0.32.0-1.fc44.aarch64.rpm \
+          rpm/packages/printmaster-agent-0.32.0-1.fc44.x86_64.rpm
+
     - name: Generate APT repository metadata
       run: |
         cd apt-repo
