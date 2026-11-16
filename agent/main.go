@@ -3597,9 +3597,30 @@ func runInteractive(ctx context.Context, configFlag string) {
 				}
 
 				// Use new scanner for periodic discovery (full mode)
-				_, err := Discover(workerCtx, ranges, "full", discoveryCfg, deviceStore, effectiveDiscovery.Concurrency, 10)
+				printers, err := Discover(workerCtx, ranges, "full", discoveryCfg, deviceStore, effectiveDiscovery.Concurrency, 10)
 				if err != nil && workerCtx.Err() == nil {
 					appLogger.Error("Auto Discover scan error", "error", err, "ranges", len(ranges))
+				}
+
+				// v14.12: autosave discovered devices right after the scan so usage
+				// starts accruing even when nobody opens the agent web UI. Previously
+				// only app.js (browser-triggered) marked discoveries as saved, so
+				// field sites with no open page kept devices in "Discovered" forever.
+				if effectiveDiscovery.AutosaveDiscoveredDevices && len(printers) > 0 && workerCtx.Err() == nil {
+					autosaved := 0
+					for _, p := range printers {
+						if p.Serial == "" {
+							continue // serial is the global identity; IP-only devices cannot be saved
+						}
+						if saveErr := deviceStore.MarkSaved(workerCtx, p.Serial); saveErr != nil {
+							continue // ErrNotFound (not persisted yet) or transient error
+						}
+						autosaved++
+					}
+					if autosaved > 0 {
+						appLogger.Info("Auto Discover: autosaved discovered devices", "count", autosaved)
+						scannerUploadWake()
+					}
 				}
 			}
 			runPeriodicScan()
