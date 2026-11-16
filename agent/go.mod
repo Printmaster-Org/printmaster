@@ -8,9 +8,9 @@ require (
 	github.com/gosnmp/gosnmp v1.47.0
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/kardianos/service v1.3.0
-	golang.org/x/net v0.61.0
-	golang.org/x/sys v0.49.0
-	modernc.org/sqlite v1.61.0
+	golang.org/x/net v0.62.0
+	golang.org/x/sys v0.50.0
+	modernc.org/sqlite v1.62.0
 	printmaster/common v0.0.0
 )
 
@@ -37,7 +37,7 @@ require (
 	golang.org/x/term v0.47.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260727163830-6c54dddc4772 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
-	modernc.org/libc v1.79.0 // indirect
+	modernc.org/libc v1.80.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
