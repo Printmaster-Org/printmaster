@@ -50,7 +50,7 @@ jobs:
       # Set up Go for proper compilation
       - name: Set up Go
         if: matrix.language == 'go'
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.1.0
         with:
           go-version: '1.27.3'
           cache: false
